@@ -92,6 +92,27 @@ void main() {
     app.model.dispose();
   });
 
+  test("pairing while the stored PCs couldn't be read doesn't replace them", () async {
+    final livingRoom = PairedPc(pcId: 'F' * 32, name: 'Living room', server: 'https://rooms.example.com', phoneId: 'c' * 32, secret: 'd' * 64);
+    final secrets = FlakyStore();
+    await PairedPcStore(secrets).save([livingRoom]);
+    secrets.failReads = true;
+    final app = TestApp(secrets);
+    await app.model.load();
+    expect(app.model.loadError, isNotNull);
+    final notices = <String?>[];
+    app.model.notice.addListener(() => notices.add(app.model.notice.value));
+    // A pairing link accepted on the error screen still pairs, for this session only.
+    app.model.pair(link);
+    app.onPaired!(pc);
+    await pumpEventQueue();
+    expect(app.model.pcs.single.pcId, pcId);
+    expect(notices.whereType<String>().single, contains("couldn't save it"));
+    secrets.failReads = false;
+    expect((await PairedPcStore(secrets).load()).map((x) => x.name), ['Living room']);
+    app.model.dispose();
+  });
+
   testWidgets('the app shows the storage problem with a working Try again', (tester) async {
     final app = TestApp(FlakyStore()..failReads = true);
     await tester.pumpWidget(

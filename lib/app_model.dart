@@ -138,14 +138,21 @@ class AppModel extends ChangeNotifier {
     if (index < 0) return;
     _pcs = [..._pcs]..[index] = _pcs[index].withName(name);
     // The new name comes again on the next connection; a failed save here isn't worth a message.
-    unawaited(_quietly(store.save(_pcs)));
+    unawaited(_quietly(_write()));
     notifyListeners();
+  }
+
+  /// Writes the paired PCs. While the stored list couldn't be read, nothing is written: the list in memory then holds only
+  /// what was paired since, and writing it would replace the PCs still on the phone.
+  Future<void> _write() {
+    if (!_loaded || _loadError != null) return Future.error(StateError('The paired PCs were not read'));
+    return store.save(_pcs);
   }
 
   /// Saves the paired PCs, and reports [failure] if that fails.
   Future<void> _save(String failure) async {
     try {
-      await store.save(_pcs);
+      await _write();
     } catch (_) {
       notice.value = null;
       notice.value = failure;
