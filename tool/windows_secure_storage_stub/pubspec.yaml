@@ -1,0 +1,23 @@
+name: flutter_secure_storage_windows
+description: >-
+  Stand-in for flutter_secure_storage's Windows plugin, used through dependency_overrides. The real one needs the
+  Visual Studio ATL component to build. The Windows target only exists to run and look at the app on a PC, so this
+  keeps values in memory for the session. Android is unaffected.
+version: 4.2.2
+publish_to: none
+
+environment:
+  sdk: ^3.14.0
+  flutter: '>=3.19.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_secure_storage_platform_interface: ^2.0.0
+
+flutter:
+  plugin:
+    implements: flutter_secure_storage
+    platforms:
+      windows:
+        dartPluginClass: FlutterSecureStorageWindows

@@ -1,0 +1,43 @@
+name: blackpearl_mobile
+description: "A phone remote for BlackPearl."
+publish_to: 'none'
+
+# The release tag must be v<version without the build number>; CI checks it.
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.14.0
+
+dependencies:
+  app_links: ^7.2.2
+  clock: ^1.1.3
+  connectivity_plus: ^7.3.2
+  crypto: ^3.0.8
+  device_info_plus: ^13.3.0
+  flutter:
+    sdk: flutter
+  flutter_secure_storage: ^11.2.0
+  flutter_webrtc: ^1.6.3
+  material_ui: ^1.11.1
+  mobile_scanner: ^7.5.0
+  package_info_plus: ^10.2.2
+  web_socket_channel: ^3.0.3
+
+dev_dependencies:
+  fake_async: ^1.3.3
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  fonts:
+    - family: SourceSerif4
+      fonts:
+        - asset: assets/fonts/SourceSerif4.ttf
+
+# The Windows build is only for running the app on a PC while developing. flutter_secure_storage's Windows plugin
+# needs Visual Studio's ATL component; this stand-in keeps values in memory instead. It changes nothing on Android.
+dependency_overrides:
+  flutter_secure_storage_windows:
+    path: tool/windows_secure_storage_stub
