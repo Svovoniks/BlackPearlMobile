@@ -4,7 +4,9 @@ import 'package:material_ui/material_ui.dart';
 
 import '../connection/remote_link.dart';
 import '../connection/transport.dart';
+import '../protocol/pair_link.dart';
 import '../protocol/remote_state.dart';
+import '../ui/app_prompts.dart';
 import '../ui/pairing_screen.dart';
 import '../ui/remote_screen.dart';
 import '../ui/theme.dart';
@@ -128,6 +130,15 @@ class PreviewApp extends StatelessWidget {
           null,
         ),
       ),
+      'storage-problem' => StorageProblem(
+        message: "This phone's secure storage didn't open, so the paired PCs can't be read.",
+        busy: false,
+        onRetry: () {},
+      ),
+      'pair-link' => _PairLinkPreview(child: _remote(link(connected, sampleState))),
+      'pair-timeout' => _remote(
+        link(const LinkStatus(LinkPhase.failed, message: "The PC didn't finish pairing this phone", needsPairing: true), null),
+      ),
       'removed' => _remote(
         link(const LinkStatus(LinkPhase.failed, message: 'This phone was removed from the PC. Pair it again.', needsPairing: true), null),
       ),
@@ -166,4 +177,29 @@ class PreviewApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) =>
       MaterialApp(title: 'BlackPearl preview', debugShowCheckedModeBanner: false, theme: buildTheme(), home: _screen());
+}
+
+/// The question a pairing link from outside the app asks, over the Remote screen.
+class _PairLinkPreview extends StatefulWidget {
+  const _PairLinkPreview({required this.child});
+  final Widget child;
+  @override
+  State<_PairLinkPreview> createState() => _PairLinkPreviewState();
+}
+
+class _PairLinkPreviewState extends State<_PairLinkPreview> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      confirmPairLink(
+        context,
+        const PairLink(pcId: '0123456789ABCDEF0123456789ABCDEF', code: '', server: 'https://rooms.example.com', name: 'Study PC'),
+      );
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }

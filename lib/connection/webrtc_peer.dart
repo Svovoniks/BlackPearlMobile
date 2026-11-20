@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -165,9 +166,20 @@ class WebRtcPeerLink extends PeerLink {
 class WebSocketSignaling implements SignalingSocket {
   WebSocketSignaling._(this._channel) : messages = _channel.stream.where((frame) => frame is String).cast<String>();
 
-  static Future<SignalingSocket> connect(Uri uri) async {
-    final channel = WebSocketChannel.connect(uri);
-    await channel.ready.timeout(const Duration(seconds: 15));
+  static Future<SignalingSocket> connect(Uri uri) => open(WebSocketChannel.connect(uri));
+
+  /// Waits for [channel] to connect. One that doesn't within [timeout] is closed, and so is one that connects later:
+  /// the caller has moved on and nothing would ever read or close it.
+  @visibleForTesting
+  static Future<SignalingSocket> open(WebSocketChannel channel, {Duration timeout = const Duration(seconds: 15)}) async {
+    try {
+      await channel.ready.timeout(timeout);
+    } catch (_) {
+      void close() => unawaited(channel.sink.close().then((_) {}, onError: (_) {}));
+      close();
+      unawaited(channel.ready.then((_) => close(), onError: (_) {}));
+      rethrow;
+    }
     return WebSocketSignaling._(channel);
   }
 

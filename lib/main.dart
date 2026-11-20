@@ -15,6 +15,7 @@ import 'debug/loopback.dart';
 import 'debug/preview.dart';
 import 'protocol/pair_link.dart';
 import 'storage/paired_pcs.dart';
+import 'ui/app_prompts.dart';
 import 'ui/pairing_screen.dart';
 import 'ui/pc_chooser.dart';
 import 'ui/remote_screen.dart';
@@ -130,8 +131,14 @@ class BlackPearlApp extends StatelessWidget {
 }
 
 class Root extends StatefulWidget {
-  const Root({super.key, required this.model});
+  const Root({super.key, required this.model, this.links, this.network});
   final AppModel model;
+
+  /// Links that open the app from outside; by default the system's, through app_links. For tests.
+  final Stream<Uri>? links;
+
+  /// Network changes; by default connectivity_plus. For tests.
+  final Stream<List<ConnectivityResult>>? network;
   @override
   State<Root> createState() => _RootState();
 }
@@ -141,6 +148,7 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
   StreamSubscription<List<ConnectivityResult>>? _network;
   List<ConnectivityResult>? _lastNetwork;
   Timer? _networkDebounce;
+  bool _confirmingLink = false;
 
   AppModel get model => widget.model;
 
@@ -148,17 +156,19 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    model.notice.addListener(_showNotice);
     try {
       // Covers both the link the app was opened with and links that arrive while it runs.
-      _links = AppLinks().uriLinkStream.listen(_openLink, onError: (_) {});
+      _links = (widget.links ?? AppLinks().uriLinkStream).listen(_openLink, onError: (_) {});
     } catch (_) {}
     try {
-      _network = Connectivity().onConnectivityChanged.listen(_networkChanged, onError: (_) {});
+      _network = (widget.network ?? Connectivity().onConnectivityChanged).listen(_networkChanged, onError: (_) {});
     } catch (_) {}
   }
 
   @override
   void dispose() {
+    model.notice.removeListener(_showNotice);
     WidgetsBinding.instance.removeObserver(this);
     _links?.cancel();
     _network?.cancel();
@@ -175,13 +185,32 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
     }
   }
 
-  void _openLink(Uri uri) {
+  /// A link from outside the app: another app or a web page can send one too, so ask before it replaces the current PC.
+  /// The in-app scanner and paste don't ask; the user is already pairing there.
+  Future<void> _openLink(Uri uri) async {
     final link = PairLinkParser.tryParse(uri.toString());
-    if (link != null) {
-      model.pair(link);
-    } else if (uri.scheme == 'blackpearl') {
-      model.requestPairing(error: "That link didn't contain a pairing code. Show the code on the PC again.");
+    if (link == null) {
+      if (uri.scheme == 'blackpearl') {
+        model.requestPairing(error: "That link didn't contain a pairing code. Show the code on the PC again.");
+      }
+      return;
     }
+    // One question at a time; a second link while it's open is dropped.
+    if (_confirmingLink || !mounted) return;
+    _confirmingLink = true;
+    try {
+      if (await confirmPairLink(context, link) && mounted) model.pair(link);
+    } finally {
+      _confirmingLink = false;
+    }
+  }
+
+  void _showNotice() {
+    final text = model.notice.value;
+    if (text == null || !mounted) return;
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text), duration: const Duration(seconds: 8)));
   }
 
   void _networkChanged(List<ConnectivityResult> results) {
@@ -199,7 +228,11 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: model,
     builder: (context, _) {
-      if (!model.loaded) return const Scaffold();
+      if (!model.loaded) {
+        final error = model.loadError;
+        if (error != null) return StorageProblem(message: error, busy: model.loading, onRetry: () => unawaited(model.load()));
+        return const Scaffold();
+      }
       final connection = model.connection;
       if (model.showPairing || connection == null) {
         return PairingScreen(

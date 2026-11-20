@@ -10,14 +10,19 @@
     <!-- flutter_webrtc asks for Bluetooth (for call audio); the remote plays no sound, so don't require the hardware. -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
 
+    <!-- No backups: the paired PCs live in secure storage, encrypted with a key that never leaves this device. A
+         restored copy can't be decrypted, so restoring it would lose every paired PC instead of keeping them. The
+         extraction rules also cover device-to-device transfer, which allowBackup alone doesn't on Android 12+. -->
     <application
         android:label="BlackPearl"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules">
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:taskAffinity=""
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
@@ -35,7 +40,8 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- blackpearl://pair?... from the PC's QR code, so the system camera can open the app. -->
+            <!-- blackpearl://pair?... from the PC's QR code, so the system camera can open the app. singleTask above
+                 sends it to the running app instead of starting a second copy in the camera's task. -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>

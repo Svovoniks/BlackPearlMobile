@@ -59,6 +59,7 @@ class RemoteConnection extends RemoteLink {
     Random? random,
     this.answerTimeout = const Duration(seconds: 20),
     this.helloTimeout = const Duration(seconds: 10),
+    this.pairTimeout = const Duration(seconds: 20),
     this.pingInterval = const Duration(seconds: 25),
   }) : _target = target,
        _random = random ?? Random.secure(),
@@ -76,6 +77,9 @@ class RemoteConnection extends RemoteLink {
 
   final Duration answerTimeout;
   final Duration helloTimeout;
+
+  /// How long the PC has to answer `pair` with `paired` or an error.
+  final Duration pairTimeout;
   final Duration pingInterval;
   final Random _random;
 
@@ -91,8 +95,11 @@ class RemoteConnection extends RemoteLink {
   // One "generation" per attempt; callbacks from an earlier attempt are ignored.
   int _generation = 0;
   bool _running = false;
+  // A failure only the user can fix (removed phone, expired code, protocol mismatch): nothing retries on its own, not
+  // even a return to the app or a network change, until the user asks to try again.
+  bool _halted = false;
   int _failures = 0;
-  Timer? _retryTimer, _answerTimer, _helloTimer, _pingTimer, _pathTimer;
+  Timer? _retryTimer, _answerTimer, _helloTimer, _pairTimer, _pingTimer, _pathTimer;
   SignalingSocket? _socket;
   StreamSubscription<String>? _socketSubscription;
   PeerLink? _peer;
@@ -123,24 +130,31 @@ class RemoteConnection extends RemoteLink {
 
   bool get running => _running;
 
+  /// Stopped by a failure only the user can fix; see [retryNow].
+  bool get halted => _halted;
+
   void start() {
     if (_running) return;
     _running = true;
+    _halted = false;
     _failures = 0;
     _attempt();
   }
 
-  /// Stops trying and closes everything, keeping the last state for when it starts again.
+  /// Stops trying and closes everything, keeping the last state for when it starts again. A failure that needs the
+  /// user stays on screen.
   Future<void> stop() async {
     _running = false;
     _generation++;
     _retryTimer?.cancel();
     await _teardown();
-    _setStatus(const LinkStatus(LinkPhase.idle));
+    if (!_halted) _setStatus(const LinkStatus(LinkPhase.idle));
   }
 
+  /// The user asked to try again: also after a failure that stopped the automatic retries.
   @override
   void retryNow() {
+    _halted = false;
     if (!_running) {
       start();
       return;
@@ -149,8 +163,10 @@ class RemoteConnection extends RemoteLink {
     _attempt();
   }
 
-  /// For the app returning to the foreground: starts over unless the link is still healthy.
+  /// For the app returning to the foreground: starts over unless the link is still healthy, or a failure is waiting
+  /// for the user.
   void resume() {
+    if (_halted) return;
     if (!_running) {
       start();
     } else if (!_status.isConnected || !(_peer?.alive ?? false)) {
@@ -162,7 +178,7 @@ class RemoteConnection extends RemoteLink {
 
   /// For a network change: the old path is probably gone, so set up a new link at once.
   void networkChanged() {
-    if (!_running) return;
+    if (!_running || _halted) return;
     _failures = 0;
     _attempt();
   }
@@ -402,7 +418,7 @@ class RemoteConnection extends RemoteLink {
       if (payload is! Map) return;
       if (signal.kind == 'sdp' && payload['type'] == 'answer' && payload['sdp'] is String && !_answered) {
         _answered = true;
-        unawaited(_applyAnswer(generation, peer, payload['sdp'] as String));
+        unawaited(_applyAnswer(generation, session, peer, payload['sdp'] as String));
       } else if (signal.kind == 'ice' && payload['candidate'] is String) {
         final candidate = payload['candidate'] as String;
         final mid = payload['mid'] is String ? payload['mid'] as String : null;
@@ -420,14 +436,17 @@ class RemoteConnection extends RemoteLink {
 
   bool _remoteDescriptionSet = false;
 
-  Future<void> _applyAnswer(int generation, PeerLink peer, String sdp) async {
+  Future<void> _applyAnswer(int generation, String session, PeerLink peer, String sdp) async {
+    // A new session (the PC came online again) can start while the answer is applied; the old one's outcome is not
+    // the new one's.
+    bool current() => generation == _generation && _session == session && identical(_peer, peer);
     try {
       await peer.setAnswer(sdp);
     } catch (_) {
-      _fail(generation, "Couldn't connect to the PC.");
+      if (current()) _fail(generation, "Couldn't connect to the PC.");
       return;
     }
-    if (generation != _generation) return;
+    if (!current()) return;
     _remoteDescriptionSet = true;
     for (final (candidate, mid) in _pendingRemote) {
       unawaited(peer.addRemoteCandidate(candidate, mid).catchError((_) {}));
@@ -458,6 +477,12 @@ class RemoteConnection extends RemoteLink {
         if (_target.isPairing) {
           _setStatus(const LinkStatus(LinkPhase.pairing));
           _peer?.send(jsonEncode({'type': 'pair', 'name': identity.device}));
+          _pairTimer?.cancel();
+          _pairTimer = Timer(pairTimeout, () {
+            if (generation == _generation && _status.phase == LinkPhase.pairing) {
+              _fail(generation, "The PC didn't finish pairing this phone", permanent: true, needsPairing: true);
+            }
+          });
         } else {
           _connected();
         }
@@ -470,6 +495,7 @@ class RemoteConnection extends RemoteLink {
             ? (message['pcId'] as String).toUpperCase()
             : _target.pcId;
         final paired = PairedPc(pcId: pcId, name: pcName, server: _target.server, phoneId: phoneId as String, secret: secret as String);
+        _pairTimer?.cancel();
         _pcName = pcName;
         // This session stays signed as "pair"; the next one uses the phone's own id and secret.
         _target = LinkTarget.paired(paired);
@@ -514,6 +540,7 @@ class RemoteConnection extends RemoteLink {
     if (generation != _generation) return;
     _generation++;
     unawaited(_teardown());
+    if (permanent) _halted = true;
     if (permanent || !_running) {
       _setStatus(LinkStatus(LinkPhase.failed, message: message, needsPairing: needsPairing));
       return;
@@ -533,6 +560,7 @@ class RemoteConnection extends RemoteLink {
   Future<void> _closePeer() async {
     _answerTimer?.cancel();
     _helloTimer?.cancel();
+    _pairTimer?.cancel();
     _pathTimer?.cancel();
     _remoteDescriptionSet = false;
     _session = null;

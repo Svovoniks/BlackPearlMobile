@@ -57,6 +57,34 @@ void main() {
     expect(link.sent.single.$2, isA<int>());
   });
 
+  testWidgets('a timeline drag that ends in the same frame as its last move seeks to where the finger left', (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    final box = tester.getRect(find.bySemanticsLabel('Timeline'));
+    final gesture = await tester.startGesture(box.centerLeft + Offset(box.width * 0.2, 0));
+    await gesture.moveBy(Offset(box.width * 0.1, 0));
+    await tester.pump();
+    // No frame between the last move and the release.
+    await gesture.moveBy(Offset(box.width * 0.4, 0));
+    await gesture.up();
+    await tester.pump();
+    final target = link.sent.single;
+    expect(target.$1, 'seek-to');
+    expect((target.$2 as int) / sampleState.durationMs, closeTo(0.7, 0.01));
+  });
+
+  testWidgets('a volume drag that ends in the same frame as its last move sends the final value', (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    final track = tester.getRect(find.bySemanticsLabel('PC volume'));
+    final gesture = await tester.startGesture(track.centerLeft + Offset(track.width * 0.2, 0));
+    await gesture.moveBy(Offset(track.width * 0.1, 0));
+    await tester.pump();
+    await gesture.moveBy(Offset(track.width * 0.6, 0));
+    await gesture.up();
+    await tester.pump(const Duration(milliseconds: 300));
+    final volumes = link.sent.where((c) => c.$1 == 'volume').map((c) => c.$2 as int).toList();
+    expect(volumes.last, closeTo(90, 1));
+  });
+
   testWidgets('volume drags send a few debounced commands and the final value', (tester) async {
     final link = await pump(tester, state: sampleState.copyWith(playing: false));
     final track = tester.getRect(find.bySemanticsLabel('PC volume'));

@@ -837,7 +837,8 @@ class _Timeline extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         onHorizontalDragStart: enabled ? (d) => onDrag(at(d.localPosition)) : null,
         onHorizontalDragUpdate: enabled ? (d) => onDrag(at(d.localPosition)) : null,
-        onHorizontalDragEnd: enabled ? (_) => onRelease(fraction) : null,
+        // Where the finger left, not [fraction]: a drag can end in the same frame as its last move, before a rebuild.
+        onHorizontalDragEnd: enabled ? (d) => onRelease(at(d.localPosition)) : null,
         onTapUp: enabled ? (d) => onRelease(at(d.localPosition)) : null,
         child: SizedBox(
           height: 30,
@@ -873,7 +874,7 @@ class _VolumeTrack extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         onHorizontalDragStart: enabled ? (d) => onChanged(at(d.localPosition)) : null,
         onHorizontalDragUpdate: enabled ? (d) => onChanged(at(d.localPosition)) : null,
-        onHorizontalDragEnd: enabled ? (_) => onChangeEnd(value) : null,
+        onHorizontalDragEnd: enabled ? (d) => onChangeEnd(at(d.localPosition)) : null,
         onTapUp: enabled ? (d) => onChangeEnd(at(d.localPosition)) : null,
         child: SizedBox(
           height: 36,

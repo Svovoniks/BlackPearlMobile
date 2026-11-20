@@ -63,8 +63,16 @@ class FakePeer extends PeerLink {
     return 'v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\n';
   }
 
+  /// Holds setAnswer until completed, to let something else happen meanwhile.
+  Completer<void>? answerGate;
+
   @override
-  Future<void> setAnswer(String sdp) async => answer = sdp;
+  Future<void> setAnswer(String sdp) async {
+    final gate = answerGate;
+    if (gate != null) await gate.future;
+    answer = sdp;
+  }
+
   @override
   Future<void> addRemoteCandidate(String candidate, String? mid) async => remoteCandidates.add((candidate, mid));
   @override
@@ -462,6 +470,131 @@ void main() {
       async.elapse(const Duration(seconds: 30));
       expect(h.sockets.first.closed, isTrue);
       expect(h.sockets.length, 2, reason: 'a new socket after the silence and a short wait');
+      h.connection.dispose();
+    });
+  });
+
+  test('a failure only the user can fix stays stopped through resumes, network changes and backgrounding', () {
+    fakeAsync((async) {
+      final h = Harness(pairedTarget);
+      h.connection.start();
+      async.flushMicrotasks();
+      h.socket.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      h.pcSignal(secret, phoneId, h.socket.signals().first.session, 'rejected', 'unknown-phone', auth: '');
+      async.flushMicrotasks();
+      expect(h.connection.status.needsPairing, isTrue);
+
+      h.connection.resume();
+      h.connection.networkChanged();
+      async.elapse(const Duration(minutes: 1));
+      unawaited(h.connection.stop());
+      async.flushMicrotasks();
+      h.connection.resume();
+      async.elapse(const Duration(minutes: 1));
+      expect(h.sockets, hasLength(1), reason: 'nothing starts again on its own');
+      expect(h.connection.status.phase, LinkPhase.failed);
+      expect(h.connection.status.needsPairing, isTrue, reason: '"Scan a new code" stays on screen');
+      expect(h.connection.status.message, 'This phone was removed from the PC. Pair it again.');
+
+      // The user asking does start again.
+      h.connection.retryNow();
+      async.flushMicrotasks();
+      expect(h.sockets, hasLength(2));
+      expect(h.connection.status.phase, LinkPhase.connecting);
+      h.connection.dispose();
+    });
+  });
+
+  test("a PC that welcomes but never pairs times out and asks for a new code", () {
+    fakeAsync((async) {
+      final h = Harness(LinkTarget.pairing(PairLink(pcId: pcId, code: code, server: 'https://rooms.example.com', name: 'Study')));
+      h.connection.start();
+      async.flushMicrotasks();
+      h.socket.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      h.pcSignal(code, 'pair', h.socket.signals().first.session, 'sdp', jsonEncode({'type': 'answer', 'sdp': 'v=0'}));
+      async.flushMicrotasks();
+      h.peer.open();
+      h.peer.receive({'type': 'welcome', 'protocol': 1, 'pc': 'Study PC'});
+      async.flushMicrotasks();
+      expect(h.connection.status.phase, LinkPhase.pairing);
+      async.elapse(const Duration(seconds: 19));
+      expect(h.connection.status.phase, LinkPhase.pairing);
+      async.elapse(const Duration(seconds: 2));
+      expect(h.connection.status.phase, LinkPhase.failed);
+      expect(h.connection.status.message, "The PC didn't finish pairing this phone");
+      expect(h.connection.status.needsPairing, isTrue);
+      expect(h.peer.closed, isTrue);
+      expect(h.paired, isEmpty);
+      h.connection.dispose();
+    });
+  });
+
+  test("an answer applied after a new session started neither fails nor marks the new session", () {
+    fakeAsync((async) {
+      final h = Harness(pairedTarget);
+      h.connection.start();
+      async.flushMicrotasks();
+      h.socket.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      final first = h.peer;
+      final gate = first.answerGate = Completer<void>();
+      final firstSession = h.socket.signals().first.session;
+      h.pcSignal(secret, phoneId, firstSession, 'sdp', jsonEncode({'type': 'answer', 'sdp': 'old'}));
+      async.flushMicrotasks();
+
+      // The PC comes online again: a new session with a new peer, while the old answer is still being applied.
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      expect(h.peers, hasLength(2));
+      final second = h.peer;
+      final secondSession = h.socket.signals().where((s) => s.session != firstSession).first.session;
+
+      gate.complete();
+      async.flushMicrotasks();
+      // The new session has no answer yet, so its candidates still wait.
+      h.pcSignal(
+        secret,
+        phoneId,
+        secondSession,
+        'ice',
+        jsonEncode({'candidate': 'candidate:3 1 UDP 1 192.168.1.6 6001 typ host', 'mid': '0'}),
+      );
+      async.flushMicrotasks();
+      expect(second.remoteCandidates, isEmpty, reason: "the old session's answer doesn't count for the new one");
+      h.pcSignal(secret, phoneId, secondSession, 'sdp', jsonEncode({'type': 'answer', 'sdp': 'new'}));
+      async.flushMicrotasks();
+      expect(second.answer, 'new');
+      expect(second.remoteCandidates.single.$1, contains('192.168.1.6'));
+      expect(h.connection.status.phase, LinkPhase.linking);
+      h.connection.dispose();
+    });
+  });
+
+  test("an old session's failed answer doesn't tear down the new one", () {
+    fakeAsync((async) {
+      final h = Harness(pairedTarget);
+      h.connection.start();
+      async.flushMicrotasks();
+      h.socket.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      final gate = h.peer.answerGate = Completer<void>();
+      h.pcSignal(secret, phoneId, h.socket.signals().first.session, 'sdp', jsonEncode({'type': 'answer', 'sdp': 'old'}));
+      async.flushMicrotasks();
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      final second = h.peer;
+
+      gate.completeError(StateError('closed'));
+      async.flushMicrotasks();
+      expect(h.connection.status.phase, LinkPhase.linking);
+      expect(second.closed, isFalse);
+      expect(h.sockets.single.closed, isFalse);
       h.connection.dispose();
     });
   });
