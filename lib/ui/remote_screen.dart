@@ -661,7 +661,7 @@ StatusCopy describe(LinkStatus status, String pcName) => switch (status.phase) {
   LinkPhase.pairing => StatusCopy('Pairing with $pcName…', 'The PC is adding this phone.', Icons.link_rounded),
   LinkPhase.waitingForPc => StatusCopy(
     "Your PC isn't online",
-    'Open BlackPearl on $pcName and turn on Settings › Phone remote. This connects as soon as the PC is back.',
+    'Open BlackPearl on $pcName and turn on Phone remote in Settings › Profile. This connects as soon as the PC is back.',
     Icons.desktop_access_disabled_outlined,
     shortDetail: 'Connects as soon as the PC is back.',
   ),

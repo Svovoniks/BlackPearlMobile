@@ -113,7 +113,7 @@ class _PairingScreenState extends State<PairingScreen> {
                           children: [
                             TextSpan(text: 'On your PC, open '),
                             TextSpan(
-                              text: 'Settings › Phone remote',
+                              text: 'Settings › Profile › Phone remote',
                               style: TextStyle(color: Palette.ink, fontWeight: FontWeight.w600),
                             ),
                             TextSpan(text: ' and point the camera at its code.'),

@@ -365,7 +365,7 @@ class RemoteConnection extends RemoteLink {
           generation,
           _answered
               ? "Couldn't reach the PC directly or through the relay."
-              : "Your PC didn't answer. Check that Phone remote is on in BlackPearl's Settings.",
+              : "Your PC didn't answer. Check that Phone remote is on in BlackPearl's Settings › Profile.",
         );
       }
     });
