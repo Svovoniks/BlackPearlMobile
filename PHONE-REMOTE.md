@@ -38,8 +38,8 @@ The PC shows this as a QR code (and as text to copy):
 blackpearl://pair?v=1&pc=<PC id>&code=<pairing code>&server=<room server URL, percent-encoded>&name=<PC name, percent-encoded>
 ```
 
-`server` is the base URL the PC uses for rooms, such as `https://rooms.example.com`. The phone opens
-`wss://<host>/remote` (or `ws://` for an `http://` server). The Android app registers for `blackpearl://pair` so a
+`server` is the base URL the PC uses for rooms, such as `https://rooms.example.com`. The phone opens `<server>/remote`
+with `wss` for `https` (or `ws` for an `http://` server), keeping any path the server URL has. The Android app registers for `blackpearl://pair` so a
 camera app can open it.
 
 ## Room server: `/remote`
@@ -50,7 +50,8 @@ Messages are at most 64 KiB. `{"type":"ping","number":n}` is answered with `{"ty
 
 **PC** sends first: `{"type":"remote-pc","data":"<host key>","number":1}`.
 The server answers `{"type":"remote-welcome","target":"<PC id>","data":"<json>"}`, where the json is
-`{"iceServers":["stun:…","turn://user:pass@host:port?transport=udp", …]}`. One connection per PC id: a new one
+`{"iceServers":["stun:…","turn://user:pass@host:port?transport=udp", …],"forceRelay":false}`; user and password are
+percent-encoded, and `forceRelay` true means both sides use only relay candidates. One connection per PC id: a new one
 replaces the earlier. The connection lasts at most 6 hours; the PC reconnects and gets fresh relay credentials.
 
 **Phone** sends first: `{"type":"remote-phone","target":"<PC id>","number":1}`.
@@ -63,7 +64,8 @@ to the PC this phone asked for, with `sender` set to the phone's connection id).
 `{"type":"signal","target":"<phone connection id>","data":"<signed signal json>"}`; the server delivers it with
 `sender` set to the PC id. When a phone's connection closes, the PC gets `{"type":"peer-left","sender":"<connection id>"}`.
 
-An error ends the connection with `{"type":"error","text":"<reason>"}`. A `number` other than 1 is refused with a
+An error ends the connection with `{"type":"error","text":"<reason>"}`. A PC connection replaced by a newer one gets
+`{"type":"closed","text":"<reason>"}` before it ends. A `number` other than 1 is refused with a
 reason telling which side to update. `/health` lists `"remote":1` when the server has this endpoint.
 
 Limits: 8 phone connections per PC at a time, and the same message rate limits as rooms.
@@ -75,9 +77,11 @@ Limits: 8 phone connections per PC at a time, and the same message rate limits a
 ```
 
 - `session` is new for every connection attempt; the phone makes it. The PC keeps one live session per phone, and
-  a new session replaces the old one.
+  a new session replaces the old one. A session that began with a pairing code keeps signing as `pair`, with the
+  pairing code, for the rest of its life, even after it has paired.
 - `payload` for `sdp` is the JSON text `{"type":"offer|answer","sdp":"<SDP>"}`; for `ice` it is
-  `{"candidate":"<candidate line, without the a= prefix>","mid":"<media id>"}`. ICE is trickled both ways.
+  `{"candidate":"<candidate line, without the a= prefix>","mid":"<media id>"}`. ICE is trickled both ways. There is
+  only one media section, the data channel's, so a receiver that needs a line index uses the one in the answer (0).
 - `auth` is HMAC-SHA256 with key = the phone secret's bytes (or, while pairing, the pairing code's 16 bytes) over the
   UTF-8 bytes of
 
@@ -125,7 +129,7 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 
 ```json
 {"type":"state",
- "media":true,                 // false when nothing is loaded in the player; the other playback fields are then absent
+ "media":true,                 // false when nothing is loaded in the player; the other playback fields are then null or absent
  "title":"Night Signal",
  "detail":"Season 2 · Episode 3 · Low Tide",
  "playing":true,
@@ -141,8 +145,10 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 While playing, the phone advances the position itself from when the message arrived; the PC also sends a fresh
 `state` every 5 seconds and after every seek.
 
-`error`: `{"type":"error","code":"<short code>","message":"<sentence to show>"}` for a command that couldn't be
-done, such as `not-allowed` in a room where only the person playing the video can control it, or `nothing-playing`.
+`error`: `{"type":"error","code":"<short code>","message":"<sentence to show>"}` for something that couldn't be done:
+`not-allowed` in a room where only the person playing the video can control it, `nothing-playing`, `not-shown`
+(fullscreen while the PC isn't showing the player), `pairing` (a used or expired pairing code, or `pair` on a
+paired link) and `protocol`.
 
 ### Phone → PC
 
@@ -162,7 +168,8 @@ done, such as `not-allowed` in a room where only the person playing the video ca
 | `fullscreen` | | F |
 
 Commands go through the same code as the PC's keys and buttons, so a room's shared-controls rule applies to them
-the same way.
+the same way. With `canControl` false, every action except `volume`, `mute` and `fullscreen` is refused with
+`not-allowed`: those three change only this PC.
 
 Unknown message types and actions are ignored, so either side can add new ones within version 1. Changing the
 meaning of an existing message needs version 2.
