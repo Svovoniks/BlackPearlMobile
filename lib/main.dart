@@ -20,6 +20,9 @@ import 'ui/pairing_screen.dart';
 import 'ui/pc_chooser.dart';
 import 'ui/remote_screen.dart';
 import 'ui/theme.dart';
+import 'ui/update_banner.dart';
+import 'update/android_update_platform.dart';
+import 'update/app_update.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -47,8 +50,14 @@ Future<void> main(List<String> args) async {
       onPcName: onPcName,
     ),
   );
-  runApp(BlackPearlApp(model: model));
+  // Release builds on Android update themselves from GitHub. A debug build is signed with another key, so Android
+  // wouldn't install a release over it.
+  final updater = kReleaseMode && Platform.isAndroid
+      ? AppUpdater(platform: AndroidUpdatePlatform(appVersion: identity.appVersion), currentVersion: identity.appVersion)
+      : null;
+  runApp(BlackPearlApp(model: model, updater: updater));
   unawaited(model.load());
+  if (updater != null) unawaited(updater.start());
 }
 
 /// Debug builds only: the real app, paired through a room server and PC that run inside this process.
@@ -118,21 +127,25 @@ Future<PhoneIdentity> _identity() async {
 }
 
 class BlackPearlApp extends StatelessWidget {
-  const BlackPearlApp({super.key, required this.model});
+  const BlackPearlApp({super.key, required this.model, this.updater});
   final AppModel model;
+  final AppUpdater? updater;
 
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'BlackPearl',
     debugShowCheckedModeBanner: false,
     theme: buildTheme(),
-    home: Root(model: model),
+    home: Root(model: model, updater: updater),
   );
 }
 
 class Root extends StatefulWidget {
-  const Root({super.key, required this.model, this.links, this.network});
+  const Root({super.key, required this.model, this.updater, this.links, this.network});
   final AppModel model;
+
+  /// Checks for and installs app updates; null where the app doesn't update itself.
+  final AppUpdater? updater;
 
   /// Links that open the app from outside; by default the system's, through app_links. For tests.
   final Stream<Uri>? links;
@@ -180,6 +193,7 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       model.resumed();
+      unawaited(widget.updater?.resumed());
     } else if (state == AppLifecycleState.paused) {
       model.paused();
     }
@@ -225,7 +239,9 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  Widget build(BuildContext context) => UpdateFrame(updater: widget.updater, child: _screen());
+
+  Widget _screen() => ListenableBuilder(
     listenable: model,
     builder: (context, _) {
       if (!model.loaded) {
@@ -244,7 +260,7 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
       }
       return RemoteScreen(
         link: connection,
-        onChoosePc: () => showPcChooser(context, model),
+        onChoosePc: () => showPcChooser(context, model, updater: widget.updater),
         onPairAgain: () => model.requestPairing(error: connection.status.message),
       );
     },

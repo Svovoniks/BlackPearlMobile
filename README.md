@@ -33,6 +33,11 @@ must match `version:` in `pubspec.yaml`. Signing uses the repository secrets `AN
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. A local `flutter build apk --release`
 without `android/key.properties` is signed with the debug key, so it can't update an installed release.
 
+Installed releases update themselves from those GitHub releases. On start, and on return after six hours, the app asks
+GitHub for the latest release. When it is newer, a banner offers it. The app downloads the APK, checks its size and the
+SHA-256 GitHub lists for it, and hands it to Android's installer. Android asks the user once to let the app install
+apps, and again to confirm each update. It installs only an APK signed with the same key. Debug builds don't check.
+
 ### Windows
 
 The Windows target exists only so the app can be run and looked at on a PC while developing; it has no camera
@@ -43,7 +48,8 @@ flutter run -d windows -a --preview=remote
 ```
 
 Screens: `remote`, `away`, `relay`, `cant-control`, `nothing`, `waiting`, `connecting`, `failed`, `removed`,
-`reconnecting`, `long`, `pairing`, `pairing-error`. Release builds ignore the flag.
+`reconnecting`, `long`, `pairing`, `pairing-error`, `chooser`, and the update banner's `update-available`,
+`update-permission`, `update-downloading`, `update-ready` and `update-failed`. Release builds ignore the flag.
 
 `--preview=loopback` runs the real app against a room server and a stand-in PC inside the same process: it pairs,
 sets up the WebRTC link with flutter_webrtc on both ends, and the stand-in answers commands with a made-up state.
