@@ -61,7 +61,7 @@ class _HomeShellState extends State<HomeShell> {
     final opened = start(playback);
     await Navigator.of(context).push(MaterialPageRoute<void>(
       fullscreenDialog: true,
-      builder: (_) => PlayerScreen(playback: playback, pcName: link.pcName, onHandedToPc: () => setState(() => _tab = 0)),
+      builder: (_) => PlayerScreen(playback: playback, pcName: link.pcName, settings: widget.model.settings, onHandedToPc: () => setState(() => _tab = 0)),
     ));
     _playerOpen = false;
     await opened;

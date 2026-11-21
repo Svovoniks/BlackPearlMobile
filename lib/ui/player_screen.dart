@@ -8,15 +8,19 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../playback/phone_playback.dart';
 import '../playback/picture_in_picture.dart';
-import '../protocol/library.dart';
+import '../storage/app_settings.dart';
 import 'pebbles.dart';
+import 'player_options.dart';
 import 'theme.dart';
 
 /// The phone's own player, full screen. Leaving it stops the video here and saves where it got to on the PC.
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key, required this.playback, required this.pcName, this.onHandedToPc});
+  const PlayerScreen({super.key, required this.playback, required this.pcName, this.settings, this.onHandedToPc});
   final PhonePlayback playback;
   final String pcName;
+
+  /// Where Loop is kept between videos.
+  final AppSettings? settings;
 
   /// The PC took the video over; the app shows the Remote.
   final VoidCallback? onHandedToPc;
@@ -62,8 +66,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   @override
   void initState() {
     super.initState();
+    playback.loopMode = widget.settings?.loopMode ?? playback.loopMode;
     playback.addListener(_changed);
     playback.notice.addListener(_notice);
+    playback.pending.addListener(_rebuild);
+    playback.upNext.addListener(_rebuild);
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_readCutout()));
     pip.active.addListener(_pipChanged);
@@ -97,9 +104,17 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     unawaited(pip.update(wanted: false));
     playback.removeListener(_changed);
     playback.notice.removeListener(_notice);
+    playback.pending.removeListener(_rebuild);
+    playback.upNext.removeListener(_rebuild);
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     unawaited(SystemChrome.setPreferredOrientations([]));
+    _handingNow.dispose();
+    _loop.dispose();
     super.dispose();
+  }
+
+  void _rebuild() {
+    if (mounted) setState(() {});
   }
 
   void _changed() {
@@ -127,6 +142,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
     if (mounted) setState(() {});
   }
+
+  // What the bars show that changes while they are on screen. media_kit_video hands its controls a new theme only
+  // with a new key, which also hides them, so these buttons listen for themselves.
+  final ValueNotifier<bool> _handingNow = ValueNotifier(false);
+  late final ValueNotifier<String> _loop = ValueNotifier(playback.loopMode);
 
   void _pipChanged() {
     if (mounted) setState(() {});
@@ -158,11 +178,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (text != null) _say(text);
   }
 
-  void _say(String text) {
+  void _say(String text, {Duration duration = const Duration(seconds: 6)}) {
     if (!mounted) return;
     ScaffoldMessenger.maybeOf(context)
       ?..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(text), duration: const Duration(seconds: 6)));
+      ..showSnackBar(SnackBar(content: Text(text), duration: duration));
   }
 
   // Leaving pops the screen; whoever opened it then stops the phone's player, once its picture is off screen.
@@ -170,10 +190,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   Future<void> _continueOnPc() async {
     if (_handing) return;
-    setState(() => _handing = true);
+    _handing = _handingNow.value = true;
     final error = await playback.continueOnPc();
     if (!mounted) return;
-    setState(() => _handing = false);
+    _handing = _handingNow.value = false;
     if (error != null) {
       _say(error);
       return;
@@ -182,16 +202,37 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     Navigator.of(context).pop();
   }
 
-  Future<void> _options() async {
+  void _options([PlayerOptionsTab tab = PlayerOptionsTab.audio]) {
+    if (playback.player == null || playback.stream == null) return;
+    unawaited(showPlayerOptions(context, playback, tab: tab));
+  }
+
+  // Loop cycles as on the PC: off, all, one.
+  void _cycleLoop() {
+    final next = switch (playback.loopMode) {
+      'off' => 'all',
+      'all' => 'one',
+      _ => 'off',
+    };
+    playback.loopMode = _loop.value = next;
+    unawaited(widget.settings?.setLoopMode(next));
+    _say(switch (next) {
+      'all' => playback.stream?.next != null || playback.stream?.first != null
+          ? 'Loop all: the show starts again after its last episode.'
+          : 'Loop all: the video plays again when it ends.',
+      'one' => 'Loop one: this video plays again when it ends.',
+      _ => 'Loop off.',
+    }, duration: const Duration(seconds: 2));
+  }
+
+  void _seekBy(int seconds) {
     final player = _player;
-    final stream = playback.stream;
-    if (player == null || stream == null) return;
-    await showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (context) => _PlayerOptions(player: player, stream: stream, onQuality: (quality) => unawaited(playback.changeQuality(quality))),
-    );
+    if (player == null) return;
+    final duration = player.state.duration;
+    var target = player.state.position + Duration(seconds: seconds);
+    if (target < Duration.zero) target = Duration.zero;
+    if (duration > Duration.zero && target > duration) target = duration;
+    unawaited(player.seek(target));
   }
 
   @override
@@ -199,39 +240,105 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     final stream = playback.stream;
     final controller = _controller;
     final title = stream?.title ?? 'Opening…';
+    final narrow = MediaQuery.sizeOf(context).width < 600;
+    const white = Colors.white;
+    Widget live(Widget Function(BuildContext context) builder, [List<Listenable> also = const []]) =>
+        ListenableBuilder(listenable: Listenable.merge([playback, ...also]), builder: (context, _) => builder(context));
     final top = <Widget>[
-      IconButton(tooltip: 'Back', onPressed: _leave, icon: const Icon(Icons.arrow_back_rounded, color: Colors.white)),
+      IconButton(tooltip: 'Back', onPressed: _leave, icon: const Icon(Icons.arrow_back_rounded, color: white)),
       Expanded(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
-            if (stream?.detail != null)
-              Text(stream!.detail!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xCCFFFFFF), fontSize: 12.5)),
-          ],
-        ),
+        child: live((context) {
+          final stream = playback.stream;
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(stream?.title ?? 'Opening…', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: white, fontSize: 16, fontWeight: FontWeight.w600)),
+              if (stream?.detail != null)
+                Text(stream!.detail!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Color(0xCCFFFFFF), fontSize: 12.5)),
+            ],
+          );
+        }),
       ),
       if (pip.supported)
-        IconButton(tooltip: 'Picture in picture', onPressed: () => unawaited(pip.enter()), icon: const Icon(Icons.picture_in_picture_alt_rounded, color: Colors.white)),
-      IconButton(tooltip: 'Audio, subtitles and quality', onPressed: _options, icon: const Icon(Icons.tune_rounded, color: Colors.white)),
+        IconButton(tooltip: 'Picture in picture', onPressed: () => unawaited(pip.enter()), icon: const Icon(Icons.picture_in_picture_alt_rounded, color: white)),
+      IconButton(tooltip: 'Audio, subtitles and quality', onPressed: _options, icon: const Icon(Icons.tune_rounded, color: white)),
       Padding(
         padding: const EdgeInsets.only(left: 4, right: 4),
-        child: Pebble(
-          height: 38,
-          enabled: !_handing && stream != null,
-          onTap: _continueOnPc,
-          semanticLabel: 'Continue on ${widget.pcName}',
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.desktop_windows_outlined, size: 17),
-              const SizedBox(width: 7),
-              Text(_handing ? 'Starting…' : 'Continue on PC', style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-            ],
-          ),
+        child: live((context) {
+          final handing = _handingNow.value;
+          return Tooltip(
+            message: 'Continue on ${widget.pcName}',
+            child: Pebble(
+              height: 38,
+              width: narrow ? 38 : null,
+              enabled: !handing && playback.stream != null,
+              onTap: _continueOnPc,
+              semanticLabel: 'Continue on ${widget.pcName}',
+              padding: narrow ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 14),
+              // In portrait the title needs the room; the button keeps its place as an icon.
+              child: narrow
+                  ? (handing
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Palette.ink))
+                        : const Icon(Icons.desktop_windows_outlined, size: 18))
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.desktop_windows_outlined, size: 17),
+                        const SizedBox(width: 7),
+                        Text(handing ? 'Starting…' : 'Continue on PC', style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+            ),
+          );
+        }, [_handingNow]),
+      ),
+    ];
+    Widget round(IconData icon, String tooltip, VoidCallback? onPressed, {double size = 30}) => IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      iconSize: size,
+      color: white,
+      disabledColor: const Color(0x55FFFFFF),
+      icon: Icon(icon),
+    );
+    // Previous and Next show for an episode, as on the PC: Previous goes back to the start after 3 seconds, and to the
+    // episode before near the start.
+    Widget step(bool forward) => live((context) {
+      final stream = playback.stream;
+      if (stream?.previous == null && stream?.next == null) return const SizedBox.shrink();
+      return forward
+          ? round(Icons.skip_next_rounded, 'Next episode', stream?.next == null ? null : () => unawaited(playback.next()))
+          : round(Icons.skip_previous_rounded, 'Previous', () => unawaited(playback.previous()));
+    });
+    final primary = <Widget>[
+      step(false),
+      round(Icons.replay_10_rounded, 'Back 10 seconds', () => _seekBy(-10)),
+      const SizedBox(width: 6),
+      const MaterialPlayOrPauseButton(iconSize: 52),
+      const SizedBox(width: 6),
+      round(Icons.forward_10_rounded, 'Forward 10 seconds', () => _seekBy(10)),
+      step(true),
+    ];
+    final bottom = <Widget>[
+      const MaterialPositionIndicator(),
+      const Spacer(),
+      ValueListenableBuilder<String>(
+        valueListenable: _loop,
+        builder: (context, loop, _) => IconButton(
+          tooltip: switch (loop) {
+            'all' => 'Loop all',
+            'one' => 'Loop one',
+            _ => 'Loop off',
+          },
+          onPressed: _cycleLoop,
+          icon: Icon(loop == 'one' ? Icons.repeat_one_rounded : Icons.repeat_rounded, color: loop == 'off' ? const Color(0x99FFFFFF) : Palette.accent),
         ),
+      ),
+      IconButton(
+        tooltip: 'Subtitles',
+        onPressed: () => _options(PlayerOptionsTab.subtitles),
+        icon: const Icon(Icons.subtitles_outlined, color: white),
       ),
     ];
     // The controls keep clear of the camera cutout and the rounded corners; the picture may go under them.
@@ -240,10 +347,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       padding: safe.copyWith(bottom: 0),
       topButtonBar: top,
       topButtonBarMargin: const EdgeInsets.fromLTRB(4, 8, 8, 0),
+      primaryButtonBar: primary,
       seekBarPositionColor: Palette.accent,
       // Above the gesture strip along the bottom edge, where a drag would go home instead of seeking.
       seekBarMargin: EdgeInsets.fromLTRB(16, 0, 16, 18 + safe.bottom),
-      bottomButtonBarMargin: EdgeInsets.fromLTRB(16, 0, 16, 26 + safe.bottom),
+      bottomButtonBarMargin: EdgeInsets.fromLTRB(16, 0, 8, 26 + safe.bottom),
       seekBarThumbColor: Palette.knob,
       seekBarBufferColor: const Color(0x66FFFFFF),
       seekOnDoubleTap: true,
@@ -251,9 +359,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       shiftSubtitlesOnControlsVisibilityChange: true,
       volumeGesture: false,
       brightnessGesture: false,
-      bottomButtonBar: const [MaterialPositionIndicator(), Spacer()],
+      bottomButtonBar: bottom,
       bufferingIndicatorBuilder: (_) => const CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5),
     );
+    final inPip = pip.active.value;
+    final pending = playback.pending.value;
+    final upNext = playback.upNext.value;
     return PopScope(
       onPopInvokedWithResult: (didPop, _) {
         // The video waits while the screen slides away.
@@ -263,20 +374,159 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         backgroundColor: Colors.black,
         body: switch (playback.phase) {
           // The small window shows the picture alone; its own buttons replace the controls.
-          _ when pip.active.value && controller != null => Video(key: ObjectKey(controller), controller: controller, controls: NoVideoControls, fill: Colors.black),
+          _ when inPip && controller != null => Video(key: ObjectKey(controller), controller: controller, controls: NoVideoControls, fill: Colors.black),
           PhonePlaybackPhase.failed => _Problem(message: playback.error ?? "The video didn't open.", onBack: _leave),
           _ when controller == null => _Opening(title: title, onBack: _leave),
-          // media_kit_video 2.0.1 tells its controls about a new theme only when it is the same one
-          // (updateShouldNotify is inverted), so new insets, after turning the phone or leaving picture in picture,
-          // need new controls.
-          _ => MaterialVideoControlsTheme(
-            key: ValueKey(safe),
-            normal: theme,
-            fullscreen: theme,
-            // A new player (another quality) needs a new surface; the widget doesn't swap one by itself.
-            child: Video(key: ObjectKey(controller), controller: controller, controls: MaterialVideoControls, fill: Colors.black),
+          _ => Stack(
+            fit: StackFit.expand,
+            children: [
+              // media_kit_video 2.0.1 tells its controls about a new theme only when it is the same one
+              // (updateShouldNotify is inverted), so new insets or buttons need new controls.
+              MaterialVideoControlsTheme(
+                key: ValueKey((safe, narrow)),
+                normal: theme,
+                fullscreen: theme,
+                child: Video(key: ObjectKey(controller), controller: controller, controls: MaterialVideoControls, fill: Colors.black),
+              ),
+              if (pending != null)
+                Positioned(
+                  top: safe.top + 64,
+                  left: 0,
+                  right: 0,
+                  child: IgnorePointer(child: Center(child: _PendingChip(text: pending.label))),
+                ),
+              if (upNext != null)
+                // Clear of the buttons in the middle: across the bottom in portrait, at the bottom left in landscape.
+                Positioned(
+                  left: 16 + safe.left,
+                  right: narrow ? 16 + safe.right : null,
+                  bottom: 96 + safe.bottom,
+                  child: _UpNextCard(
+                    // In landscape it stays left of the buttons in the middle, about 300 wide with Previous and Next.
+                    maxWidth: narrow ? 340 : ((MediaQuery.sizeOf(context).width - 300) / 2 - 24 - safe.left).clamp(230.0, 340.0),
+                    offer: upNext,
+                    onPlay: () => unawaited(playback.playUpNext()),
+                    onCancel: playback.cancelUpNext,
+                  ),
+                ),
+            ],
           ),
         },
+      ),
+    );
+  }
+}
+
+/// What the player waits on, over the picture: another quality or the next episode.
+class _PendingChip extends StatelessWidget {
+  const _PendingChip({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: const ShapeDecoration(color: Color(0xE6151A17), shape: StadiumBorder()),
+    child: Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 16, 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Palette.accent)),
+          const SizedBox(width: 10),
+          Flexible(child: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Palette.ink, fontSize: 13.5, fontWeight: FontWeight.w500))),
+        ],
+      ),
+    ),
+  );
+}
+
+/// The next episode, with a countdown, as on the PC: it plays when the bar fills, unless canceled.
+class _UpNextCard extends StatefulWidget {
+  const _UpNextCard({required this.offer, required this.onPlay, required this.onCancel, this.maxWidth = 340});
+  final UpNextOffer offer;
+  final double maxWidth;
+  final VoidCallback onPlay;
+  final VoidCallback onCancel;
+
+  @override
+  State<_UpNextCard> createState() => _UpNextCardState();
+}
+
+class _UpNextCardState extends State<_UpNextCard> {
+  Timer? _tick;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick = Timer.periodic(const Duration(milliseconds: 200), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final offer = widget.offer;
+    final left = offer.deadline.difference(DateTime.now());
+    final seconds = (left.inMilliseconds / 1000).ceil().clamp(0, 999);
+    final progress = (1 - left.inMilliseconds / offer.length.inMilliseconds).clamp(0.0, 1.0);
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: widget.maxWidth),
+      child: Material(
+        color: const Color(0xF2151A17),
+        borderRadius: BorderRadius.circular(18),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 12, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Up next · playing in ${seconds}s', style: const TextStyle(color: Palette.muted, fontSize: 12)),
+                  const SizedBox(height: 3),
+                  Text(offer.step.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Palette.ink, fontSize: 15, fontWeight: FontWeight.w600)),
+                  if (offer.step.detail != null)
+                    Text(offer.step.detail!, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Palette.muted, fontSize: 12.5)),
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      TextButton(
+                        onPressed: widget.onCancel,
+                        style: TextButton.styleFrom(foregroundColor: Palette.ink),
+                        child: const Text('Cancel'),
+                      ),
+                      const SizedBox(width: 6),
+                      Pebble(
+                        lit: true,
+                        height: 36,
+                        onTap: widget.onPlay,
+                        semanticLabel: 'Play now',
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.play_arrow_rounded, size: 18),
+                            SizedBox(width: 4),
+                            Text('Play now', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            LinearProgressIndicator(value: progress, minHeight: 3, color: Palette.accent, backgroundColor: const Color(0x26FFFFFF)),
+          ],
+        ),
       ),
     );
   }
@@ -334,105 +584,6 @@ class _Problem extends StatelessWidget {
       ),
     ),
   );
-}
-
-/// Audio, subtitles, and the stream's quality.
-class _PlayerOptions extends StatefulWidget {
-  const _PlayerOptions({required this.player, required this.stream, required this.onQuality});
-  final Player player;
-  final StreamInfo stream;
-  final void Function(String quality) onQuality;
-  @override
-  State<_PlayerOptions> createState() => _PlayerOptionsState();
-}
-
-class _PlayerOptionsState extends State<_PlayerOptions> {
-  final List<StreamSubscription<Object?>> _subscriptions = [];
-
-  @override
-  void initState() {
-    super.initState();
-    // Tracks arrive once the video has opened, which can be after the sheet.
-    void refresh(Object? _) {
-      if (mounted) setState(() {});
-    }
-
-    _subscriptions
-      ..add(widget.player.stream.tracks.listen(refresh))
-      ..add(widget.player.stream.track.listen(refresh));
-  }
-
-  @override
-  void dispose() {
-    for (final subscription in _subscriptions) {
-      unawaited(subscription.cancel());
-    }
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final state = widget.player.state;
-    String name(String? title, String? language, String id) =>
-        [if (title != null && title.isNotEmpty) title, if (language != null && language.isNotEmpty) language.toUpperCase()].join(' · ').ifEmpty('Track $id');
-    final audio = state.tracks.audio.where((t) => t.id != 'auto' && t.id != 'no').toList();
-    final subtitles = state.tracks.subtitle.where((t) => t.id != 'auto').toList();
-    Widget choice(String label, bool selected, VoidCallback onTap) => ListTile(
-      dense: true,
-      contentPadding: EdgeInsets.zero,
-      title: Text(label, style: const TextStyle(fontSize: 14.5)),
-      trailing: selected ? const Icon(Icons.check_rounded, color: Palette.accent) : null,
-      onTap: () {
-        onTap();
-        setState(() {});
-      },
-    );
-    return SafeArea(
-      top: false,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (audio.length > 1) ...[
-              Text('Audio', style: display(18)),
-              for (final track in audio) choice(name(track.title, track.language, track.id), state.track.audio.id == track.id, () => widget.player.setAudioTrack(track)),
-              const SizedBox(height: 12),
-            ],
-            Text('Subtitles', style: display(18)),
-            for (final track in subtitles)
-              choice(track.id == 'no' ? 'Off' : name(track.title, track.language, track.id), state.track.subtitle.id == track.id, () => widget.player.setSubtitleTrack(track)),
-            if (subtitles.length <= 1)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Text(
-                  widget.stream.hls ? 'A converted stream carries no subtitles. Choose Original file for them.' : 'This video has no subtitles.',
-                  style: const TextStyle(color: Palette.muted),
-                ),
-              ),
-            if (widget.stream.qualities.length > 1) ...[
-              const SizedBox(height: 16),
-              Text('Quality', style: display(18)),
-              const Padding(
-                padding: EdgeInsets.only(top: 2, bottom: 4),
-                child: Text('A lower quality plays smoother on a slow connection. The PC converts it as you watch.', style: TextStyle(color: Palette.muted, fontSize: 12.5)),
-              ),
-              for (final quality in widget.stream.qualities)
-                choice(qualityLabel(quality), widget.stream.quality == quality, () {
-                  Navigator.of(context).pop();
-                  if (quality != widget.stream.quality) widget.onQuality(quality);
-                }),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-extension on String {
-  String ifEmpty(String fallback) => isEmpty ? fallback : this;
 }
 
 /// How far the player's controls keep from the screen's edges: clear of the camera cutout and of the gesture strip.

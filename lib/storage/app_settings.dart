@@ -43,6 +43,13 @@ class AppSettings extends ChangeNotifier {
   bool _backgroundLink = true;
   String _awayQuality = 'auto';
   bool _askedNotifications = false;
+  String _loopMode = 'off';
+
+  static const loopModes = ['off', 'all', 'one'];
+
+  /// The player's Loop, as on the PC: `off`, `all` (a show starts again after its last episode) or `one` (the video
+  /// replays).
+  String get loopMode => _loopMode;
 
   /// Keeps the link to the PC up while the app is closed, with a notification that says so. On by default.
   bool get backgroundLink => _backgroundLink;
@@ -59,6 +66,8 @@ class AppSettings extends ChangeNotifier {
       final quality = await _store.readString('awayQuality');
       _awayQuality = qualities.contains(quality) ? quality! : 'auto';
       _askedNotifications = await _store.readBool('askedNotifications') ?? false;
+      final loop = await _store.readString('loopMode');
+      _loopMode = loopModes.contains(loop) ? loop! : 'off';
     } catch (_) {
       // Unreadable preferences leave the defaults.
     }
@@ -77,6 +86,13 @@ class AppSettings extends ChangeNotifier {
     _awayQuality = value;
     notifyListeners();
     await _quietly(_store.writeString('awayQuality', value));
+  }
+
+  Future<void> setLoopMode(String value) async {
+    if (!loopModes.contains(value) || value == _loopMode) return;
+    _loopMode = value;
+    notifyListeners();
+    await _quietly(_store.writeString('loopMode', value));
   }
 
   Future<void> markAskedNotifications() async {

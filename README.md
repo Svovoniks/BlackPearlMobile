@@ -27,6 +27,13 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   (Settings › Quality away from home; the player's tune button changes it for one video). The phone reports where it is
   every 10 seconds, when it pauses and when it stops, so the PC's Continue watching and watched marks follow.
   **Continue on PC** hands the video back: the PC plays it from where the phone was.
+- **The player.** Play and pause, back and forward 10 s (or double-tap a side), and for an episode Previous and Next,
+  which step through the show as the PC's buttons do (Previous goes back to the start after 3 seconds). When an episode
+  ends, an up-next card plays the next one after 15 seconds unless canceled. Loop cycles off, all (a show starts again
+  after its last episode) and one, and is remembered. The tune button opens Audio, Subtitles and Quality: beside the
+  video in landscape, a short sheet in portrait. Tracks are named by language, with what tells them apart, and start as
+  the PC's Settings › Playback languages would pick them. Another quality, a recovery or the next episode opens on the
+  player already on screen, which shows what it is waiting for.
 - **Picture in picture (Android).** While a video plays, leaving the app (Home, or switching apps) moves it to a small
   window with Play/Pause; the player's picture-in-picture button does it at once. A video left without picture in
   picture (paused, or on a phone that doesn't allow it) waits, and carries on when the app is back.
