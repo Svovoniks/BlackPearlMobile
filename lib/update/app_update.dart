@@ -39,15 +39,22 @@ int? compareVersions(String a, String b) {
   return 0;
 }
 
-/// The release in GitHub's "latest release" answer, when it is newer than [current] and has the APK. Null otherwise,
-/// including for an answer that isn't a release.
-AppRelease? newerRelease(Object? json, String current) {
+/// The version in GitHub's "latest release" answer when it is a published release newer than [current], whether or not
+/// its APK is there yet. Null otherwise, including for an answer that isn't a release.
+String? newerVersion(Object? json, String current) {
   if (json is! Map) return null;
   final tag = json['tag_name'];
   if (tag is! String || json['draft'] == true || json['prerelease'] == true) return null;
   final version = tag.replaceFirst(RegExp('^v'), '');
-  if ((compareVersions(version, current) ?? 0) <= 0) return null;
-  final assets = json['assets'];
+  return (compareVersions(version, current) ?? 0) > 0 ? version : null;
+}
+
+/// The release in GitHub's "latest release" answer, when it is newer than [current] and its APK is uploaded. Null
+/// otherwise; a newer release still being uploaded is null here but not for [newerVersion].
+AppRelease? newerRelease(Object? json, String current) {
+  final version = newerVersion(json, current);
+  if (version == null) return null;
+  final assets = (json as Map)['assets'];
   if (assets is! List) return null;
   for (final asset in assets) {
     if (asset is! Map || asset['name'] is! String || !_apkName.hasMatch(asset['name'] as String)) continue;
@@ -107,6 +114,9 @@ class AppUpdater extends ChangeNotifier {
   /// How long an automatic check counts as fresh. Opening the app or coming back to it checks again after that.
   static const checkEvery = Duration(hours: 6);
 
+  /// After a failed check (offline, or GitHub's limit of 60 requests an hour), the next automatic one waits this long.
+  static const retryAfterFailure = Duration(minutes: 30);
+
   UpdatePhase _phase = UpdatePhase.none;
   UpdatePhase get phase => _phase;
   AppRelease? _release;
@@ -124,7 +134,11 @@ class AppUpdater extends ChangeNotifier {
 
   bool _checking = false;
   bool get checking => _checking;
-  DateTime? _checkedAt;
+  DateTime? _nextCheck;
+
+  /// Set from the first moment of [update] to its end, so a second tap, or a return to the app, can't start another
+  /// one, and a check that answers meanwhile leaves it alone.
+  bool _updating = false;
   String? _downloaded;
   bool _disposed = false;
 
@@ -147,17 +161,26 @@ class AppUpdater extends ChangeNotifier {
     await check();
   }
 
+  String get _downloadingMessage => 'Downloading BlackPearl Mobile ${_release?.version ?? ''}…';
+
   /// Checks GitHub for a newer release. An automatic check is skipped while the last one is fresh and fails quietly.
   /// A [manual] one always runs and returns what to tell the user.
   Future<String?> check({bool manual = false}) async {
-    if (_checking || _phase == UpdatePhase.downloading) return null;
-    if (!manual && _checkedAt != null && clock.now().difference(_checkedAt!) < checkEvery) return null;
+    if (_updating || _phase == UpdatePhase.downloading) return manual ? _downloadingMessage : null;
+    if (_checking) return null;
+    if (!manual && _nextCheck != null && clock.now().isBefore(_nextCheck!)) return null;
     _checking = true;
     _changed();
     try {
-      final found = newerRelease(await platform.latestRelease(), currentVersion);
-      _checkedAt = clock.now();
+      final json = await platform.latestRelease();
+      _nextCheck = clock.now().add(checkEvery);
+      // An update started while GitHub was answering; this answer mustn't change what it is installing.
+      if (_updating) return manual ? _downloadingMessage : null;
+      final found = newerRelease(json, currentVersion);
       if (found == null) {
+        final publishing = newerVersion(json, currentVersion);
+        // A release whose APK is still uploading: keep what the banner offers, and say so.
+        if (publishing != null) return 'BlackPearl Mobile $publishing is being published. Try again in a few minutes.';
         if (_phase != UpdatePhase.ready) {
           _phase = UpdatePhase.none;
           _release = null;
@@ -175,6 +198,7 @@ class AppUpdater extends ChangeNotifier {
       if (manual) _dismissed = false;
       return 'BlackPearl Mobile ${found.version} is available.';
     } catch (_) {
+      _nextCheck = clock.now().add(retryAfterFailure);
       return "Couldn't check for updates. Check the connection and try again.";
     } finally {
       _checking = false;
@@ -185,7 +209,16 @@ class AppUpdater extends ChangeNotifier {
   /// Downloads the new release and opens Android's installer. Asks for the permission to install first if needed.
   Future<void> update() async {
     final release = _release;
-    if (release == null || _phase == UpdatePhase.downloading) return;
+    if (release == null || _updating) return;
+    _updating = true;
+    try {
+      await _update(release);
+    } finally {
+      _updating = false;
+    }
+  }
+
+  Future<void> _update(AppRelease release) async {
     try {
       if (!await platform.canInstall()) {
         _phase = UpdatePhase.needsPermission;
@@ -213,6 +246,8 @@ class AppUpdater extends ChangeNotifier {
           _changed();
         }
       });
+      // Catches a damaged or cut-short download. A changed file would also have to be signed with the app's key, which
+      // Android checks before it installs anything.
       final file = File(path);
       if (await file.length() != release.size ||
           (release.sha256 != null && (await sha256.bind(file.openRead()).first).toString() != release.sha256)) {
@@ -220,15 +255,22 @@ class AppUpdater extends ChangeNotifier {
         _fail('The download was damaged. Try again.');
         return;
       }
-    } catch (_) {
+    } catch (e) {
       if (path != null) await _deleteQuietly(path);
-      _fail("The download didn't finish. Check the connection and try again.");
+      _fail(
+        _outOfSpace(e)
+            ? 'This phone is out of storage space. The update needs about ${(release.size / 1e6).ceil()} MB.'
+            : "The download didn't finish. Check the connection and try again.",
+      );
       return;
     }
     _downloaded = path;
     _progress = 1;
     await _install();
   }
+
+  /// ENOSPC, as Android reports a full disk.
+  static bool _outOfSpace(Object error) => error is FileSystemException && error.osError?.errorCode == 28;
 
   Future<void> _install() async {
     _phase = UpdatePhase.ready;
@@ -240,16 +282,15 @@ class AppUpdater extends ChangeNotifier {
     }
   }
 
-  /// The app is back in front, perhaps from the settings page: carry on if installing is allowed now, otherwise check
-  /// again once the last check is stale.
+  /// The app is back in front. Coming back from the settings page with installs allowed carries on with the update;
+  /// otherwise it checks again once the last check is stale.
   Future<void> resumed() async {
-    if (_phase == UpdatePhase.needsPermission) {
+    if (_phase == UpdatePhase.needsPermission && !_dismissed && !_updating) {
       var allowed = false;
       try {
         allowed = await platform.canInstall();
       } catch (_) {}
       if (allowed) return update();
-      return;
     }
     await check();
   }
@@ -264,8 +305,11 @@ class AppUpdater extends ChangeNotifier {
     _changed();
   }
 
+  /// Closes the banner. An update waiting for the install permission goes back to being offered, so allowing installs
+  /// later doesn't start one unasked.
   void dismiss() {
     _dismissed = true;
+    if (_phase == UpdatePhase.needsPermission) _phase = UpdatePhase.available;
     _changed();
   }
 

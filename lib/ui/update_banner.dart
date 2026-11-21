@@ -70,7 +70,6 @@ class UpdateBanner extends StatelessWidget {
     final failed = updater.phase == UpdatePhase.failed;
     return Semantics(
       container: true,
-      liveRegion: true,
       child: Slab(
         padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
         child: Row(
@@ -85,7 +84,11 @@ class UpdateBanner extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                  // Only the title is announced as it changes; not each percent of a download.
+                  Semantics(
+                    liveRegion: true,
+                    child: Text(title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                  ),
                   const SizedBox(height: 1),
                   Text(detail, style: const TextStyle(color: Palette.muted, fontSize: 12.5, height: 1.3)),
                   if (downloading) ...[

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:blackpearl_mobile/ui/theme.dart';
@@ -35,19 +36,30 @@ class FakePlatform implements UpdatePlatform {
   int checks = 0;
   List<int> served = apkBytes;
   bool failDownload = false;
+  Object? downloadError;
   bool allowed = true;
   int settingsOpened = 0;
+  int downloads = 0;
   final installed = <String>[];
+
+  /// While set, GitHub's answer or the download waits for it.
+  Completer<void>? checkGate;
+  Completer<void>? downloadGate;
 
   @override
   Future<Object?> latestRelease() async {
     checks++;
+    final answer = latest;
+    await checkGate?.future;
     if (failCheck) throw const SocketException('offline');
-    return latest;
+    return answer;
   }
 
   @override
   Future<void> download(Uri url, String path, void Function(int received) progress) async {
+    downloads++;
+    await downloadGate?.future;
+    if (downloadError != null) throw downloadError!;
     if (failDownload) throw const SocketException('connection reset');
     await File(path).writeAsBytes(served);
     progress(served.length);
@@ -201,6 +213,90 @@ void main() {
     await updater.update();
     expect(updater.phase, UpdatePhase.failed);
     expect(updater.error, contains("didn't finish"));
+  });
+
+  test('a second tap, or a return to the app, during an update starts nothing more', () async {
+    await updater.check();
+    platform.downloadGate = Completer();
+    final first = updater.update();
+    final second = updater.update();
+    await pumpEventQueue();
+    await updater.resumed();
+    platform.downloadGate!.complete();
+    await Future.wait([first, second]);
+    expect(platform.downloads, 1);
+    expect(platform.installed, hasLength(1));
+    expect(updater.phase, UpdatePhase.ready);
+  });
+
+  test("a check that answers during a download doesn't change what it installs", () async {
+    await updater.check();
+    platform.checkGate = Completer();
+    platform.latest = releaseJson('v0.1.4', name: 'BlackPearl-v0.1.4.apk');
+    final checking = updater.check(manual: true);
+    platform.downloadGate = Completer();
+    final updating = updater.update();
+    await pumpEventQueue();
+    platform.checkGate!.complete();
+    expect(await checking, 'Downloading BlackPearl Mobile 0.1.3…');
+    expect(updater.phase, UpdatePhase.downloading);
+    expect(await updater.check(manual: true), 'Downloading BlackPearl Mobile 0.1.3…');
+    platform.downloadGate!.complete();
+    await updating;
+    expect(updater.release!.version, '0.1.3');
+    expect(platform.installed.single, endsWith('BlackPearl-v0.1.3.apk'));
+  });
+
+  test("closing the banner while it waits for the permission doesn't start the update when it's granted", () async {
+    platform.allowed = false;
+    await updater.check();
+    await updater.update();
+    expect(updater.phase, UpdatePhase.needsPermission);
+    updater.dismiss();
+    expect(updater.phase, UpdatePhase.available);
+    platform.allowed = true;
+    await updater.resumed();
+    expect(platform.downloads, 0);
+    expect(updater.showBanner, isFalse);
+  });
+
+  test('coming back without the permission still checks for newer releases later', () async {
+    platform.allowed = false;
+    final start = DateTime(2026, 11, 21, 9);
+    await withClock(Clock.fixed(start), () async {
+      await updater.check();
+      await updater.update();
+    });
+    await withClock(Clock.fixed(start.add(const Duration(hours: 7))), () => updater.resumed());
+    expect(platform.checks, 2);
+  });
+
+  test("a release whose APK is still uploading keeps the banner and isn't called the latest", () async {
+    await updater.check();
+    platform.latest = {'tag_name': 'v0.1.4', 'draft': false, 'prerelease': false, 'assets': const []};
+    expect(await updater.check(manual: true), 'BlackPearl Mobile 0.1.4 is being published. Try again in a few minutes.');
+    expect(updater.release!.version, '0.1.3');
+    expect(updater.phase, UpdatePhase.available);
+  });
+
+  test('after a failed check the next automatic one waits half an hour, not six', () async {
+    platform.failCheck = true;
+    final start = DateTime(2026, 11, 21, 9);
+    await withClock(Clock.fixed(start), () => updater.check());
+    await withClock(Clock.fixed(start.add(const Duration(minutes: 10))), () => updater.check());
+    expect(platform.checks, 1);
+    platform.failCheck = false;
+    await withClock(Clock.fixed(start.add(const Duration(minutes: 31))), () => updater.check());
+    expect(platform.checks, 2);
+    expect(updater.phase, UpdatePhase.available);
+  });
+
+  test('a full disk says so', () async {
+    await updater.check();
+    platform.downloadError = const FileSystemException('write failed', 'x.apk', OSError('No space left on device', 28));
+    await updater.update();
+    expect(updater.phase, UpdatePhase.failed);
+    expect(updater.error, contains('out of storage space'));
   });
 
   test('starting clears files an earlier update left behind', () async {
