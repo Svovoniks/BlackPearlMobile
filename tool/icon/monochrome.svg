@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="108" height="108" viewBox="0 0 108 108">
+  <!-- The themed (monochrome) layer. The launcher tints it, so only its alpha counts: a half-strength scallop fan with
+       its ribs cut in, a solid pearl with its highlight cut out, and a solid lip with its grooves. -->
+  <defs>
+    <mask id="fan" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#FFF"/>
+      <path d="M256 352 L68 259 M256 352 L103 188 M256 352 L156 136 M256 352 L221 108 M256 352 L291 108 M256 352 L356 136 M256 352 L409 188 M256 352 L444 259"
+            stroke="#000" stroke-width="16" stroke-linecap="round"/>
+      <circle cx="256" cy="262" r="128" fill="#000"/>
+      <path d="M40 342 Q256 430 472 342" fill="none" stroke="#000" stroke-width="20"/>
+    </mask>
+    <mask id="pearl" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#FFF"/>
+      <ellipse cx="216" cy="218" rx="40" ry="20" transform="rotate(-35 216 218)" fill="#000"/>
+    </mask>
+    <mask id="lip" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512">
+      <rect width="512" height="512" fill="#FFF"/>
+      <path d="M130 396 Q150 420 176 432 M200 410 Q214 434 228 446 M284 446 Q298 434 312 410 M336 432 Q362 420 382 396"
+            fill="none" stroke="#000" stroke-width="14" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <g transform="translate(54 54) scale(0.094) translate(-256 -275)">
+    <path mask="url(#fan)" fill="#FFF" fill-opacity=".5"
+          d="M56 342 Q35 294 68 259 Q62 208 103 188 Q112 137 156 136 Q179 92 221 108 Q256 76 291 108 Q333 92 356 136 Q400 137 409 188 Q450 208 444 259 Q477 294 456 342 Z"/>
+    <circle mask="url(#pearl)" cx="256" cy="262" r="108" fill="#FFF"/>
+    <path mask="url(#lip)" fill="#FFF" stroke="#FFF" stroke-width="9" stroke-linejoin="round"
+          d="M56 352 Q256 434 456 352 Q448 396 400 420 Q330 458 256 460 Q182 458 112 420 Q64 396 56 352 Z"/>
+  </g>
+</svg>

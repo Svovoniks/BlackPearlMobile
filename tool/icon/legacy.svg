@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="48" height="48" viewBox="14.73 14.73 78.55 78.55">
+  <!-- The icon for Android 7 (before adaptive icons): the adaptive layers in a 44 dp circle of a 48 dp icon. -->
+  <defs><clipPath id="round"><circle cx="54" cy="54" r="36"/></clipPath></defs>
+  <g clip-path="url(#round)">
+    <image href="background.svg" xlink:href="background.svg" width="108" height="108"/>
+    <image href="foreground.svg" xlink:href="foreground.svg" width="108" height="108"/>
+  </g>
+</svg>
