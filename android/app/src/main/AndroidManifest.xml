@@ -60,7 +60,7 @@
             <meta-data android:name="flutter_deeplinking_enabled" android:value="false"/>
         </activity>
         <!-- Keeps the app and its link to the PC running after the app is closed. The user turns it off in the app's
-             Settings or with the notification's Turn off button. -->
+             Settings; the notification's Disconnect button stops it until the app is opened again. -->
         <service
             android:name=".BackgroundLinkService"
             android:exported="false"

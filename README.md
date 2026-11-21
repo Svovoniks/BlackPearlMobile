@@ -45,7 +45,7 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   picture (paused, or on a phone that doesn't allow it) waits, and carries on when the app is back.
 - **Background connection (Android).** With Settings › Stay connected in the background on (the default), closing the
   app leaves a foreground service running that keeps the link to the PC. Its notification shows what the PC plays,
-  with Play/Pause, and a Turn off button that switches the setting off. The Flutter engine lives apart from the activity
+  with Play/Pause, and a Disconnect button that drops the link until the app is opened again, without changing the setting. The Flutter engine lives apart from the activity
   (`LinkEngine`), so opening the app again shows it already connected.
 
 ## Building
@@ -65,7 +65,7 @@ must match `version:` in `pubspec.yaml`. Signing uses the repository secrets `AN
 without `android/key.properties` is signed with the debug key, so it can't update an installed release.
 
 Installed releases update themselves from those GitHub releases. On start, and on return after six hours, the app asks
-GitHub for the latest release. When it is newer, a banner offers it. The app downloads the APK, checks its size and the
+GitHub for the latest release, and Settings › Check for updates asks right away. When it is newer, a banner offers it. The app downloads the APK, checks its size and the
 SHA-256 GitHub lists for it, and hands it to Android's installer. Android asks the user once to let the app install
 apps, and again to confirm each update. It installs only an APK signed with the same key. Debug builds don't check.
 
@@ -79,7 +79,7 @@ flutter run -d windows -a --preview=remote
 ```
 
 Screens: `remote`, `away`, `relay`, `cant-control`, `nothing`, `waiting`, `connecting`, `failed`, `removed`,
-`reconnecting`, `long`, `pairing`, `pairing-error`, `chooser`, and the update banner's `update-available`,
+`reconnecting`, `long`, `pairing`, `pairing-error`, `chooser`, `settings`, and the update banner's `update-available`,
 `update-permission`, `update-downloading`, `update-ready` and `update-failed`. Release builds ignore the flag.
 
 `--preview=loopback` runs the real app against a room server and a stand-in PC inside the same process: it pairs,

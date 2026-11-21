@@ -287,7 +287,8 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
       return HomeShell(
         model: model,
         connection: connection,
-        onChoosePc: () => showPcChooser(context, model, updater: widget.updater),
+        onChoosePc: () => showPcChooser(context, model),
+        updater: widget.updater,
         onPairAgain: () => model.requestPairing(error: connection.status.message),
       );
     },

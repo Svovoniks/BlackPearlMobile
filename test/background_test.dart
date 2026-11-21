@@ -76,13 +76,65 @@ void main() {
       app.paused();
       async.elapse(const Duration(minutes: 5));
       expect(connection.running, isTrue);
-      // Turned off from the notification while the app is closed.
-      background.press!('turnOff');
+      // Turned off in Settings while the app is away.
+      unawaited(settings.setBackgroundLink(false));
       async.flushMicrotasks();
-      expect(settings.backgroundLink, isFalse);
       expect(background.running, isFalse);
       async.elapse(const Duration(seconds: 31));
       expect(connection.running, isFalse);
+      app.dispose();
+    });
+  });
+
+  test("the notification's Disconnect drops the link at once, keeps the setting, and opening the app reconnects", () {
+    fakeAsync((async) {
+      final background = FakeBackground();
+      final settings = AppSettings(MemorySettingsStore());
+      final app = model(background, settings);
+      unawaited(app.store.save([pc]).then((_) => app.load()));
+      async.flushMicrotasks();
+      final connection = app.connection!;
+      app.paused();
+      async.elapse(const Duration(minutes: 5));
+      expect(connection.running, isTrue);
+      expect(background.running, isTrue);
+
+      background.press!('disconnect');
+      async.flushMicrotasks();
+      expect(connection.running, isFalse);
+      expect(background.running, isFalse);
+      expect(settings.backgroundLink, isTrue);
+      // Nothing brings it back while the app stays closed.
+      async.elapse(const Duration(minutes: 5));
+      expect(connection.running, isFalse);
+      expect(background.running, isFalse);
+
+      app.resumed();
+      async.flushMicrotasks();
+      expect(app.connection, same(connection));
+      expect(connection.running, isTrue);
+      expect(background.running, isTrue);
+      app.dispose();
+    });
+  });
+
+  test('Disconnect also stops the service of a connection halted by a failure', () {
+    fakeAsync((async) {
+      final background = FakeBackground();
+      final app = model(background, AppSettings(MemorySettingsStore()));
+      final broken = PairedPc(pcId: pc.pcId, name: pc.name, server: 'ftp://rooms.example.com', phoneId: pc.phoneId, secret: pc.secret);
+      unawaited(app.store.save([broken]).then((_) => app.load()));
+      async.flushMicrotasks();
+      final connection = app.connection!;
+      expect(connection.halted, isTrue);
+      app.paused();
+      async.flushMicrotasks();
+      expect(background.running, isTrue);
+
+      background.press!('disconnect');
+      async.flushMicrotasks();
+      expect(connection.running, isFalse);
+      expect(background.running, isFalse);
       app.dispose();
     });
   });

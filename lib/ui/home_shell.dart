@@ -8,6 +8,7 @@ import '../connection/remote_connection.dart';
 import '../connection/remote_link.dart';
 import '../playback/phone_playback.dart';
 import '../protocol/library.dart';
+import '../update/app_update.dart';
 import 'library_screen.dart';
 import 'player_screen.dart';
 import 'remote_screen.dart';
@@ -16,14 +17,14 @@ import 'theme.dart';
 
 /// The app once a PC is chosen: Remote, Library and Settings tabs.
 class HomeShell extends StatefulWidget {
-  const HomeShell({super.key, required this.model, required this.connection, required this.onChoosePc, required this.onPairAgain, this.version});
+  const HomeShell({super.key, required this.model, required this.connection, required this.onChoosePc, required this.onPairAgain, this.updater});
   final AppModel model;
   final RemoteConnection connection;
   final VoidCallback onChoosePc;
   final VoidCallback onPairAgain;
 
-  /// The app's version line for Settings.
-  final Widget? version;
+  /// Checks for and installs app updates, for Settings; null where the app doesn't update itself.
+  final AppUpdater? updater;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -101,7 +102,7 @@ class _HomeShellState extends State<HomeShell> {
         onWatchHere: playback == null ? null : (id) => _openPlayer((playback) => playback.watch(id, takeOver: true)),
       ),
       LibraryScreen(link: link, actions: _actions, changed: _playbackChanged),
-      SettingsScreen(model: widget.model, link: link, onChoosePc: widget.onChoosePc, version: widget.version),
+      SettingsScreen(model: widget.model, link: link, onChoosePc: widget.onChoosePc, updater: widget.updater),
     ];
     return Scaffold(
       body: IndexedStack(index: _tab, children: tabs),

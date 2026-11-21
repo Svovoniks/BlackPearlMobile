@@ -1,20 +1,25 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 
 import '../app_model.dart';
 import '../background/background_link.dart';
 import '../connection/remote_link.dart';
 import '../storage/app_settings.dart';
+import '../update/app_update.dart';
 import 'home_shell.dart';
 import 'pebbles.dart';
 import 'theme.dart';
 
-/// The Settings tab: the background connection, the quality away from home, and the paired PCs.
+/// The Settings tab: the background connection, the quality away from home, the paired PCs, and app updates.
 class SettingsScreen extends StatelessWidget {
-  const SettingsScreen({super.key, required this.model, required this.link, required this.onChoosePc, this.version});
+  const SettingsScreen({super.key, required this.model, required this.link, required this.onChoosePc, this.updater});
   final AppModel model;
   final RemoteLink link;
   final VoidCallback onChoosePc;
-  final Widget? version;
+
+  /// Checks for and installs app updates; null where the app doesn't update itself.
+  final AppUpdater? updater;
 
   @override
   Widget build(BuildContext context) {
@@ -48,7 +53,7 @@ class SettingsScreen extends StatelessWidget {
                         BackgroundLink.supported
                             ? 'The phone keeps its connection to ${link.pcName} after you close the app, so the notification '
                                   'shows what plays there with a Play/Pause button, and the app opens already connected. '
-                                  'Android shows the notification while this is on; its Turn off button switches it off too.'
+                                  'Android shows the notification while this is on; its Disconnect button drops the connection until you open the app again.'
                             : 'Only BlackPearl on Android stays connected in the background.',
                         style: const TextStyle(color: Palette.muted, fontSize: 13, height: 1.35),
                       ),
@@ -106,11 +111,71 @@ class SettingsScreen extends StatelessWidget {
                   ],
                 ),
               ),
-              if (version != null) ...[const SizedBox(height: 18), Center(child: version!)],
+              if (updater != null) ...[const SizedBox(height: 14), AppUpdates(updater: updater!)],
             ],
           ),
         ),
       ),
     );
   }
+}
+
+/// The app's version, and a way to check for a newer one now instead of waiting for the next automatic check.
+class AppUpdates extends StatefulWidget {
+  const AppUpdates({super.key, required this.updater});
+  final AppUpdater updater;
+
+  @override
+  State<AppUpdates> createState() => _AppUpdatesState();
+}
+
+class _AppUpdatesState extends State<AppUpdates> {
+  /// What the last check from here found, and the release on offer then. A later automatic check that finds another
+  /// release makes the answer out of date, so it goes.
+  String? _result;
+  String? _resultRelease;
+
+  Future<void> _check() async {
+    final result = await widget.updater.check(manual: true);
+    // A newer version also shows in the banner at the top of the screen.
+    if (mounted && result != null) {
+      setState(() {
+        _result = result;
+        _resultRelease = widget.updater.release?.version;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: widget.updater,
+    builder: (context, _) {
+      final updater = widget.updater;
+      final result = updater.release?.version == _resultRelease ? _result : null;
+      return Slab(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('BlackPearl Mobile ${updater.currentVersion}', style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            const Text(
+              'The app looks for a newer version when you open it, and offers it at the top of the screen.',
+              style: TextStyle(color: Palette.muted, fontSize: 13, height: 1.35),
+            ),
+            const SizedBox(height: 12),
+            PebbleButton(
+              label: 'Check for updates',
+              icon: Icons.system_update_rounded,
+              onTap: updater.checking ? null : () => unawaited(_check()),
+            ),
+            // Below the button, so nothing above it moves under the finger when the answer comes.
+            if (updater.checking || result != null) ...[
+              const SizedBox(height: 10),
+              Text(updater.checking ? 'Checking…' : result!, style: const TextStyle(color: Palette.muted, fontSize: 13, height: 1.35)),
+            ],
+          ],
+        ),
+      );
+    },
+  );
 }
