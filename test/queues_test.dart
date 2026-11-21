@@ -1,10 +1,14 @@
 import 'package:blackpearl_mobile/playback/phone_playback.dart';
 import 'package:blackpearl_mobile/protocol/library.dart';
 import 'package:blackpearl_mobile/protocol/remote_state.dart';
+import 'package:blackpearl_mobile/connection/remote_link.dart';
+import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/ui/library_screen.dart';
+import 'package:blackpearl_mobile/ui/queue_widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-LibraryEntry entry(String id, int index, {bool playable = true}) => LibraryEntry(id: id, title: id, playable: playable, index: index);
+LibraryEntry entry(String id, int index, {bool playable = true, bool watched = false}) =>
+    LibraryEntry(id: id, title: id, playable: playable, index: index, watched: watched);
 
 void main() {
   group('a list the player follows, as the PC steps through a queue', () {
@@ -40,6 +44,46 @@ void main() {
       expect((steps.previous?.id, steps.next?.id), ('e1', 'e3'));
       expect(steps.next?.queueIndex, isNull);
     });
+
+    test("a show's episodes without the playing video have nothing to step to, rather than its first episode", () {
+      final steps = PhonePlayback.stepsIn([entry('e1', 0), entry('e2', 1)], 'e9', null, inQueue: false);
+      expect((steps.previous, steps.next, steps.first), (null, null, null));
+    });
+  });
+
+  group("a queue's up next, as the PC works it out", () {
+    test('the first unwatched video from the place on, skipping one that cannot play', () {
+      final queue = [entry('a', 0), entry('b', 1, watched: true), entry('c', 2, playable: false), entry('d', 3), entry('e', 4)];
+      expect(queueUpNext(queue, 1)?.id, 'd');
+      expect(queueUpNext(queue, 4)?.id, 'e');
+      expect(queueUpNext(queue, null)?.id, 'a');
+    });
+
+    test('from the start when nothing after the place is unwatched, and the first video when all are watched', () {
+      expect(queueUpNext([entry('a', 0), entry('b', 1, watched: true)], 1)?.id, 'a');
+      expect(queueUpNext([entry('a', 0, watched: true), entry('b', 1, watched: true)], 1)?.id, 'a');
+      expect(queueUpNext([entry('a', 0, playable: false)], 0), isNull);
+    });
+  });
+
+  test('a long list loads past its limit until it has the playing video', () async {
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected));
+    link.answer = (type, fields) async {
+      final page = fields['page'] as int;
+      return {
+        'type': 'page',
+        'entries': [for (var i = page * 10; i < page * 10 + 10; i++) {'id': 'v$i', 'title': 'V$i', 'index': i, 'playable': true}],
+        'total': 100,
+        'page': page,
+        'pageSize': 10,
+      };
+    };
+    final listing = LibraryListing(link, const BrowseRequest(episodesOf: 'v57'));
+    await loadWholeList(listing, max: 20, mustHave: 'v57');
+    expect(listing.entries.length, 60);
+    final short = LibraryListing(link, const BrowseRequest(episodesOf: 'v57'));
+    await loadWholeList(short, max: 20);
+    expect(short.entries.length, 20);
   });
 
   group('the queue messages', () {

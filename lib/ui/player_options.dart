@@ -391,9 +391,8 @@ class _UpNextPageState extends State<_UpNextPage> {
   late String? _selected = widget.playback.followed?.id;
   LibraryListing? _listing;
   bool _following = false;
-  // The playing video's row, scrolled into view once the list is there.
-  final GlobalKey _currentRow = GlobalKey();
-  bool _shown = false;
+  // Scrolled to the playing video's row once the list is there.
+  final ScrollController _scroll = ScrollController();
 
   PhonePlayback get playback => widget.playback;
 
@@ -411,6 +410,7 @@ class _UpNextPageState extends State<_UpNextPage> {
   @override
   void dispose() {
     _listing?.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -434,19 +434,13 @@ class _UpNextPageState extends State<_UpNextPage> {
         if (mounted) setState(() {});
       });
     setState(() => _following = follow);
-    await loadWholeList(listing);
+    await loadWholeList(listing, mustHave: stream.id);
     if (!mounted || !identical(listing, _listing)) return;
     if (follow && listing.error == null) playback.followList(_queue, listing.entries);
     setState(() => _following = false);
-    _shown = false;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _showCurrent());
-  }
-
-  void _showCurrent() {
-    final row = _currentRow.currentContext;
-    if (_shown || row == null || !row.mounted) return;
-    _shown = true;
-    unawaited(Scrollable.ensureVisible(row, alignment: 0.25, duration: const Duration(milliseconds: 250)));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) showQueueRow(_scroll, listing.entries.indexWhere(_current), queueRowExtentOf(context));
+    });
   }
 
   bool _current(LibraryEntry entry) {
@@ -498,14 +492,20 @@ class _UpNextPageState extends State<_UpNextPage> {
                     style: const TextStyle(color: Palette.muted, fontSize: 13.5, height: 1.35),
                   ),
                 )
-              : SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
-                  child: Column(
-                    children: [
-                      // One row is the playing one, also when the video is in the list twice.
-                      for (var i = 0, at = entries.indexWhere(_current); i < entries.length; i++) _row(entries[i], current: i == at),
-                    ],
-                  ),
+              : Builder(
+                  builder: (context) {
+                    // One row is the playing one, also when the video is in the list twice. Rows are built as they
+                    // scroll into view, so pictures load a screen at a time.
+                    final at = entries.indexWhere(_current);
+                    return ListView.builder(
+                      controller: _scroll,
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
+                      itemExtent: queueRowExtentOf(context),
+                      itemCount: entries.length,
+                      itemBuilder: (context, i) => _row(entries[i], current: i == at),
+                    );
+                  },
                 ),
         ),
       ],
@@ -514,7 +514,6 @@ class _UpNextPageState extends State<_UpNextPage> {
 
   Widget _row(LibraryEntry entry, {required bool current}) {
                     return QueueEntryRow(
-                      key: current ? _currentRow : null,
                       link: playback.link,
                       entry: entry,
                       current: current,

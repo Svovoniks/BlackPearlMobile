@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 
@@ -403,7 +404,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         if (continuing.isNotEmpty) ...[
           const _RowTitle('Continue watching'),
           SizedBox(
-            height: 182,
+            height: math.max(182, 130 + cardCaptionHeight(context)).ceilToDouble(),
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -416,7 +417,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         for (final row in suggestions.entries) ...[
           _RowTitle(rowName(row.key)),
           SizedBox(
-            height: 214,
+            height: math.max(214, 112 * 3 / 2 + cardCaptionHeight(context)).ceilToDouble(),
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -551,6 +552,12 @@ class PosterCard extends StatelessWidget {
   }
 }
 
+/// The room a card's title and caption take under its picture at the phone's text size (with the gap above them).
+double cardCaptionHeight(BuildContext context) {
+  final scaler = MediaQuery.textScalerOf(context);
+  return 7 + (scaler.scale(13.5) + scaler.scale(12)) * 1.4 + 2;
+}
+
 /// A listing as a grid of posters that loads more as it scrolls.
 class PosterGrid extends StatelessWidget {
   const PosterGrid({super.key, required this.link, required this.listing, required this.onOpen});
@@ -560,7 +567,11 @@ class PosterGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final columns = (MediaQuery.sizeOf(context).width / 130).floor().clamp(3, 8);
+    final width = MediaQuery.sizeOf(context).width;
+    final columns = (width / 130).floor().clamp(3, 8);
+    // A poster and, under it, its title and year at the phone's text size, so larger text doesn't overflow the card.
+    final tile = (width - 32 - 12 * (columns - 1)) / columns;
+    final height = math.max(tile / 0.52, tile * 3 / 2 + cardCaptionHeight(context)).ceilToDouble();
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         if (notification.metrics.extentAfter < 600 && listing.hasMore) unawaited(listing.more());
@@ -572,7 +583,7 @@ class PosterGrid extends StatelessWidget {
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             sliver: SliverGrid.builder(
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: columns, mainAxisSpacing: 16, crossAxisSpacing: 12, childAspectRatio: 0.52),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: columns, mainAxisSpacing: 16, crossAxisSpacing: 12, mainAxisExtent: height),
               itemCount: listing.entries.length,
               itemBuilder: (context, index) => PosterCard(link: link, entry: listing.entries[index], onOpen: onOpen),
             ),

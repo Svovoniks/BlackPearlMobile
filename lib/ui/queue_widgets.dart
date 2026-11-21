@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 
@@ -9,12 +10,39 @@ import 'library_screen.dart';
 import 'pebbles.dart';
 import 'theme.dart';
 
-/// Loads a list's pages until it has them all, or [max] entries: enough to step through a long queue.
-Future<void> loadWholeList(LibraryListing listing, {int max = 400}) async {
+/// Loads a list's pages until it has them all, or [max] entries, and in any case until it has the video [mustHave], so
+/// the steps from it are worked out from the list itself.
+Future<void> loadWholeList(LibraryListing listing, {int max = 400, String? mustHave}) async {
   await listing.load();
-  while (listing.hasMore && listing.error == null && listing.entries.length < max) {
+  bool has() => mustHave == null || listing.entries.any((e) => e.id == mustHave);
+  while (listing.hasMore && listing.error == null && (listing.entries.length < max || !has())) {
     await listing.more();
   }
+}
+
+/// Where Play continues in a queue's [entries], as the PC works it out: the first unwatched video from the queue's
+/// [place] on, then from its start; the first one when all are watched.
+LibraryEntry? queueUpNext(List<LibraryEntry> entries, int? place) {
+  bool ready(LibraryEntry e) => e.playable && !e.watched;
+  return entries.where((e) => (e.index ?? 0) >= (place ?? 0) && ready(e)).firstOrNull ??
+      entries.where(ready).firstOrNull ??
+      entries.where((e) => e.playable).firstOrNull;
+}
+
+/// The height of a [QueueEntryRow] at the phone's text size, so long lists build only the rows on screen and can open
+/// at the playing one: the picture, or two lines of title and one of caption when the text is larger.
+double queueRowExtentOf(BuildContext context) {
+  final scaler = MediaQuery.textScalerOf(context);
+  final text = scaler.scale(14.5) * 1.25 * 2 + 2 + scaler.scale(12.5) * 1.4;
+  return (math.max(58.0, text) + 16 + 2).ceilToDouble();
+}
+
+/// Scrolls [controller]'s list of rows [extent] high so row [index] sits a quarter of the way down.
+void showQueueRow(ScrollController controller, int index, double extent) {
+  if (index < 0 || !controller.hasClients) return;
+  final position = controller.position;
+  final target = (index * extent - position.viewportDimension * 0.25).clamp(0.0, position.maxScrollExtent);
+  unawaited(controller.animateTo(target, duration: const Duration(milliseconds: 250), curve: Curves.easeOut));
 }
 
 /// The PC's saved queues, from its `queues` answer.
@@ -37,77 +65,106 @@ class QueueEntryRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final progress = entry.progress;
     final dim = !entry.playable;
-    return Semantics(
-      button: onTap != null,
-      selected: current,
-      label: [entry.title, if (entry.caption.isNotEmpty) entry.caption, if (current) 'playing', if (entry.watched) 'watched', if (dim) 'unavailable'].join(', '),
-      excludeSemantics: true,
-      child: Material(
-        color: current ? Palette.accentSoft : Colors.transparent,
-        borderRadius: BorderRadius.circular(14),
-        child: InkWell(
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Semantics(
+        button: onTap != null,
+        selected: current,
+        label: [
+          entry.title,
+          if (entry.caption.isNotEmpty) entry.caption,
+          if (current) 'playing',
+          if (entry.watched) 'watched',
+          if (dim) 'unavailable',
+        ].join(', '),
+        excludeSemantics: true,
+        child: Material(
+          color: current ? Palette.accentSoft : Colors.transparent,
           borderRadius: BorderRadius.circular(14),
-          onTap: dim ? null : onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(8),
-            child: Opacity(
-              opacity: dim ? 0.45 : 1,
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 104,
-                    height: 58,
-                    child: Stack(
-                      fit: StackFit.expand,
-                      children: [
-                        Artwork(link: link, token: entry.artwork, width: 240, radius: 10, icon: entry.level == 'episode' ? Icons.tv_rounded : Icons.movie_outlined),
-                        if (progress != null)
-                          Positioned(
-                            left: 6,
-                            right: 6,
-                            bottom: 5,
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(2),
-                              child: LinearProgressIndicator(value: progress, minHeight: 3, color: Palette.accent, backgroundColor: const Color(0x55000000)),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: dim ? null : onTap,
+            child: Container(
+              height: queueRowExtentOf(context) - 2,
+              padding: const EdgeInsets.all(8),
+              child: Opacity(
+                opacity: dim ? 0.45 : 1,
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 104,
+                      height: 58,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Artwork(
+                            link: link,
+                            token: entry.artwork,
+                            width: 240,
+                            radius: 10,
+                            icon: entry.level == 'episode' ? Icons.tv_rounded : Icons.movie_outlined,
+                          ),
+                          if (progress != null)
+                            Positioned(
+                              left: 6,
+                              right: 6,
+                              bottom: 5,
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(2),
+                                child: LinearProgressIndicator(
+                                  value: progress,
+                                  minHeight: 3,
+                                  color: Palette.accent,
+                                  backgroundColor: const Color(0x55000000),
+                                ),
+                              ),
+                            ),
+                          if (current)
+                            const Center(
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(color: Color(0xB3000000), shape: BoxShape.circle),
+                                child: Padding(
+                                  padding: EdgeInsets.all(5),
+                                  child: Icon(Icons.equalizer_rounded, size: 18, color: Palette.accent),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            entry.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 14.5,
+                              fontWeight: current ? FontWeight.w700 : FontWeight.w600,
+                              color: Palette.ink,
+                              height: 1.25,
                             ),
                           ),
-                        if (current)
-                          const Center(
-                            child: DecoratedBox(
-                              decoration: BoxDecoration(color: Color(0xB3000000), shape: BoxShape.circle),
-                              child: Padding(padding: EdgeInsets.all(5), child: Icon(Icons.equalizer_rounded, size: 18, color: Palette.accent)),
-                            ),
+                          const SizedBox(height: 2),
+                          Text(
+                            [if (current) 'Playing', if (entry.caption.isNotEmpty) entry.caption, if (dim) 'Not available'].join(' · '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 12.5, color: current ? Palette.accent : Palette.muted),
                           ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          entry.title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 14.5, fontWeight: current ? FontWeight.w700 : FontWeight.w600, color: Palette.ink, height: 1.25),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          [if (current) 'Playing', if (entry.caption.isNotEmpty) entry.caption, if (dim) 'Not available'].join(' · '),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 12.5, color: current ? Palette.accent : Palette.muted),
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (entry.watched) ...[
-                    const SizedBox(width: 8),
-                    const Icon(Icons.check_circle_rounded, size: 18, color: Palette.accent, semanticLabel: 'Watched'),
+                    if (entry.watched) ...[
+                      const SizedBox(width: 8),
+                      const Icon(Icons.check_circle_rounded, size: 18, color: Palette.accent, semanticLabel: 'Watched'),
+                    ],
                   ],
-                ],
+                ),
               ),
             ),
           ),
@@ -119,7 +176,14 @@ class QueueEntryRow extends StatelessWidget {
 
 /// Which list Previous, Next and up next follow: the show's episodes, or one of the PC's queues.
 class ListChooser extends StatelessWidget {
-  const ListChooser({super.key, required this.queues, required this.selected, required this.onSelect, this.loading = false, this.episodes = true});
+  const ListChooser({
+    super.key,
+    required this.queues,
+    required this.selected,
+    required this.onSelect,
+    this.loading = false,
+    this.episodes = true,
+  });
 
   /// Null while the PC's queues are loading.
   final List<QueueSummary>? queues;
@@ -261,9 +325,11 @@ class _QueuesViewState extends State<QueuesView> {
           link: widget.link,
           queue: queues[index],
           onOpen: () async {
-            await Navigator.of(context).push(MaterialPageRoute<void>(
-              builder: (_) => QueueScreen(link: widget.link, queue: queues[index], actions: widget.actions, changed: widget.changed),
-            ));
+            await Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => QueueScreen(link: widget.link, queue: queues[index], actions: widget.actions, changed: widget.changed),
+              ),
+            );
             unawaited(_load());
           },
         ),
@@ -292,7 +358,11 @@ class _QueueCard extends StatelessWidget {
           padding: const EdgeInsets.all(10),
           child: Row(
             children: [
-              SizedBox(width: 128, height: 72, child: Artwork(link: link, token: queue.artwork, width: 300, radius: 12, icon: Icons.queue_play_next_rounded)),
+              SizedBox(
+                width: 128,
+                height: 72,
+                child: Artwork(link: link, token: queue.artwork, width: 300, radius: 12, icon: Icons.queue_play_next_rounded),
+              ),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -301,7 +371,11 @@ class _QueueCard extends StatelessWidget {
                     Text(queue.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(18)),
                     const SizedBox(height: 4),
                     Text(
-                      [_count(queue.count), if (queue.active) 'Playing on the PC', if (queue.upNext == null && queue.count > 0) 'All watched'].join(' · '),
+                      [
+                        _count(queue.count),
+                        if (queue.active) 'Playing on the PC',
+                        if (queue.upNext == null && queue.count > 0) 'All watched',
+                      ].join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(fontSize: 13, color: queue.active ? Palette.accent : Palette.muted),
@@ -358,14 +432,7 @@ class _QueueScreenState extends State<QueueScreen> {
 
   void _reload() => unawaited(_listing.reload());
 
-  // Where Play continues: the queue's place on the PC, or its first unwatched video; the first one when all are watched.
-  LibraryEntry? get _upNext {
-    final entries = _listing.entries;
-    final place = widget.queue.upNext;
-    return entries.where((e) => e.index == place && e.playable).firstOrNull ??
-        entries.where((e) => e.playable && !e.watched).firstOrNull ??
-        entries.where((e) => e.playable).firstOrNull;
-  }
+  LibraryEntry? get _upNext => queueUpNext(_listing.entries, widget.queue.upNext);
 
   Future<void> _playHere(LibraryEntry entry) => _actions.watchHere(entry);
 
@@ -401,7 +468,9 @@ class _QueueScreenState extends State<QueueScreen> {
                   children: [
                     IconButton(tooltip: 'Back', onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.arrow_back_rounded)),
                     const SizedBox(width: 4),
-                    Expanded(child: Text(widget.queue.name, style: display(26), maxLines: 2, overflow: TextOverflow.ellipsis)),
+                    Expanded(
+                      child: Text(widget.queue.name, style: display(26), maxLines: 2, overflow: TextOverflow.ellipsis),
+                    ),
                   ],
                 ),
               ),
@@ -413,21 +482,40 @@ class _QueueScreenState extends State<QueueScreen> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Text(
-                      [_count(_listing.total > 0 ? _listing.total : widget.queue.count), if (widget.queue.active) 'Playing on the PC'].join(' · '),
+                      [
+                        _count(_listing.total > 0 ? _listing.total : widget.queue.count),
+                        if (widget.queue.active) 'Playing on the PC',
+                      ].join(' · '),
                       style: TextStyle(color: widget.queue.active ? Palette.accent : Palette.muted, fontSize: 13.5),
                     ),
                     if (next != null) ...[
                       const SizedBox(height: 14),
-                      Text('Up next: ${next.title}', maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, color: Palette.muted)),
+                      Text(
+                        'Up next: ${next.title}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 13.5, color: Palette.muted),
+                      ),
                       const SizedBox(height: 10),
                       Row(
                         children: [
                           if (canWatch) ...[
-                            Expanded(child: PebbleButton(label: 'Play on phone', icon: Icons.phone_android_rounded, lit: true, onTap: _busy ? null : () => _playHere(next))),
+                            Expanded(
+                              child: PebbleButton(
+                                label: 'Play on phone',
+                                icon: Icons.phone_android_rounded,
+                                lit: true,
+                                onTap: _busy ? null : () => _playHere(next),
+                              ),
+                            ),
                             const SizedBox(width: 10),
                           ],
                           Expanded(
-                            child: PebbleButton(label: _busy ? 'Starting…' : 'Play on PC', icon: Icons.desktop_windows_outlined, onTap: _busy ? null : () => _playOnPc(next)),
+                            child: PebbleButton(
+                              label: _busy ? 'Starting…' : 'Play on PC',
+                              icon: Icons.desktop_windows_outlined,
+                              onTap: _busy ? null : () => _playOnPc(next),
+                            ),
                           ),
                         ],
                       ),
@@ -441,10 +529,17 @@ class _QueueScreenState extends State<QueueScreen> {
               ),
             ),
             if (entries.isEmpty && _listing.loading)
-              const SliverFillRemaining(child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)))
+              const SliverFillRemaining(
+                child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)),
+              )
             else if (entries.isEmpty && _listing.error != null)
               SliverFillRemaining(
-                child: _Empty(icon: Icons.error_outline_rounded, title: "Couldn't load the queue", text: _listing.error!, onRetry: () => _listing.load()),
+                child: _Empty(
+                  icon: Icons.error_outline_rounded,
+                  title: "Couldn't load the queue",
+                  text: _listing.error!,
+                  onRetry: () => _listing.load(),
+                ),
               )
             else if (entries.isEmpty)
               const SliverFillRemaining(
@@ -506,22 +601,28 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
   LibraryListing? _listing;
   String? _error;
   bool _busy = false;
-  final GlobalKey _currentRow = GlobalKey();
+  final ScrollController _scroll = ScrollController();
 
   @override
   void initState() {
     super.initState();
-    unawaited(loadQueues(widget.link).then((queues) {
-      if (mounted) setState(() => _queues = queues);
-    }, onError: (Object _) {
-      if (mounted) setState(() => _queues = const []);
-    }));
+    unawaited(
+      loadQueues(widget.link).then(
+        (queues) {
+          if (mounted) setState(() => _queues = queues);
+        },
+        onError: (Object _) {
+          if (mounted) setState(() => _queues = const []);
+        },
+      ),
+    );
     _open();
   }
 
   @override
   void dispose() {
     _listing?.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -533,18 +634,20 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
         : widget.mediaId != null
         ? LibraryListing(widget.link, BrowseRequest(episodesOf: widget.mediaId))
         : null;
-    _listing = listing?..addListener(() {
-      if (mounted) setState(() {});
-    });
+    _listing = listing
+      ?..addListener(() {
+        if (mounted) setState(() {});
+      });
     if (listing != null) {
-      unawaited(loadWholeList(listing).then((_) {
-        // The playing video's row comes into view once the list is there.
-        if (!mounted || !identical(listing, _listing)) return;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          final row = _currentRow.currentContext;
-          if (row != null && row.mounted) unawaited(Scrollable.ensureVisible(row, alignment: 0.25, duration: const Duration(milliseconds: 250)));
-        });
-      }));
+      unawaited(
+        loadWholeList(listing, mustHave: widget.mediaId).then((_) {
+          // The playing video's row comes into view once the list is there.
+          if (!mounted || !identical(listing, _listing)) return;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) showQueueRow(_scroll, listing.entries.indexWhere(_current), queueRowExtentOf(context));
+          });
+        }),
+      );
     }
   }
 
@@ -557,6 +660,7 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
     try {
       await widget.link.ask('play', {
         'id': entry.id,
+        'positionMs': entry.watched ? 0 : entry.positionMs,
         if (selected != null) ...{'queue': selected, 'queueIndex': ?entry.index},
       }, timeout: const Duration(seconds: 30));
       if (mounted) Navigator.of(context).pop();
@@ -571,7 +675,8 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
   }
 
   bool _current(LibraryEntry entry) =>
-      entry.id == widget.mediaId && (_selected == null || _selected != widget.queue?.id || widget.queue?.index == null || entry.index == widget.queue?.index);
+      entry.id == widget.mediaId &&
+      (_selected == null || _selected != widget.queue?.id || widget.queue?.index == null || entry.index == widget.queue?.index);
 
   @override
   Widget build(BuildContext context) {
@@ -588,7 +693,11 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
             child: Row(
               children: [
                 Expanded(child: Text('Up next on the PC', style: display(20))),
-                IconButton(tooltip: 'Close', onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.close_rounded, color: Palette.muted)),
+                IconButton(
+                  tooltip: 'Close',
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.close_rounded, color: Palette.muted),
+                ),
               ],
             ),
           ),
@@ -613,35 +722,41 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
             ),
           Flexible(
             child: listing == null
-                ? const _Empty(icon: Icons.queue_play_next_rounded, title: 'Choose a queue', text: 'The PC plays a video from it, then goes on through it.')
+                ? const _Empty(
+                    icon: Icons.queue_play_next_rounded,
+                    title: 'Choose a queue',
+                    text: 'The PC plays a video from it, then goes on through it.',
+                  )
                 : entries.isEmpty && listing.loading
-                ? const Padding(padding: EdgeInsets.all(32), child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)))
+                ? const Padding(
+                    padding: EdgeInsets.all(32),
+                    child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)),
+                  )
                 : entries.isEmpty
                 ? _Empty(
                     icon: Icons.queue_play_next_rounded,
                     title: listing.error != null ? "Couldn't load the list" : (_selected == null ? 'No episodes' : 'This queue is empty'),
                     text: listing.error ?? (_selected == null ? 'This video has no episodes around it.' : 'Add videos to it on the PC.'),
                   )
-                : SingleChildScrollView(
-                    padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
-                    child: Builder(
-                      builder: (context) {
-                        // One row is the playing one, also when the video is in the list twice.
-                        final at = entries.indexWhere(_current);
-                        return Column(
-                          children: [
-                            for (var i = 0; i < entries.length; i++)
-                              QueueEntryRow(
-                                key: i == at ? _currentRow : null,
-                                link: widget.link,
-                                entry: entries[i],
-                                current: i == at,
-                                onTap: _busy ? null : () => unawaited(_play(entries[i])),
-                              ),
-                          ],
-                        );
-                      },
-                    ),
+                : Builder(
+                    builder: (context) {
+                      // One row is the playing one, also when the video is in the list twice. Rows are built as they
+                      // scroll into view, so pictures load a screen at a time.
+                      final at = entries.indexWhere(_current);
+                      return ListView.builder(
+                        controller: _scroll,
+                        shrinkWrap: true,
+                        padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
+                        itemExtent: queueRowExtentOf(context),
+                        itemCount: entries.length,
+                        itemBuilder: (context, i) => QueueEntryRow(
+                          link: widget.link,
+                          entry: entries[i],
+                          current: i == at,
+                          onTap: _busy ? null : () => unawaited(_play(entries[i])),
+                        ),
+                      );
+                    },
                   ),
           ),
         ],
@@ -668,7 +783,11 @@ class _Empty extends StatelessWidget {
           const SizedBox(height: 12),
           Text(title, textAlign: TextAlign.center, style: display(19)),
           const SizedBox(height: 6),
-          Text(text, textAlign: TextAlign.center, style: const TextStyle(color: Palette.muted, fontSize: 14, height: 1.35)),
+          Text(
+            text,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Palette.muted, fontSize: 14, height: 1.35),
+          ),
           if (onRetry != null) ...[const SizedBox(height: 14), PebbleButton(label: 'Try again', onTap: onRetry)],
         ],
       ),

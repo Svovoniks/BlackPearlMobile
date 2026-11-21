@@ -459,7 +459,8 @@ class PhonePlayback extends ChangeNotifier {
     if (at < 0) at = entries.indexWhere((e) => e.id == id);
     EpisodeStep step(LibraryEntry entry) => EpisodeStep.ofEntry(entry, inQueue: inQueue);
     if (at < 0) {
-      final start = entries.where((e) => e.playable).firstOrNull;
+      // A queue without the video starts from its first one, as on the PC; a show's list without it has nothing to step to.
+      final start = inQueue ? entries.where((e) => e.playable).firstOrNull : null;
       return (previous: null, next: start == null ? null : step(start), first: null);
     }
     LibraryEntry? previous, next, first;
@@ -477,10 +478,12 @@ class PhonePlayback extends ChangeNotifier {
     return (previous: previous == null ? null : step(previous), next: next == null ? null : step(next), first: first == null ? null : step(first));
   }
 
-  /// Plays a listed video: from a queue ([queue]) or the show's episodes.
-  Future<bool> playListed(LibraryEntry entry, QueueRef? queue) {
-    _followed = queue;
-    return playEpisode(EpisodeStep.ofEntry(entry, inQueue: queue != null));
+  /// Plays a listed video: from a queue ([queue]) or the show's episodes. The player follows that list once the video
+  /// has started, from the PC's answer, so a video that can't be had leaves the list it followed as it was.
+  Future<bool> playListed(LibraryEntry entry, QueueRef? queue) async {
+    final step = EpisodeStep.ofEntry(entry, inQueue: queue != null);
+    if (pending.value?.episode?.id == step.id) return false;
+    return watch(step.id, quality: _chosenQuality, step: step, queue: queue?.at(entry.index));
   }
 
   /// Whether Previous goes back to the start of this video rather than to the episode before: once it has played more
