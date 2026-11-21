@@ -1,3 +1,5 @@
+import 'library.dart';
+
 /// The PC's `state` message (PHONE-REMOTE.md, "PC → phone").
 enum LoopMode {
   off,
@@ -45,6 +47,7 @@ class RemoteState {
     this.canControl = true,
     this.room,
     this.mediaId,
+    this.queue,
   });
 
   /// False when nothing is loaded in the player; the playback fields are then meaningless.
@@ -69,6 +72,9 @@ class RemoteState {
 
   /// The library video the PC plays on its own, which the phone can take over; null in a room or for music.
   final String? mediaId;
+
+  /// The saved queue the PC plays from and the video's place in it, or null.
+  final QueueRef? queue;
 
   static const RemoteState nothing = RemoteState(media: false);
 
@@ -109,6 +115,7 @@ class RemoteState {
       canControl: flag('canControl', true),
       room: room,
       mediaId: media && json['mediaId'] is String && (json['mediaId'] as String).isNotEmpty ? json['mediaId'] as String : null,
+      queue: media ? QueueRef.fromJson(json['queue']) : null,
     );
   }
 
@@ -136,6 +143,7 @@ class RemoteState {
     canControl: canControl,
     room: room,
     mediaId: mediaId,
+    queue: queue,
   );
 }
 

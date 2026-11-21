@@ -34,6 +34,12 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   video in landscape, a short sheet in portrait. Tracks are named by language, with what tells them apart, and start as
   the PC's Settings › Playback languages would pick them. Another quality, a recovery or the next episode opens on the
   player already on screen, which shows what it is waiting for.
+- **Queues.** The PC's saved queues (its Queues page) are in Library › Queues: each opens its videos in order, with Play
+  on the phone or on the PC from where it continues. A video played from a queue steps through the queue: Previous,
+  Next, the up-next card and Loop all follow it, on the phone and on the PC. The player's Up next page lists the show's
+  episodes or a queue and switches between them, as the PC's queue menu does, and the Remote tab's Up next lists what
+  the PC plays through, to start another video of it there. While the phone waits for an answer from the PC, the player
+  holds back its next reads for a few seconds, so the answer isn't queued behind more video.
 - **Picture in picture (Android).** While a video plays, leaving the app (Home, or switching apps) moves it to a small
   window with Play/Pause; the player's picture-in-picture button does it at once. A video left without picture in
   picture (paused, or on a phone that doesn't allow it) waits, and carries on when the app is back.

@@ -151,10 +151,31 @@ class RemoteConnection extends RemoteLink {
     final completer = Completer<Map<String, dynamic>>();
     _requests[number] = completer;
     _peer!.send(jsonEncode({...fields, 'type': type, 'request': number}));
-    return completer.future.timeout(timeout, onTimeout: () {
+    return completer.future.whenComplete(_settled).timeout(timeout, onTimeout: () {
       _requests.remove(number);
+      _settled();
       throw const RemoteRequestException('timeout', "The PC didn't answer. Try again.");
     });
+  }
+
+  // Waiting for every asked request to be answered (or to fail).
+  final List<Completer<void>> _quiet = [];
+
+  @override
+  Future<void> answered(Duration limit) {
+    if (_requests.isEmpty) return Future.value();
+    final done = Completer<void>();
+    _quiet.add(done);
+    return done.future.timeout(limit, onTimeout: () => _quiet.remove(done));
+  }
+
+  void _settled() {
+    if (_requests.isNotEmpty || _quiet.isEmpty) return;
+    final waiting = _quiet.toList();
+    _quiet.clear();
+    for (final done in waiting) {
+      if (!done.isCompleted) done.complete();
+    }
   }
 
   @override
@@ -166,6 +187,7 @@ class RemoteConnection extends RemoteLink {
   void _failRequests(String message) {
     final pending = _requests.values.toList();
     _requests.clear();
+    scheduleMicrotask(_settled);
     for (final request in pending) {
       if (!request.isCompleted) request.completeError(RemoteRequestException('offline', message));
     }
@@ -560,7 +582,7 @@ class RemoteConnection extends RemoteLink {
         _target = LinkTarget.paired(paired);
         onPaired?.call(paired);
         _connected();
-      case 'page' || 'stream' || 'done' when message['request'] is num:
+      case 'page' || 'stream' || 'done' || 'queues' when message['request'] is num:
         _requests.remove((message['request'] as num).toInt())?.complete(message);
       case 'error' when message['request'] is num && _requests.containsKey((message['request'] as num).toInt()):
         final code = message['code'] is String ? message['code'] as String : 'failed';

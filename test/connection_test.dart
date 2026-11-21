@@ -213,6 +213,52 @@ void main() {
     });
   });
 
+  test("a queues answer reaches its request; reads hold back until the PC has answered, or for the time given", () {
+    fakeAsync((async) {
+      final h = Harness(pairedTarget);
+      h.connection.start();
+      async.flushMicrotasks();
+      h.socket.receive({'type': 'remote-welcome', 'target': 'conn1', 'data': jsonEncode({'iceServers': <String>[], 'forceRelay': false})});
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      final offer = h.socket.signals().first;
+      h.pcSignal(secret, phoneId, offer.session, 'sdp', jsonEncode({'type': 'answer', 'sdp': 'v=0 answer'}));
+      async.flushMicrotasks();
+      h.peer.open();
+      h.peer.receive({'type': 'welcome', 'protocol': 1, 'app': '0.4.0', 'pc': 'Living room', 'pcId': pcId, 'canStart': true, 'features': ['library', 'watch', 'queues']});
+      async.flushMicrotasks();
+      expect(h.connection.features, contains('queues'));
+
+      var quiet = false;
+      unawaited(h.connection.answered(const Duration(seconds: 4)).then((_) => quiet = true));
+      async.flushMicrotasks();
+      expect(quiet, isTrue, reason: 'nothing asked, nothing to wait for');
+
+      Map<String, dynamic>? answer;
+      unawaited(h.connection.ask('queues', const {}).then((a) => answer = a));
+      final request = h.peer.sent.last['request'];
+      quiet = false;
+      unawaited(h.connection.answered(const Duration(seconds: 4)).then((_) => quiet = true));
+      async.elapse(const Duration(seconds: 1));
+      expect(quiet, isFalse, reason: 'reads wait while the answer is on its way');
+      h.peer.receive({'type': 'queues', 'request': request, 'queues': []});
+      async.flushMicrotasks();
+      expect(answer?['type'], 'queues');
+      expect(quiet, isTrue);
+
+      // An answer that doesn't come holds reads back only for the time given.
+      unawaited(h.connection.ask('queues', const {}).catchError((Object _) => <String, dynamic>{}));
+      quiet = false;
+      unawaited(h.connection.answered(const Duration(seconds: 4)).then((_) => quiet = true));
+      async.elapse(const Duration(seconds: 3));
+      expect(quiet, isFalse);
+      async.elapse(const Duration(seconds: 2));
+      expect(quiet, isTrue);
+      async.elapse(const Duration(seconds: 30));
+      h.connection.dispose();
+    });
+  });
+
   test('drops signals with a bad signature, another session, or signed as the phone', () {
     fakeAsync((async) {
       final h = Harness(pairedTarget);

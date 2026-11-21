@@ -73,10 +73,15 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   late final LibraryActions _actions = LibraryActions(
-    watchHere: (entry, {bool fromStart = false}) => _openPlayer((playback) => playback.watch(entry.id, startAt: fromStart ? 0 : null)),
-    playOnPc: (entry, {bool fromStart = false}) async {
+    watchHere: (entry, {bool fromStart = false, QueueRef? queue}) =>
+        _openPlayer((playback) => playback.watch(entry.id, startAt: fromStart ? 0 : null, queue: queue)),
+    playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async {
       try {
-        await link.ask('play', {'id': entry.id, 'positionMs': fromStart || entry.watched ? 0 : entry.positionMs}, timeout: const Duration(seconds: 30));
+        await link.ask('play', {
+          'id': entry.id,
+          'positionMs': fromStart || entry.watched ? 0 : entry.positionMs,
+          if (queue != null) ...{'queue': queue.id, 'queueIndex': ?queue.index},
+        }, timeout: const Duration(seconds: 30));
       } on RemoteRequestException catch (e) {
         return e.message;
       }

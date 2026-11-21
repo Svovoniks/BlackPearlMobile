@@ -96,18 +96,18 @@ void main() {
     const first = EpisodeStep(id: 'e1', title: 'S01E01');
 
     test('offers the next episode', () {
-      expect(PhonePlayback.afterEnd('off', stream(next: next)), (false, next));
-      expect(PhonePlayback.afterEnd('all', stream(next: next, first: first)), (false, next));
+      expect(PhonePlayback.afterEnd('off', next, null), (false, next));
+      expect(PhonePlayback.afterEnd('all', next, first), (false, next));
     });
 
-    test('Loop one replays', () => expect(PhonePlayback.afterEnd('one', stream(next: next)), (true, null)));
+    test('Loop one replays', () => expect(PhonePlayback.afterEnd('one', next, null), (true, null)));
 
     test("Loop all starts the show again after its last episode, and replays what has nothing after it", () {
-      expect(PhonePlayback.afterEnd('all', stream(first: first)), (false, first));
-      expect(PhonePlayback.afterEnd('all', stream()), (true, null));
+      expect(PhonePlayback.afterEnd('all', null, first), (false, first));
+      expect(PhonePlayback.afterEnd('all', null, null), (true, null));
     });
 
-    test('a film with Loop off just ends', () => expect(PhonePlayback.afterEnd('off', stream()), (false, null)));
+    test('a film with Loop off just ends', () => expect(PhonePlayback.afterEnd('off', null, null), (false, null)));
   });
 
   test('what the player waits for reads as it should', () {

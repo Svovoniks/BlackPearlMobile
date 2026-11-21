@@ -8,6 +8,7 @@ import '../connection/remote_link.dart';
 import '../connection/transport.dart';
 import '../protocol/remote_state.dart';
 import 'pebbles.dart';
+import 'queue_widgets.dart';
 import 'theme.dart';
 
 /// The Remote tab: what's playing on the PC and everything the player's bars do.
@@ -420,6 +421,34 @@ class _RemoteScreenState extends State<RemoteScreen> {
           ),
         ],
       ),
+      // What the PC plays through, to pick another video from: its queue, or the playing show's episodes.
+      if (link.features.contains('queues') && (state.queue != null || state.mediaId != null)) ...[
+        const SizedBox(height: 12),
+        Pebble(
+          height: 46,
+          enabled: _connected,
+          onTap: () => unawaited(showRemoteUpNext(context, link: link, mediaId: state.mediaId, queue: state.queue)),
+          semanticLabel: state.queue != null ? 'Up next: queue ${state.queue!.name}' : 'Up next: episodes',
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              const Icon(Icons.queue_play_next_rounded, size: 20),
+              const SizedBox(width: 10),
+              const Text('Up next', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  state.queue != null ? state.queue!.name : 'Episodes',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 13.5, color: Palette.muted),
+                ),
+              ),
+              const Icon(Icons.chevron_right_rounded, color: Palette.muted),
+            ],
+          ),
+        ),
+      ],
       const SizedBox(height: 16),
       Row(
         children: [

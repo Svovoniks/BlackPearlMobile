@@ -31,8 +31,8 @@ Future<(FakeRemoteLink, List<String>)> pumpLibrary(WidgetTester tester, {Set<Str
     home: LibraryScreen(
       link: link,
       actions: LibraryActions(
-        watchHere: (entry, {bool fromStart = false}) async => calls.add('here ${entry.id} fromStart=$fromStart'),
-        playOnPc: (entry, {bool fromStart = false}) async {
+        watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async => calls.add('here ${entry.id} fromStart=$fromStart'),
+        playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async {
           calls.add('pc ${entry.id}');
           return null;
         },
