@@ -1,15 +1,23 @@
+import 'dart:async';
+
 import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../app_model.dart';
+import '../connection/remote_connection.dart';
 import '../connection/remote_link.dart';
 import '../connection/transport.dart';
 import '../protocol/pair_link.dart';
 import '../protocol/remote_state.dart';
 import '../ui/app_prompts.dart';
+import '../storage/paired_pcs.dart';
 import '../ui/pairing_screen.dart';
+import '../ui/pc_chooser.dart';
 import '../ui/remote_screen.dart';
 import '../ui/theme.dart';
+import '../ui/update_banner.dart';
+import '../update/app_update.dart';
 
 /// A [RemoteLink] with a fixed status and state, for previews, screenshots and widget tests. It never touches the
 /// network. Commands are recorded in [sent] and applied to the state the way the PC would, so controls can be tried.
@@ -168,8 +176,31 @@ class PreviewApp extends StatelessWidget {
           ),
         ),
       ),
+      'chooser' => _ChooserPreview(updater: _updater()),
+      _ when screen.startsWith('update-') => _updatePreview(_remote(link(connected, sampleState))),
       _ => _remote(link(connected, sampleState)),
     };
+  }
+
+  static AppUpdater _updater() => AppUpdater(platform: _UpToDate(), currentVersion: '0.1.2');
+
+  /// `update-available`, `update-permission`, `update-downloading`, `update-ready` or `update-failed`.
+  Widget _updatePreview(Widget child) {
+    final release = AppRelease(version: '0.1.3', apk: Uri.parse('https://example.com/BlackPearl-v0.1.3.apk'), size: 1);
+    final updater = _updater();
+    switch (screen) {
+      case 'update-permission':
+        updater.debugShow(UpdatePhase.needsPermission, release: release);
+      case 'update-downloading':
+        updater.debugShow(UpdatePhase.downloading, release: release, progress: 0.42);
+      case 'update-ready':
+        updater.debugShow(UpdatePhase.ready, release: release);
+      case 'update-failed':
+        updater.debugShow(UpdatePhase.failed, release: release, error: "The download didn't finish. Check the connection and try again.");
+      default:
+        updater.debugShow(UpdatePhase.available, release: release);
+    }
+    return UpdateFrame(updater: updater, child: child);
   }
 
   Widget _remote(RemoteLink link) => RemoteScreen(link: link, onChoosePc: () {}, onPairAgain: () {});
@@ -202,4 +233,66 @@ class _PairLinkPreviewState extends State<_PairLinkPreview> {
 
   @override
   Widget build(BuildContext context) => widget.child;
+}
+
+/// GitHub with nothing newer, for previews.
+class _UpToDate implements UpdatePlatform {
+  @override
+  Future<Object?> latestRelease() async {
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    return {'tag_name': 'v0.1.2', 'assets': const []};
+  }
+
+  @override
+  Future<void> download(Uri url, String path, void Function(int received) progress) async {}
+  @override
+  Future<String> updateFolder() async => '';
+  @override
+  Future<bool> canInstall() async => true;
+  @override
+  Future<void> allowInstalls() async {}
+  @override
+  Future<void> install(String path) async {}
+}
+
+/// The PC sheet over the Remote screen, with two paired PCs.
+class _ChooserPreview extends StatefulWidget {
+  const _ChooserPreview({required this.updater});
+  final AppUpdater updater;
+  @override
+  State<_ChooserPreview> createState() => _ChooserPreviewState();
+}
+
+class _ChooserPreviewState extends State<_ChooserPreview> {
+  late final AppModel _model;
+
+  @override
+  void initState() {
+    super.initState();
+    final store = PairedPcStore(MemorySecretStore());
+    _model = AppModel(
+      store: store,
+      connect: (target, {onPaired, onPcName}) => RemoteConnection(
+        target: target,
+        identity: const PhoneIdentity(appVersion: '0.1.2', device: 'Preview'),
+        connectSocket: (_) => Completer<SignalingSocket>().future,
+        createPeer: (_, _) => Completer<PeerLink>().future,
+      ),
+    );
+    unawaited(() async {
+      await store.save([
+        PairedPc(pcId: 'A' * 32, name: PreviewApp._pc, server: 'https://rooms.example.com', phoneId: 'a' * 32, secret: 'b' * 64),
+        PairedPc(pcId: 'B' * 32, name: 'Study', server: 'https://rooms.example.com', phoneId: 'c' * 32, secret: 'd' * 64),
+      ]);
+      await _model.load();
+      if (mounted) unawaited(showPcChooser(context, _model, updater: widget.updater));
+    }());
+  }
+
+  @override
+  Widget build(BuildContext context) => RemoteScreen(
+    link: FakeRemoteLink(pcName: PreviewApp._pc, status: const LinkStatus(LinkPhase.connected, path: NetworkPath.home), state: sampleState),
+    onChoosePc: () {},
+    onPairAgain: () {},
+  );
 }

@@ -9,6 +9,8 @@
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- flutter_webrtc asks for Bluetooth (for call audio); the remote plays no sound, so don't require the hardware. -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
+    <!-- Updating itself: Android asks the user once to allow it, and again to confirm each update. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
 
     <!-- No backups: the paired PCs live in secure storage, encrypted with a key that never leaves this device. A
          restored copy can't be decrypted, so restoring it would lose every paired PC instead of keeping them. The
@@ -51,6 +53,14 @@
             <!-- app_links handles incoming links, not Flutter's router. -->
             <meta-data android:name="flutter_deeplinking_enabled" android:value="false"/>
         </activity>
+        <!-- Hands a downloaded update to Android's installer (see MainActivity and res/xml/update_files.xml). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_files"/>
+        </provider>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
