@@ -44,6 +44,12 @@ class LibraryListing extends ChangeNotifier {
   bool _disposed = false;
 
   bool get hasMore => _next != null;
+
+  /// Closed: it loads nothing more.
+  bool get disposed => _disposed;
+
+  /// The page [more] asks for next, if any.
+  int? get nextPage => _next?.page;
   bool get started => _started;
 
   Future<void> load() async {
@@ -571,7 +577,7 @@ class PosterGrid extends StatelessWidget {
     final columns = (width / 130).floor().clamp(3, 8);
     // A poster and, under it, its title and year at the phone's text size, so larger text doesn't overflow the card.
     final tile = (width - 32 - 12 * (columns - 1)) / columns;
-    final height = math.max(tile / 0.52, tile * 3 / 2 + cardCaptionHeight(context)).ceilToDouble();
+    final height = math.max(tile / 0.52, (tile * 3 / 2 + cardCaptionHeight(context)).ceilToDouble());
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         if (notification.metrics.extentAfter < 600 && listing.hasMore) unawaited(listing.more());

@@ -66,6 +66,25 @@ void main() {
     });
   });
 
+  test('a list closed while a page is on its way stops loading instead of asking for it again', () async {
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected));
+    LibraryListing? listing;
+    link.answer = (type, fields) async {
+      final page = fields['page'] as int;
+      if (page == 1) listing!.dispose();
+      return {
+        'type': 'page',
+        'entries': [for (var i = page * 10; i < page * 10 + 10; i++) {'id': 'v$i', 'title': 'V$i', 'index': i, 'playable': true}],
+        'total': 100,
+        'page': page,
+        'pageSize': 10,
+      };
+    };
+    listing = LibraryListing(link, const BrowseRequest(episodesOf: 'v57'));
+    await loadWholeList(listing, mustHave: 'v57').timeout(const Duration(seconds: 2));
+    expect(link.asked.length, 2);
+  });
+
   test('a long list loads past its limit until it has the playing video', () async {
     final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected));
     link.answer = (type, fields) async {

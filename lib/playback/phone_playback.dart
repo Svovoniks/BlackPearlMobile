@@ -186,8 +186,9 @@ class PhonePlayback extends ChangeNotifier {
       _chosenSubtitle = null;
     }
     _stream = info;
-    // Another video's answer says what comes next; another stream of this one keeps the list the player follows.
-    if (!replacing) {
+    // Another video's answer says what comes next; another stream of this one keeps the list the player follows, unless
+    // a list asked for it (the same video at another place of a queue).
+    if (!replacing || queue != null) {
       _listSteps = null;
       _followed = info.queue;
     }

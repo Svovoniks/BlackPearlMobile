@@ -15,13 +15,17 @@ import 'theme.dart';
 Future<void> loadWholeList(LibraryListing listing, {int max = 400, String? mustHave}) async {
   await listing.load();
   bool has() => mustHave == null || listing.entries.any((e) => e.id == mustHave);
-  while (listing.hasMore && listing.error == null && (listing.entries.length < max || !has())) {
+  while (!listing.disposed && listing.hasMore && listing.error == null && (listing.entries.length < max || !has())) {
+    // A listing that was closed, or is loading elsewhere, doesn't move on: stop rather than ask for the page again.
+    final page = listing.nextPage;
     await listing.more();
+    if (listing.nextPage == page && listing.error == null) break;
   }
 }
 
-/// Where Play continues in a queue's [entries], as the PC works it out: the first unwatched video from the queue's
-/// [place] on, then from its start; the first one when all are watched.
+/// Where Play continues in a queue's [entries]: the PC's up next [place], or, once the entries show that one watched, the
+/// first unwatched video after it, then from the queue's start; the first one when all are watched. The same steps as
+/// the PC's own.
 LibraryEntry? queueUpNext(List<LibraryEntry> entries, int? place) {
   bool ready(LibraryEntry e) => e.playable && !e.watched;
   return entries.where((e) => (e.index ?? 0) >= (place ?? 0) && ready(e)).firstOrNull ??
