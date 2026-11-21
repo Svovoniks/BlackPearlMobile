@@ -68,10 +68,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       ..showSnackBar(SnackBar(content: Text(text), duration: const Duration(seconds: 6)));
   }
 
-  Future<void> _leave() async {
-    await playback.stop();
-    if (mounted) Navigator.of(context).maybePop();
-  }
+  // Leaving pops the screen; whoever opened it then stops the phone's player, once its picture is off screen.
+  void _leave() => Navigator.of(context).pop();
 
   Future<void> _continueOnPc() async {
     if (_handing) return;
@@ -84,7 +82,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       return;
     }
     widget.onHandedToPc?.call();
-    Navigator.of(context).maybePop();
+    Navigator.of(context).pop();
   }
 
   Future<void> _options() async {
@@ -141,6 +139,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       topButtonBar: top,
       topButtonBarMargin: const EdgeInsets.fromLTRB(4, 8, 8, 0),
       seekBarPositionColor: Palette.accent,
+      seekBarMargin: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+      bottomButtonBarMargin: const EdgeInsets.fromLTRB(16, 0, 16, 26),
       seekBarThumbColor: Palette.knob,
       seekBarBufferColor: const Color(0x66FFFFFF),
       seekOnDoubleTap: true,
@@ -150,9 +150,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       bufferingIndicatorBuilder: (_) => const CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5),
     );
     return PopScope(
-      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) unawaited(_leave());
+        // The video waits while the screen slides away.
+        if (didPop) unawaited(_player?.pause());
       },
       child: Scaffold(
         backgroundColor: Colors.black,
@@ -162,7 +162,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
           _ => MaterialVideoControlsTheme(
             normal: theme,
             fullscreen: theme,
-            child: Video(controller: controller, controls: MaterialVideoControls, fill: Colors.black),
+            // A new player (another quality) needs a new surface; the widget doesn't swap one by itself.
+            child: Video(key: ObjectKey(controller), controller: controller, controls: MaterialVideoControls, fill: Colors.black),
           ),
         },
       ),
@@ -235,6 +236,29 @@ class _PlayerOptions extends StatefulWidget {
 }
 
 class _PlayerOptionsState extends State<_PlayerOptions> {
+  final List<StreamSubscription<Object?>> _subscriptions = [];
+
+  @override
+  void initState() {
+    super.initState();
+    // Tracks arrive once the video has opened, which can be after the sheet.
+    void refresh(Object? _) {
+      if (mounted) setState(() {});
+    }
+
+    _subscriptions
+      ..add(widget.player.stream.tracks.listen(refresh))
+      ..add(widget.player.stream.track.listen(refresh));
+  }
+
+  @override
+  void dispose() {
+    for (final subscription in _subscriptions) {
+      unawaited(subscription.cancel());
+    }
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = widget.player.state;
@@ -268,7 +292,14 @@ class _PlayerOptionsState extends State<_PlayerOptions> {
             Text('Subtitles', style: display(18)),
             for (final track in subtitles)
               choice(track.id == 'no' ? 'Off' : name(track.title, track.language, track.id), state.track.subtitle.id == track.id, () => widget.player.setSubtitleTrack(track)),
-            if (subtitles.length <= 1) const Padding(padding: EdgeInsets.only(top: 6), child: Text('This video has no subtitles.', style: TextStyle(color: Palette.muted))),
+            if (subtitles.length <= 1)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  widget.stream.hls ? 'A converted stream carries no subtitles. Choose Original file for them.' : 'This video has no subtitles.',
+                  style: const TextStyle(color: Palette.muted),
+                ),
+              ),
             if (widget.stream.qualities.length > 1) ...[
               const SizedBox(height: 16),
               Text('Quality', style: display(18)),

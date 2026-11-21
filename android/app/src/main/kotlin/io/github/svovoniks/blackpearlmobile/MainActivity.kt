@@ -1,6 +1,9 @@
 package io.github.svovoniks.blackpearlmobile
 
+import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -14,8 +17,26 @@ class MainActivity : FlutterActivity() {
     // Downloaded updates live here; res/xml/update_files.xml shares only this folder with the installer.
     private val updateFolder get() = File(cacheDir, "updates")
 
+    // The engine outlives the activity (see LinkEngine), so closing the app leaves the link to the PC running while
+    // the background service runs, and opening it again shows the same app.
+    override fun provideFlutterEngine(context: Context): FlutterEngine = LinkEngine.get(this)
+    override fun shouldDestroyEngineWithHost(): Boolean = false
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "blackpearl/notifications").setMethodCallHandler { call, result ->
+            if (call.method == "request") {
+                // Android 13 and later show the background service's notification only with this permission.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 41)
+                }
+                result.success(null)
+            } else {
+                result.notImplemented()
+            }
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "blackpearl/updates").setMethodCallHandler { call, result ->
             try {
                 when (call.method) {

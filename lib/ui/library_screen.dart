@@ -605,6 +605,7 @@ class _PickCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Slab(
+    padding: EdgeInsets.zero,
     child: InkWell(
       borderRadius: BorderRadius.circular(20),
       onTap: () => onOpen(entry),
@@ -937,7 +938,7 @@ class _TitleSheetState extends State<_TitleSheet> {
                           const Icon(Icons.desktop_windows_outlined, size: 18),
                           const SizedBox(width: 7),
                           Flexible(
-                            child: Text(_busy ? 'Starting…' : 'Play on ${link.pcName}', overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                            child: Text(_busy ? 'Starting…' : 'Play on PC', overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
                           ),
                         ],
                       ),

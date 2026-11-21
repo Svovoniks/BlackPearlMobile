@@ -66,6 +66,7 @@ class PhonePlayback extends ChangeNotifier {
   /// where it was. [quality] overrides the automatic choice; [startAt] the PC's resume point.
   Future<void> watch(String id, {bool takeOver = false, String? quality, int? startAt}) async {
     final attempt = ++_opening;
+    _handedOver = false;
     await _report(final_: true);
     _phase = PhonePlaybackPhase.opening;
     _error = null;
@@ -88,7 +89,8 @@ class PhonePlayback extends ChangeNotifier {
       _fail("The PC's answer didn't say how to play the video.");
       return;
     }
-    await _closePlayer(stopStream: false);
+    // Another quality of the same video replaces the player on screen: the new one takes over before the old one goes.
+    final previous = _detachPlayer();
     _stream = info;
     _ended = false;
     _lastReported = -1;
@@ -97,6 +99,7 @@ class PhonePlayback extends ChangeNotifier {
     final address = _address = await proxy.open(info);
     final start = startAt ?? info.positionMs;
     await player.open(Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null));
+    if (previous != null) unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () => _release(previous)));
     if (attempt != _opening) return;
     _phase = PhonePlaybackPhase.playing;
     notifyListeners();
@@ -145,7 +148,8 @@ class PhonePlayback extends ChangeNotifier {
     link.tell('progress', {'id': stream.id, 'positionMs': position, 'durationMs': duration, 'ended': _ended, 'final': final_});
   }
 
-  /// Continue on the PC: the phone stops here, and the PC plays the video from the same moment.
+  /// Continue on the PC: the phone pauses, and the PC plays the video from the same moment. The caller leaves the
+  /// player and then calls [stop], which lets the phone's player go.
   Future<String?> continueOnPc() async {
     final stream = _stream;
     final player = _player;
@@ -158,18 +162,26 @@ class PhonePlayback extends ChangeNotifier {
     } on RemoteRequestException catch (e) {
       return e.message;
     }
-    await stop(reported: true);
+    _handedOver = true;
     return null;
   }
 
-  /// Stops playing on the phone, saving where it got to.
-  Future<void> stop({bool reported = false}) async {
+  bool _handedOver = false;
+
+  /// Stops playing on the phone, saving where it got to. Call it once the player is off screen: libmpv's picture
+  /// must not be in use when it goes.
+  Future<void> stop() async {
     _opening++;
-    if (!reported) await _report(final_: true);
-    await _closePlayer(stopStream: true);
+    // The PC plays it now and keeps its own position.
+    if (!_handedOver) await _report(final_: true);
+    _handedOver = false;
+    final previous = _detachPlayer();
+    if (_stream != null) link.tell('stream-stop', {});
+    _stream = null;
     _phase = PhonePlaybackPhase.idle;
     _error = null;
     notifyListeners();
+    if (previous != null) await _release(previous);
   }
 
   /// The app went to the background: the video waits, and the PC learns where it is.
@@ -186,7 +198,8 @@ class PhonePlayback extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _closePlayer({required bool stopStream}) async {
+  /// Takes the player and its address off this object, to release once nothing shows it.
+  (Player, Uri?)? _detachPlayer() {
     _progressTimer?.cancel();
     _progressTimer = null;
     for (final subscription in _subscriptions) {
@@ -194,23 +207,27 @@ class PhonePlayback extends ChangeNotifier {
     }
     _subscriptions.clear();
     final player = _player;
-    _player = null;
     final address = _address;
+    _player = null;
     _address = null;
+    return player == null ? null : (player, address);
+  }
+
+  Future<void> _release((Player, Uri?) previous) async {
+    final (player, address) = previous;
     if (address != null) proxy.close(address);
-    if (stopStream && _stream != null) link.tell('stream-stop', {});
-    _stream = null;
-    if (player != null) {
-      try {
-        await player.dispose();
-      } catch (_) {}
-    }
+    try {
+      await player.dispose();
+    } catch (_) {}
   }
 
   @override
   void dispose() {
     _opening++;
-    unawaited(_closePlayer(stopStream: true));
+    final previous = _detachPlayer();
+    if (_stream != null) link.tell('stream-stop', {});
+    _stream = null;
+    if (previous != null) unawaited(_release(previous));
     unawaited(proxy.dispose());
     super.dispose();
   }

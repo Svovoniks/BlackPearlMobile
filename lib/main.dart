@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' show File, FileMode, Platform;
 
 import 'package:app_links/app_links.dart';
@@ -47,8 +48,15 @@ Future<void> main(List<String> args) async {
   final identity = await _identity();
   final settings = AppSettings(PreferencesSettingsStore());
   await settings.load();
+  final store = PairedPcStore(SecureSecretStore());
+  // Debug builds only: `--paired-pc=<JSON of a paired PC>` starts already paired, for trying the Windows build against a
+  // real PC, which has no camera to scan the code with and keeps nothing between runs.
+  if (kDebugMode) {
+    final paired = args.where((a) => a.startsWith('--paired-pc=')).map((a) => PairedPc.fromJson(jsonDecode(a.substring(12)))).firstOrNull;
+    if (paired != null) await store.save([paired]);
+  }
   final model = AppModel(
-    store: PairedPcStore(SecureSecretStore()),
+    store: store,
     settings: settings,
     background: BackgroundLink.supported ? BackgroundLink() : null,
     createPlayback: (connection) => PhonePlayback(link: connection),

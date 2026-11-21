@@ -55,6 +55,8 @@ class _HomeShellState extends State<HomeShell> {
     ));
     _playerOpen = false;
     await opened;
+    // The player is off screen now, so its picture can go.
+    await playback.stop();
   }
 
   late final LibraryActions _actions = LibraryActions(
