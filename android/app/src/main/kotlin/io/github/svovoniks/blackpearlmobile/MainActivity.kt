@@ -113,14 +113,9 @@ class MainActivity : FlutterActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         pictureInPicture?.changed(isInPictureInPictureMode)
-        // Leaving picture in picture while stopped means its window was closed, not expanded back to the app.
+        // Leaving picture in picture while stopped means its window was closed, not expanded back to the app. (Stopping
+        // while still in picture in picture is the screen turning off, which keeps the window.)
         if (!isInPictureInPictureMode && lifecycle.currentState == Lifecycle.State.CREATED) pictureInPicture?.dismissed()
-    }
-
-    override fun onStop() {
-        // Stopping while still in picture in picture means its window was closed.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) pictureInPicture?.dismissed()
-        super.onStop()
     }
 
     override fun onDestroy() {
