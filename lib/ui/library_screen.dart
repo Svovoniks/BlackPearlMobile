@@ -765,11 +765,14 @@ class _EpisodeRow extends StatelessWidget {
                     Text(entry.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 3),
                     Text(
-                      [
-                        if (entry.episode != null) 'Episode ${entry.episode}',
-                        if (entry.runtimeMinutes != null && entry.runtimeMinutes! > 0) '${entry.runtimeMinutes} min',
-                        if (isSeason && entry.caption.isNotEmpty) entry.caption,
-                      ].join(' · '),
+                      // A season's card stands on its first episode, whose number and length aren't the season's.
+                      isSeason
+                          ? entry.caption
+                          : [
+                              if (entry.episode != null && !entry.title.startsWith('Episode ${entry.episode}')) 'Episode ${entry.episode}',
+                              if (entry.runtimeMinutes != null && entry.runtimeMinutes! > 0) '${entry.runtimeMinutes} min',
+                              if (entry.watched) 'Watched' else if (entry.positionMs >= 10000) 'Stopped at ${formatClock(entry.positionMs)}',
+                            ].join(' · '),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 12.5, color: Palette.muted),
