@@ -7,9 +7,28 @@ import '../connection/remote_link.dart';
 import '../connection/transport.dart';
 import '../protocol/library.dart';
 import 'media_proxy.dart';
+import 'track_languages.dart';
 
 /// What the phone's player does: what it opened, and how it's going.
 enum PhonePlaybackPhase { idle, opening, playing, failed }
+
+/// A change the player is waiting on the PC for: another quality of the video on screen, or another episode.
+class PendingSwitch {
+  const PendingSwitch.quality(String this.quality) : episode = null;
+  const PendingSwitch.episode(EpisodeStep this.episode) : quality = null;
+  final String? quality;
+  final EpisodeStep? episode;
+
+  String get label => quality != null ? 'Switching to ${qualityLabel(quality!)}…' : 'Opening ${episode!.detail ?? episode!.title}…';
+}
+
+/// The next episode, offered when one ends; it plays when [deadline] passes unless the offer is canceled.
+class UpNextOffer {
+  const UpNextOffer({required this.step, required this.deadline, required this.length});
+  final EpisodeStep step;
+  final DateTime deadline;
+  final Duration length;
+}
 
 /// Plays a PC's video on the phone (PHONE-REMOTE.md, "Watching on the phone"). The PC sends the video over the link;
 /// [MediaProxy] hands it to libmpv. How far the phone gets goes back to the PC as `progress`, so Continue watching
@@ -26,6 +45,12 @@ class PhonePlayback extends ChangeNotifier {
 
   /// The quality asked for away from home: `auto`, `original`, `1080p`, `720p` or `480p`.
   String awayQuality;
+
+  /// Loop, as on the PC: `off`, `all` (after a show's last episode its first plays) or `one` (the video replays).
+  String loopMode = 'off';
+
+  /// How long the up-next countdown runs, as on the PC.
+  static const upNextLength = Duration(seconds: 15);
 
   static Player _defaultPlayer() {
     final player = Player(configuration: const PlayerConfiguration(bufferSize: 96 * 1024 * 1024, title: 'BlackPearl'));
@@ -77,18 +102,33 @@ class PhonePlayback extends ChangeNotifier {
   };
 
   /// Starts [id] on the phone. [takeOver]: it's the video the PC plays now; the PC stops and the phone continues from
-  /// where it was. [quality] overrides the automatic choice; [startAt] the PC's resume point.
-  Future<bool> watch(String id, {bool takeOver = false, String? quality, int? startAt}) async {
+  /// where it was. [quality] overrides the automatic choice; [startAt] the PC's resume point. [step]: another episode
+  /// of this viewing, which the player shows it is opening.
+  ///
+  /// One player serves the whole viewing: another quality, a recovery or another episode opens on the player already
+  /// on screen. A second player got no video surface on Android, and libmpv took that for the end of the video.
+  Future<bool> watch(String id, {bool takeOver = false, String? quality, int? startAt, EpisodeStep? step}) async {
     final attempt = ++_opening;
+    final hadPlayer = _player != null;
     // Another stream of the video on screen (a quality change, a recovery): the old one plays on until the new one is
     // ready, and stays if the new one can't be had.
-    final replacing = _stream?.id == id && _player != null;
+    final replacing = _stream?.id == id && hadPlayer;
     _handedOver = false;
+    _switching = true;
     if (!replacing) {
       await _report(final_: true);
-      _phase = PhonePlaybackPhase.opening;
-      _error = null;
-      notifyListeners();
+      _endUpNext();
+      if (hadPlayer) {
+        // Another episode: the last picture stays until the next one opens.
+        unawaited(_player!.pause().catchError((_) {}));
+        _setPending(PendingSwitch.episode(step ?? EpisodeStep(id: id, title: 'the next video')));
+      } else {
+        _phase = PhonePlaybackPhase.opening;
+        _error = null;
+        notifyListeners();
+      }
+    } else if (quality != null && !_recovering) {
+      _setPending(PendingSwitch.quality(quality));
     }
     final StreamInfo? info;
     _asking++;
@@ -105,7 +145,9 @@ class PhonePlayback extends ChangeNotifier {
       info = StreamInfo.fromJson(reply);
     } on RemoteRequestException catch (e) {
       if (attempt == _opening) {
-        if (replacing && _player != null) {
+        _switching = false;
+        _setPending(null);
+        if (hadPlayer && _stream != null) {
           _lastRefusal = e.message;
           _say(e.message);
         } else {
@@ -123,7 +165,9 @@ class PhonePlayback extends ChangeNotifier {
       return false;
     }
     if (info == null) {
-      if (replacing && _player != null) {
+      _switching = false;
+      _setPending(null);
+      if (hadPlayer && _stream != null) {
         _say("The PC's answer didn't say how to play the video.");
       } else {
         _fail("The PC's answer didn't say how to play the video.");
@@ -132,23 +176,33 @@ class PhonePlayback extends ChangeNotifier {
     }
     final stalledAt = _stalledAt;
     _endRecovery();
-    // Another quality of the same video replaces the player on screen: the new one takes over before the old one goes.
-    final previous = _detachPlayer();
+    final previousAddress = _address;
+    if (!replacing) {
+      // Track choices belong to a video; another episode starts from the PC's preferences again.
+      _chosenAudio = null;
+      _chosenSubtitle = null;
+    }
     _stream = info;
     _ended = false;
     _lastReported = -1;
     final start = startAt ?? info.positionMs;
     _openedAt = start;
     _positionKnown = false;
-    final player = _player = _createPlayer();
-    _listen(player);
+    _tracksApplied = false;
+    _defaultSubtitle = null;
+    final player = _player ??= _newPlayer();
     final address = _address = await proxy.open(info);
     await player.open(Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null), play: !_inBackground);
+    _switching = false;
     if (_inBackground) _resumeOnReturn = true;
-    if (previous != null) unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () => _release(previous)));
+    // The old stream's address goes once the player has let it go.
+    if (previousAddress != null && previousAddress != address) {
+      unawaited(Future<void>.delayed(const Duration(seconds: 2), () => proxy.close(previousAddress)));
+    }
     // The same spot running out again on a fresh stream is where the file itself ends.
     _endsAt = stalledAt;
     if (attempt != _opening) return true;
+    _setPending(null, notify: false);
     _phase = PhonePlaybackPhase.playing;
     notifyListeners();
     _progressTimer?.cancel();
@@ -157,6 +211,25 @@ class PhonePlayback extends ChangeNotifier {
     });
     return true;
   }
+
+  Player _newPlayer() {
+    final player = _createPlayer();
+    _listen(player);
+    return player;
+  }
+
+  // From asking for another stream until it has opened, the old one running out is not the video's end.
+  bool _switching = false;
+
+  /// What the player waits on the PC for, to show it.
+  final ValueNotifier<PendingSwitch?> pending = ValueNotifier(null);
+  void _setPending(PendingSwitch? value, {bool notify = true}) {
+    pending.value = value;
+    if (notify) notifyListeners();
+  }
+
+  // The quality the user chose in this viewing; the next episode opens at it too.
+  String? _chosenQuality;
 
   // Where a recovered stream started; data running out there again means the file is shorter than its header says.
   int? _endsAt;
@@ -173,7 +246,9 @@ class PhonePlayback extends ChangeNotifier {
   /// Opens the same video again at another quality, from where it is now.
   Future<void> changeQuality(String quality) async {
     final current = _stream;
-    if (current == null) return;
+    if (current == null || pending.value?.quality == quality) return;
+    if (pending.value == null && quality == current.quality) return;
+    _chosenQuality = quality;
     final player = _player;
     // Where it stopped while stalled; the opening position until the player has said where it is.
     final position = _stalledAt ?? (player == null ? current.positionMs : _positionOf(player));
@@ -310,10 +385,12 @@ class PhonePlayback extends ChangeNotifier {
     _subscriptions.add(player.stream.playing.listen((playing) {
       // A pause is a natural moment to save where the phone is.
       if (!playing) unawaited(_report());
+      // Playing again, as after going back from the end, cancels the up-next countdown.
+      if (playing && upNext.value != null) _endUpNext();
       notifyListeners();
     }));
     _subscriptions.add(player.stream.completed.listen((completed) {
-      if (!completed || _stream == null || !identical(player, _player)) return;
+      if (!completed || _stream == null || !identical(player, _player) || _switching) return;
       // libmpv also says "completed" when the data runs out mid-video.
       final position = _positionOf(player);
       final shortFile = _endsAt != null && (position - _endsAt!).abs() < 3000;
@@ -325,13 +402,212 @@ class PhonePlayback extends ChangeNotifier {
         unawaited(_recover());
         return;
       }
+      if (_ended) return;
       _ended = true;
       unawaited(_report(final_: true));
+      _videoEnded();
       notifyListeners();
     }));
+    _subscriptions.add(player.stream.tracks.listen((_) => unawaited(_applyTrackPreferences())));
     _subscriptions.add(player.stream.error.listen((message) {
       if (kDebugMode) debugPrint('player: $message');
     }));
+  }
+
+  // ---- Episodes, Loop and up next ----
+
+  EpisodeStep? get previousEpisode => _stream?.previous;
+  EpisodeStep? get nextEpisode => _stream?.next;
+
+  /// Whether Previous goes back to the start of this video rather than to the episode before: once it has played more
+  /// than 3 seconds, or after it ended, as on the PC.
+  bool get previousRestarts {
+    final player = _player;
+    if (player == null || _stream == null) return false;
+    return _ended || _positionOf(player) > 3000;
+  }
+
+  /// Previous: back to the start of this video, or near the start, the episode before it.
+  Future<void> previous() async {
+    final player = _player;
+    if (player == null) return;
+    if (previousRestarts || previousEpisode == null) {
+      _endUpNext();
+      _ended = false;
+      await player.seek(Duration.zero);
+      await player.play();
+      return;
+    }
+    await playEpisode(previousEpisode!);
+  }
+
+  /// Next: the episode after this one.
+  Future<void> next() async {
+    final step = nextEpisode;
+    if (step != null) await playEpisode(step);
+  }
+
+  /// Plays another episode on the same player, at the quality chosen in this viewing.
+  Future<bool> playEpisode(EpisodeStep step) => watch(step.id, quality: _chosenQuality, step: step);
+
+  /// The next episode, offered when this one ends.
+  final ValueNotifier<UpNextOffer?> upNext = ValueNotifier(null);
+  Timer? _upNextTimer;
+
+  void _videoEnded() {
+    final stream = _stream;
+    final player = _player;
+    if (stream == null || player == null) return;
+    final (replay, step) = afterEnd(loopMode, stream);
+    if (replay) {
+      unawaited(_replay());
+      return;
+    }
+    if (step == null) return;
+    final offer = UpNextOffer(step: step, deadline: DateTime.now().add(upNextLength), length: upNextLength);
+    upNext.value = offer;
+    _upNextTimer?.cancel();
+    _upNextTimer = Timer(upNextLength, () {
+      if (identical(upNext.value, offer)) unawaited(playUpNext());
+    });
+  }
+
+  /// What follows the end of [stream], as on the PC: Loop one replays it; otherwise the next episode is offered, or with
+  /// Loop all the show's first; Loop all with nothing else to play replays it.
+  @visibleForTesting
+  static (bool replay, EpisodeStep? offer) afterEnd(String loopMode, StreamInfo stream) {
+    if (loopMode == 'one') return (true, null);
+    final step = stream.next ?? (loopMode == 'all' ? stream.first : null);
+    if (step == null) return (loopMode == 'all', null);
+    return (false, step);
+  }
+
+  Future<void> _replay() async {
+    final player = _player;
+    if (player == null) return;
+    _ended = false;
+    await player.seek(Duration.zero);
+    await player.play();
+  }
+
+  /// Plays the offered episode now.
+  Future<void> playUpNext() async {
+    final offer = upNext.value;
+    _endUpNext();
+    if (offer != null) await playEpisode(offer.step);
+  }
+
+  /// Stays on this episode.
+  void cancelUpNext() => _endUpNext();
+
+  void _endUpNext() {
+    _upNextTimer?.cancel();
+    _upNextTimer = null;
+    upNext.value = null;
+  }
+
+  // ---- Tracks ----
+
+  // What the user chose for this video, kept across another quality or a recovery of it: a language and title for
+  // audio, and for subtitles also "off".
+  ({String? language, String? title})? _chosenAudio;
+  ({bool off, String? language, String? title})? _chosenSubtitle;
+  bool _tracksApplied = false;
+  String? _defaultSubtitle;
+
+  static List<AudioTrack> audioChoices(Tracks tracks) => tracks.audio.where((t) => t.id != 'auto' && t.id != 'no').toList();
+  static List<SubtitleTrack> subtitleChoices(Tracks tracks) => tracks.subtitle.where((t) => t.id != 'auto' && t.id != 'no').toList();
+
+  /// The audio and subtitle tracks playing now, by id; a null subtitle is none. media_kit reports `auto` until a track
+  /// is chosen, so libmpv itself is asked.
+  Future<({String? audio, String? subtitle})> selectedTracks() async {
+    final player = _player;
+    if (player == null) return (audio: null, subtitle: null);
+    String? audio = player.state.track.audio.id, subtitle = player.state.track.subtitle.id;
+    final native = player.platform;
+    if (native is NativePlayer) {
+      try {
+        audio = await native.getProperty('aid');
+        subtitle = await native.getProperty('sid');
+      } catch (_) {}
+    }
+    String? id(String? value) => value == null || value == 'no' || value == 'auto' || value.isEmpty ? null : value;
+    return (audio: id(audio), subtitle: id(subtitle));
+  }
+
+  /// The user picked an audio track. Subtitles not picked by hand follow the PC's rule for its language, as on the PC.
+  Future<void> chooseAudio(AudioTrack track) async {
+    final player = _player;
+    if (player == null) return;
+    _chosenAudio = (language: TrackLanguages.languageOf(track.language, track.title), title: track.title);
+    await player.setAudioTrack(track);
+    if (_chosenSubtitle == null) await _applySubtitlePreference(TrackLanguages.languageOf(track.language, track.title), restoreDefault: true);
+    notifyListeners();
+  }
+
+  /// The user picked subtitles, or none ([track] null).
+  Future<void> chooseSubtitle(SubtitleTrack? track) async {
+    final player = _player;
+    if (player == null) return;
+    _chosenSubtitle = track == null
+        ? (off: true, language: null, title: null)
+        : (off: false, language: TrackLanguages.languageOf(track.language, track.title), title: track.title);
+    await player.setSubtitleTrack(track ?? SubtitleTrack.no());
+    notifyListeners();
+  }
+
+  // Once a video's tracks are known: the user's choices for it, or else the PC's preferences.
+  Future<void> _applyTrackPreferences() async {
+    final player = _player;
+    final stream = _stream;
+    if (player == null || stream == null || _tracksApplied || _switching) return;
+    final audio = audioChoices(player.state.tracks);
+    if (audio.isEmpty) return;
+    _tracksApplied = true;
+    final selected = await selectedTracks();
+    _defaultSubtitle = selected.subtitle;
+    String? language(AudioTrack t) => TrackLanguages.languageOf(t.language, t.title);
+    AudioTrack? pick;
+    final chosen = _chosenAudio;
+    if (chosen != null) {
+      pick = audio.where((t) => language(t) == chosen.language && t.title == chosen.title).firstOrNull ??
+          audio.where((t) => language(t) == chosen.language).firstOrNull;
+    } else {
+      pick = TrackLanguages.select(audio, stream.tracks.audio, language);
+    }
+    if (pick != null && pick.id != selected.audio) await player.setAudioTrack(pick);
+    final playing = pick ?? audio.where((t) => t.id == selected.audio).firstOrNull;
+    final subtitle = _chosenSubtitle;
+    if (subtitle != null) {
+      final tracks = subtitleChoices(player.state.tracks);
+      String? subtitleLanguage(SubtitleTrack t) => TrackLanguages.languageOf(t.language, t.title);
+      final match = subtitle.off
+          ? SubtitleTrack.no()
+          : tracks.where((t) => subtitleLanguage(t) == subtitle.language && t.title == subtitle.title).firstOrNull ??
+              tracks.where((t) => subtitleLanguage(t) == subtitle.language).firstOrNull;
+      if (match != null) await player.setSubtitleTrack(match);
+    } else {
+      await _applySubtitlePreference(playing == null ? null : language(playing));
+    }
+    notifyListeners();
+  }
+
+  // The PC's subtitle priorities for audio in [audioLanguage]; with none that matches, the video's own default when
+  // [restoreDefault] (after another audio track was picked), or else what libmpv chose.
+  Future<void> _applySubtitlePreference(String? audioLanguage, {bool restoreDefault = false}) async {
+    final player = _player;
+    final stream = _stream;
+    if (player == null || stream == null) return;
+    final tracks = subtitleChoices(player.state.tracks);
+    final preferences = TrackLanguages.subtitlePreferences(audioLanguage, stream.tracks);
+    final off = SubtitleTrack.no();
+    final match = TrackLanguages.select<SubtitleTrack>(tracks, preferences, (t) => TrackLanguages.languageOf(t.language, t.title), off: off);
+    if (match != null) {
+      await player.setSubtitleTrack(match);
+    } else if (restoreDefault) {
+      final fallback = tracks.where((t) => t.id == _defaultSubtitle).firstOrNull;
+      await player.setSubtitleTrack(fallback ?? off);
+    }
   }
 
   /// Tells the PC how far the phone got. [final_]: the last report of this viewing.
@@ -386,6 +662,12 @@ class PhonePlayback extends ChangeNotifier {
     // The PC plays it now and keeps its own position.
     if (!_handedOver && !stalled) await _report(final_: true);
     _handedOver = false;
+    _endUpNext();
+    _setPending(null, notify: false);
+    _switching = false;
+    _chosenQuality = null;
+    _chosenAudio = null;
+    _chosenSubtitle = null;
     final previous = _detachPlayer();
     if (_stream != null) link.tell('stream-stop', {});
     _stream = null;
@@ -451,6 +733,9 @@ class PhonePlayback extends ChangeNotifier {
 
   void _fail(String message) {
     _resumeOnReturn = false;
+    _switching = false;
+    _endUpNext();
+    pending.value = null;
     // Whatever was playing stops: the error covers the screen.
     final previous = _detachPlayer();
     if (previous != null) unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () => _release(previous)));
@@ -491,7 +776,10 @@ class PhonePlayback extends ChangeNotifier {
     _stream = null;
     if (previous != null) unawaited(_release(previous));
     unawaited(proxy.dispose());
+    _upNextTimer?.cancel();
     notice.dispose();
+    pending.dispose();
+    upNext.dispose();
     super.dispose();
   }
 }

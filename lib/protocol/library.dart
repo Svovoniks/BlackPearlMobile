@@ -201,6 +201,10 @@ class StreamInfo {
     this.quality = 'original',
     this.qualities = const ['original'],
     this.note,
+    this.previous,
+    this.next,
+    this.first,
+    this.tracks = TrackPreferences.none,
   });
 
   final String id;
@@ -222,6 +226,13 @@ class StreamInfo {
   final String quality;
   final List<String> qualities;
   final String? note;
+
+  /// For an episode: what the PC's Previous and Next would play, and the show's first episode, where Loop all starts
+  /// again after the last one. Null for a film, at either end, and from PCs that don't say.
+  final EpisodeStep? previous, next, first;
+
+  /// The PC's audio and subtitle language priorities, to start with the tracks it would.
+  final TrackPreferences tracks;
 
   static StreamInfo? fromJson(Map<String, dynamic> json) {
     String? text(String name) => json[name] is String && (json[name] as String).isNotEmpty ? json[name] as String : null;
@@ -247,6 +258,10 @@ class StreamInfo {
       quality: text('quality') ?? 'original',
       qualities: qualities is List ? qualities.whereType<String>().toList() : const ['original'],
       note: text('note'),
+      previous: EpisodeStep.fromJson(json['previous']),
+      next: EpisodeStep.fromJson(json['next']),
+      first: EpisodeStep.fromJson(json['first']),
+      tracks: TrackPreferences.fromJson(json['tracks']),
     );
   }
 
@@ -266,6 +281,57 @@ class StreamInfo {
     buffer.write('#EXT-X-ENDLIST\n');
     return buffer.toString();
   }
+}
+
+/// An episode the player can step to.
+class EpisodeStep {
+  const EpisodeStep({required this.id, required this.title, this.detail});
+  final String id;
+  final String title;
+  final String? detail;
+
+  static EpisodeStep? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final id = json['id'], title = json['title'], detail = json['detail'];
+    if (id is! String || id.isEmpty) return null;
+    return EpisodeStep(id: id, title: title is String && title.isNotEmpty ? title : 'Episode', detail: detail is String && detail.isNotEmpty ? detail : null);
+  }
+}
+
+/// The PC's Settings › Playback languages, as two-letter codes in priority order. A rule's languages replace
+/// [subtitles] while the audio is in its language; `off` means no subtitles.
+class TrackPreferences {
+  const TrackPreferences({this.audio = const [], this.subtitles = const [], this.rules = const []});
+  static const none = TrackPreferences();
+  final List<String> audio;
+  final List<String> subtitles;
+  final List<SubtitleRule> rules;
+
+  bool get isEmpty => audio.isEmpty && subtitles.isEmpty && rules.isEmpty;
+
+  static List<String> _codes(Object? value) =>
+      value is List ? value.whereType<String>().map((v) => v.trim().toLowerCase()).where((v) => v.isNotEmpty).toList() : const [];
+
+  static TrackPreferences fromJson(Object? json) {
+    if (json is! Map) return none;
+    final rules = json['rules'];
+    return TrackPreferences(
+      audio: _codes(json['audio']),
+      subtitles: _codes(json['subtitles']),
+      rules: rules is List
+          ? [
+              for (final rule in rules.whereType<Map>())
+                if (rule['audio'] is String) SubtitleRule(audio: (rule['audio'] as String).toLowerCase(), languages: _codes(rule['languages'])),
+            ]
+          : const [],
+    );
+  }
+}
+
+class SubtitleRule {
+  const SubtitleRule({required this.audio, required this.languages});
+  final String audio;
+  final List<String> languages;
 }
 
 /// A quality's name on screen.

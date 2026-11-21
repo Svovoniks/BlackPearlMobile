@@ -225,6 +225,13 @@ or for a conversion (H.264 and AAC in MPEG-TS pieces of `segmentMs`, the last on
  "streamId":"<32 hex>","segments":708,"segmentMs":4000,"quality":"720p","qualities":["original","720p","480p"],"note":null}
 ```
 
+Both also carry, for an episode, the episodes the PC's own Previous and Next would play and the show's first episode,
+which Loop all starts again from after the last one, each as `{"id":"…","title":"…","detail":"Season 2 · Episode 4"}`
+or null (`previous`, `next`, `first`; `first` only when there is no `next`), and the PC's track preferences from
+Settings › Playback, as two-letter language codes in priority order: `"tracks":{"audio":["ja","en"],"subtitles":["en"],
+"rules":[{"audio":"en","languages":["off"]}]}`. A rule replaces `subtitles` while the audio is in its language; `off`
+means no subtitles. The phone picks its starting tracks with them as the PC would. Older PCs send none of these.
+
 `positionMs` is where to start: the PC's saved position, 0 for a watched video. `note` says why the phone got the
 file when it asked for a conversion (no converter, or a file already smaller). The PC keeps one stream per phone; a
 new `watch` replaces it and `{"type":"stream-stop"}` ends it. A failure is an `error` with the `request` and the code
