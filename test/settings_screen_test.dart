@@ -29,6 +29,18 @@ class _Releases implements UpdatePlatform {
   Future<void> install(String path) async {}
 }
 
+const _newer = {
+  'tag_name': 'v0.4.1',
+  'assets': [
+    {
+      'name': 'BlackPearl-v0.4.1.apk',
+      'size': 1000,
+      'browser_download_url': 'https://github.com/Svovoniks/BlackPearlMobile/releases/download/v0.4.1/BlackPearl-v0.4.1.apk',
+      'state': 'uploaded',
+    },
+  ],
+};
+
 Future<void> pump(WidgetTester tester, AppUpdater? updater) async {
   tester.view.physicalSize = const Size(1080, 2340);
   tester.view.devicePixelRatio = 2.75;
@@ -76,6 +88,23 @@ void main() {
     releases.answer.completeError(Exception('offline'));
     await tester.pumpAndSettle();
     expect(find.text("Couldn't check for updates. Check the connection and try again."), findsOneWidget);
+
+    // Hours later an automatic check finds a newer version: the answer under the button is out of date, so it goes.
+    await tester.pump(const Duration(hours: 7));
+    releases.answer = Completer();
+    unawaited(updater.check());
+    await tester.pump();
+    releases.answer.complete(_newer);
+    await tester.pumpAndSettle();
+    expect(updater.release?.version, '0.4.1');
+    expect(find.text("Couldn't check for updates. Check the connection and try again."), findsNothing);
+    expect(find.textContaining('BlackPearl Mobile 0.4.1'), findsNothing);
+
+    // Asked again, it says so, and that answer stays.
+    releases.answer = Completer()..complete(_newer);
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    expect(find.text('BlackPearl Mobile 0.4.1 is available.'), findsOneWidget);
   });
 
   testWidgets('Settings has no update check where the app does not update itself', (tester) async {

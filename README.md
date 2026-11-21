@@ -79,7 +79,7 @@ flutter run -d windows -a --preview=remote
 ```
 
 Screens: `remote`, `away`, `relay`, `cant-control`, `nothing`, `waiting`, `connecting`, `failed`, `removed`,
-`reconnecting`, `long`, `pairing`, `pairing-error`, `chooser`, and the update banner's `update-available`,
+`reconnecting`, `long`, `pairing`, `pairing-error`, `chooser`, `settings`, and the update banner's `update-available`,
 `update-permission`, `update-downloading`, `update-ready` and `update-failed`. Release builds ignore the flag.
 
 `--preview=loopback` runs the real app against a room server and a stand-in PC inside the same process: it pairs,

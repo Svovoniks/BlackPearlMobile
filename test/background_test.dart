@@ -118,6 +118,27 @@ void main() {
     });
   });
 
+  test('Disconnect also stops the service of a connection halted by a failure', () {
+    fakeAsync((async) {
+      final background = FakeBackground();
+      final app = model(background, AppSettings(MemorySettingsStore()));
+      final broken = PairedPc(pcId: pc.pcId, name: pc.name, server: 'ftp://rooms.example.com', phoneId: pc.phoneId, secret: pc.secret);
+      unawaited(app.store.save([broken]).then((_) => app.load()));
+      async.flushMicrotasks();
+      final connection = app.connection!;
+      expect(connection.halted, isTrue);
+      app.paused();
+      async.flushMicrotasks();
+      expect(background.running, isTrue);
+
+      background.press!('disconnect');
+      async.flushMicrotasks();
+      expect(connection.running, isFalse);
+      expect(background.running, isFalse);
+      app.dispose();
+    });
+  });
+
   test('turning the setting off stops the service; on again starts it', () async {
     final background = FakeBackground();
     final settings = AppSettings(MemorySettingsStore());

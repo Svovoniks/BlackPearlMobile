@@ -130,13 +130,20 @@ class AppUpdates extends StatefulWidget {
 }
 
 class _AppUpdatesState extends State<AppUpdates> {
-  /// What the last check from here found.
+  /// What the last check from here found, and the release on offer then. A later automatic check that finds another
+  /// release makes the answer out of date, so it goes.
   String? _result;
+  String? _resultRelease;
 
   Future<void> _check() async {
     final result = await widget.updater.check(manual: true);
     // A newer version also shows in the banner at the top of the screen.
-    if (mounted && result != null) setState(() => _result = result);
+    if (mounted && result != null) {
+      setState(() {
+        _result = result;
+        _resultRelease = widget.updater.release?.version;
+      });
+    }
   }
 
   @override
@@ -144,6 +151,7 @@ class _AppUpdatesState extends State<AppUpdates> {
     listenable: widget.updater,
     builder: (context, _) {
       final updater = widget.updater;
+      final result = updater.release?.version == _resultRelease ? _result : null;
       return Slab(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -161,9 +169,9 @@ class _AppUpdatesState extends State<AppUpdates> {
               onTap: updater.checking ? null : () => unawaited(_check()),
             ),
             // Below the button, so nothing above it moves under the finger when the answer comes.
-            if (updater.checking || _result != null) ...[
+            if (updater.checking || result != null) ...[
               const SizedBox(height: 10),
-              Text(updater.checking ? 'Checking…' : _result!, style: const TextStyle(color: Palette.muted, fontSize: 13, height: 1.35)),
+              Text(updater.checking ? 'Checking…' : result!, style: const TextStyle(color: Palette.muted, fontSize: 13, height: 1.35)),
             ],
           ],
         ),
