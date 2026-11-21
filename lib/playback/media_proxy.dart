@@ -14,9 +14,13 @@ import '../protocol/library.dart';
 /// A link that drops mid-video is waited for: [reader] gives the current connection's reader, and a read that fails
 /// because the link closed is tried again on the next one.
 class MediaProxy {
-  MediaProxy({required this.reader, this.chunk = 262144, this.ahead = 6, this.reconnectWait = const Duration(seconds: 45)});
+  MediaProxy({required this.reader, this.chunk = 262144, this.ahead = 6, this.reconnectWait = const Duration(seconds: 45), this.onLost});
 
   final MediaReader? Function() reader;
+
+  /// The PC no longer has the stream (it was restarted, or waited for the phone longer than it keeps one), or the link
+  /// stayed down past [reconnectWait]. The player itself would only wait; whoever plays asks for the stream again.
+  final void Function(StreamInfo stream)? onLost;
   final int chunk;
   final int ahead;
   final Duration reconnectWait;
@@ -83,11 +87,11 @@ class MediaProxy {
           await response.close();
           return;
         }
-        await _serve(request, 'stream/${stream.streamId}/$index', null, ContentType('video', 'mp2t'));
+        await _serve(request, stream, 'stream/${stream.streamId}/$index', null, ContentType('video', 'mp2t'));
         return;
       }
       if (!stream.hls && parts[2].startsWith('video')) {
-        await _serve(request, stream.resource!, stream.length, ContentType('application', 'octet-stream'));
+        await _serve(request, stream, stream.resource!, stream.length, ContentType('application', 'octet-stream'));
         return;
       }
       response.statusCode = HttpStatus.notFound;
@@ -104,13 +108,17 @@ class MediaProxy {
   }
 
   /// One read, waiting out a piece still converting and a link that drops.
-  Future<MediaReply> _read(String resource, int offset, int count, bool Function() wanted, Set<MediaRead> live) async {
+  Future<MediaReply> _read(String resource, int offset, int count, bool Function() wanted, Set<MediaRead> live, void Function() lost) async {
     final deadline = DateTime.now().add(reconnectWait);
     var busyTries = 0;
     while (true) {
       final current = reader();
       if (current == null) {
-        if (DateTime.now().isAfter(deadline) || !wanted()) throw const MediaReadException('closed', 'The connection to the PC closed.');
+        if (!wanted()) throw const MediaReadException('closed', 'The connection to the PC closed.');
+        if (DateTime.now().isAfter(deadline)) {
+          lost();
+          throw const MediaReadException('closed', 'The connection to the PC closed.');
+        }
         await Future<void>.delayed(const Duration(milliseconds: 400));
         continue;
       }
@@ -128,6 +136,7 @@ class MediaProxy {
           await Future<void>.delayed(const Duration(milliseconds: 400));
           continue;
         }
+        if (e.code == 'gone' || e.code == 'closed' || e.code == 'timeout') lost();
         rethrow;
       } finally {
         live.remove(read);
@@ -136,12 +145,13 @@ class MediaProxy {
   }
 
   /// Answers a request for [resource], whose length is [knownLength] or learned from the first read.
-  Future<void> _serve(HttpRequest request, String resource, int? knownLength, ContentType type) async {
+  Future<void> _serve(HttpRequest request, StreamInfo stream, String resource, int? knownLength, ContentType type) async {
     final response = request.response;
     var open = true;
     unawaited(response.done.then((_) => open = false, onError: (_) => open = false));
     bool wanted() => open;
     final live = <MediaRead>{};
+    void lost() => onLost?.call(stream);
     final range = request.headers.value(HttpHeaders.rangeHeader);
     var start = 0;
     int? end;
@@ -150,7 +160,7 @@ class MediaProxy {
       final first = match.group(1)!, last = match.group(2)!;
       if (first.isEmpty && last.isNotEmpty) {
         // The last N bytes.
-        final length = knownLength ?? (await _read(resource, 0, 1, wanted, live)).resourceLength;
+        final length = knownLength ?? (await _read(resource, 0, 1, wanted, live, lost)).resourceLength;
         start = max(0, length - int.parse(last));
         knownLength = length;
       } else {
@@ -161,7 +171,7 @@ class MediaProxy {
     // The first chunk tells a piece's length when it isn't known.
     MediaReply? first;
     if (knownLength == null) {
-      first = await _read(resource, start, chunk, wanted, live);
+      first = await _read(resource, start, chunk, wanted, live, lost);
       knownLength = first.resourceLength;
     }
     final length = knownLength;
@@ -201,7 +211,7 @@ class MediaProxy {
       while (pending.length < ahead && next <= last) {
         final size = min(chunk, last - next + 1);
         final at = next;
-        final read = _read(resource, at, size, wanted, live);
+        final read = _read(resource, at, size, wanted, live, lost);
         read.ignore();
         pending.add(read);
         next += size;

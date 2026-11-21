@@ -188,6 +188,23 @@ void main() {
       expect(body, piece);
     });
 
+    test('a stream the PC no longer has is reported, so the player can ask for it again', () async {
+      final pc = FakePc({});
+      final lost = <StreamInfo>[];
+      final proxy = MediaProxy(reader: () => pc.reader, onLost: lost.add);
+      addTearDown(proxy.dispose);
+      const stream = StreamInfo(id: 'v', title: 'V', hls: false, resource: 'file/v', length: 1000);
+      final uri = await proxy.open(stream);
+      // The reply is cut short or refused; either way the player doesn't get the bytes.
+      try {
+        final (status, _, body) = await get(uri, range: 'bytes=0-99');
+        expect(status == 206 && body.length == 100, isFalse);
+      } on HttpException {
+        // Cut off before the headers.
+      }
+      expect(lost, [stream]);
+    });
+
     test('a stream the proxy no longer serves is not found', () async {
       final pc = FakePc({'file/v': pattern(10)});
       final proxy = MediaProxy(reader: () => pc.reader);

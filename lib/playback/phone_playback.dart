@@ -17,7 +17,7 @@ enum PhonePlaybackPhase { idle, opening, playing, failed }
 class PhonePlayback extends ChangeNotifier {
   PhonePlayback({required this.link, MediaProxy? proxy, Player Function()? createPlayer, this.awayQuality = 'auto'})
     : _createPlayer = createPlayer ?? _defaultPlayer {
-    this.proxy = proxy ?? MediaProxy(reader: () => link.media);
+    this.proxy = proxy ?? MediaProxy(reader: () => link.media, onLost: _streamLost);
   }
 
   final RemoteLink link;
@@ -78,7 +78,7 @@ class PhonePlayback extends ChangeNotifier {
 
   /// Starts [id] on the phone. [takeOver]: it's the video the PC plays now; the PC stops and the phone continues from
   /// where it was. [quality] overrides the automatic choice; [startAt] the PC's resume point.
-  Future<void> watch(String id, {bool takeOver = false, String? quality, int? startAt}) async {
+  Future<bool> watch(String id, {bool takeOver = false, String? quality, int? startAt}) async {
     final attempt = ++_opening;
     // Another stream of the video on screen (a quality change, a recovery): the old one plays on until the new one is
     // ready, and stays if the new one can't be had.
@@ -108,7 +108,7 @@ class PhonePlayback extends ChangeNotifier {
           _fail(e.message);
         }
       }
-      return;
+      return false;
     } finally {
       _asking--;
     }
@@ -116,12 +116,18 @@ class PhonePlayback extends ChangeNotifier {
       // An answer nobody waits for any more: the PC holds a stream for it, which nothing will read. Let it go, unless
       // a newer request or stream is the PC's current one now.
       if (_asking == 0 && _stream == null && _player == null) link.tell('stream-stop', {});
-      return;
+      return false;
     }
     if (info == null) {
-      _fail("The PC's answer didn't say how to play the video.");
-      return;
+      if (replacing && _player != null) {
+        _say("The PC's answer didn't say how to play the video.");
+      } else {
+        _fail("The PC's answer didn't say how to play the video.");
+      }
+      return false;
     }
+    final stalledAt = _stalledAt;
+    _endRecovery();
     // Another quality of the same video replaces the player on screen: the new one takes over before the old one goes.
     final previous = _detachPlayer();
     _stream = info;
@@ -133,14 +139,20 @@ class PhonePlayback extends ChangeNotifier {
     final start = startAt ?? info.positionMs;
     await player.open(Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null));
     if (previous != null) unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () => _release(previous)));
-    if (attempt != _opening) return;
+    // The same spot running out again on a fresh stream is where the file itself ends.
+    _endsAt = stalledAt;
+    if (attempt != _opening) return true;
     _phase = PhonePlaybackPhase.playing;
     notifyListeners();
     _progressTimer?.cancel();
     _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (_player?.state.playing == true) unawaited(_report());
     });
+    return true;
   }
+
+  // Where a recovered stream started; data running out there again means the file is shorter than its header says.
+  int? _endsAt;
 
   /// Opens the same video again at another quality, from where it is now.
   Future<void> changeQuality(String quality) async {
@@ -155,20 +167,70 @@ class PhonePlayback extends ChangeNotifier {
     notice.value = text;
   }
 
+  // Where the video stopped when the data ran out, while it waits to be fetched again; null while it plays. Until a new
+  // stream plays, nothing is reported: a finished libmpv player starts again from 0:00 when Play is pressed.
+  int? _stalledAt;
+  Timer? _retryTimer, _giveUpTimer;
+  bool _waitingForLink = false;
+
   /// The player ran out of video before its end: the PC gave the stream up (the phone was away longer than it waits)
-  /// or the link failed. Ask for it again from where it stopped; after a few tries in a short while, say so.
+  /// or the link failed. Ask for it again from where it stopped. While the link is down it waits for it to come back,
+  /// for up to three minutes; a request that fails is tried again. After a few tries in a short while, it says so.
   Future<void> _recover() async {
     final stream = _stream;
-    final player = _player;
-    if (stream == null || player == null) return;
+    if (stream == null || _player == null || _stalledAt == null) return;
+    _retryTimer?.cancel();
+    if (!link.status.isConnected) {
+      _waitForLink();
+      return;
+    }
     final now = DateTime.now();
     _recoveries.removeWhere((at) => now.difference(at) > const Duration(minutes: 2));
     if (_recoveries.length >= 3) {
+      _endRecovery();
       _fail('The video stopped coming from the PC. Check the connection and try again.');
       return;
     }
     _recoveries.add(now);
-    await watch(stream.id, quality: stream.quality, startAt: player.state.position.inMilliseconds);
+    final ok = await watch(stream.id, quality: stream.quality, startAt: _stalledAt);
+    // Still the stalled stream: try again shortly (or once the link is back), within the same budget.
+    if (!ok && identical(_stream, stream) && _stalledAt != null) _retryTimer = Timer(const Duration(seconds: 5), () => unawaited(_recover()));
+  }
+
+  void _waitForLink() {
+    if (_waitingForLink) return;
+    _waitingForLink = true;
+    link.addListener(_linkChanged);
+    _giveUpTimer ??= Timer(const Duration(minutes: 3), () {
+      if (_stalledAt == null) return;
+      _endRecovery();
+      _fail('Lost the connection to the PC. Open the video again from the Library to carry on where it stopped.');
+    });
+  }
+
+  void _linkChanged() {
+    if (!link.status.isConnected) return;
+    link.removeListener(_linkChanged);
+    _waitingForLink = false;
+    unawaited(_recover());
+  }
+
+  void _endRecovery() {
+    _retryTimer?.cancel();
+    _giveUpTimer?.cancel();
+    _giveUpTimer = null;
+    if (_waitingForLink) link.removeListener(_linkChanged);
+    _waitingForLink = false;
+    _stalledAt = null;
+  }
+
+  /// The proxy found the PC's stream gone, or the link down for too long: recover from where the player is.
+  void _streamLost(StreamInfo lost) {
+    final player = _player;
+    // A read of a stream already replaced (another quality) failing is no news.
+    if (!identical(lost, _stream) || player == null || _stalledAt != null || _phase != PhonePlaybackPhase.playing) return;
+    _stalledAt = player.state.position.inMilliseconds;
+    unawaited(_recover());
   }
 
   /// Whether a position is the end of the video rather than where the data ran out.
@@ -187,7 +249,10 @@ class PhonePlayback extends ChangeNotifier {
     _subscriptions.add(player.stream.completed.listen((completed) {
       if (!completed || _stream == null || !identical(player, _player)) return;
       // libmpv also says "completed" when the data runs out mid-video.
-      if (!_atEnd(player)) {
+      final position = player.state.position.inMilliseconds;
+      final shortFile = _endsAt != null && (position - _endsAt!).abs() < 3000;
+      if (!_atEnd(player) && !shortFile) {
+        _stalledAt ??= position;
         unawaited(_recover());
         return;
       }
@@ -204,7 +269,7 @@ class PhonePlayback extends ChangeNotifier {
   Future<void> _report({bool final_ = false}) async {
     final stream = _stream;
     final player = _player;
-    if (stream == null || player == null) return;
+    if (stream == null || player == null || _stalledAt != null) return;
     final position = player.state.position.inMilliseconds;
     var duration = player.state.duration.inMilliseconds;
     if (duration <= 0) duration = stream.durationMs;
@@ -238,10 +303,14 @@ class PhonePlayback extends ChangeNotifier {
   /// must not be in use when it goes. With [viewing], only that viewing stops; a newer one plays on.
   Future<void> stop({int? viewing}) async {
     if (viewing != null && viewing != _viewing) return;
+    // A stall in progress: the PC keeps the position it last heard, not the stalled player's.
+    final stalled = _stalledAt != null;
+    _endRecovery();
+    _endsAt = null;
     _opening++;
     _recoveries.clear();
     // The PC plays it now and keeps its own position.
-    if (!_handedOver) await _report(final_: true);
+    if (!_handedOver && !stalled) await _report(final_: true);
     _handedOver = false;
     final previous = _detachPlayer();
     if (_stream != null) link.tell('stream-stop', {});
@@ -294,6 +363,7 @@ class PhonePlayback extends ChangeNotifier {
 
   @override
   void dispose() {
+    _endRecovery();
     _opening++;
     final previous = _detachPlayer();
     if (_stream != null) link.tell('stream-stop', {});
