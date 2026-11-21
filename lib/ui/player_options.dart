@@ -22,10 +22,11 @@ Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {Pl
       barrierLabel: 'Close',
       barrierColor: const Color(0x55000000),
       transitionDuration: const Duration(milliseconds: 220),
+      // Sized from the screen as it is now, so turning the phone with the panel open keeps it in proportion.
       pageBuilder: (context, _, _) => Align(
         alignment: Alignment.centerRight,
         child: SizedBox(
-          width: (size.width * 0.42).clamp(320.0, 420.0),
+          width: (MediaQuery.sizeOf(context).width * 0.42).clamp(320.0, 420.0).clamp(0.0, MediaQuery.sizeOf(context).width * 0.9),
           height: double.infinity,
           child: Material(
             color: Palette.surface,

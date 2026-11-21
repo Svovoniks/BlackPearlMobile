@@ -396,11 +396,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                   child: IgnorePointer(child: Center(child: _PendingChip(text: pending.label))),
                 ),
               if (upNext != null)
+                // Clear of the buttons in the middle: across the bottom in portrait, at the bottom left in landscape.
                 Positioned(
-                  right: 16 + safe.right,
-                  left: narrow ? 16 + safe.left : null,
+                  left: 16 + safe.left,
+                  right: narrow ? 16 + safe.right : null,
                   bottom: 96 + safe.bottom,
                   child: _UpNextCard(
+                    // In landscape it stays left of the buttons in the middle, about 300 wide with Previous and Next.
+                    maxWidth: narrow ? 340 : ((MediaQuery.sizeOf(context).width - 300) / 2 - 24 - safe.left).clamp(230.0, 340.0),
                     offer: upNext,
                     onPlay: () => unawaited(playback.playUpNext()),
                     onCancel: playback.cancelUpNext,
@@ -438,8 +441,9 @@ class _PendingChip extends StatelessWidget {
 
 /// The next episode, with a countdown, as on the PC: it plays when the bar fills, unless canceled.
 class _UpNextCard extends StatefulWidget {
-  const _UpNextCard({required this.offer, required this.onPlay, required this.onCancel});
+  const _UpNextCard({required this.offer, required this.onPlay, required this.onCancel, this.maxWidth = 340});
   final UpNextOffer offer;
+  final double maxWidth;
   final VoidCallback onPlay;
   final VoidCallback onCancel;
 
@@ -471,7 +475,7 @@ class _UpNextCardState extends State<_UpNextCard> {
     final seconds = (left.inMilliseconds / 1000).ceil().clamp(0, 999);
     final progress = (1 - left.inMilliseconds / offer.length.inMilliseconds).clamp(0.0, 1.0);
     return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 340),
+      constraints: BoxConstraints(maxWidth: widget.maxWidth),
       child: Material(
         color: const Color(0xF2151A17),
         borderRadius: BorderRadius.circular(18),

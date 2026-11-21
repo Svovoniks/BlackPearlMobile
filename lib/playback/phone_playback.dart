@@ -246,13 +246,13 @@ class PhonePlayback extends ChangeNotifier {
   /// Opens the same video again at another quality, from where it is now.
   Future<void> changeQuality(String quality) async {
     final current = _stream;
-    if (current == null || pending.value?.quality == quality) return;
+    if (current == null || pending.value?.quality == quality || pending.value?.episode != null) return;
     if (pending.value == null && quality == current.quality) return;
-    _chosenQuality = quality;
     final player = _player;
     // Where it stopped while stalled; the opening position until the player has said where it is.
     final position = _stalledAt ?? (player == null ? current.positionMs : _positionOf(player));
-    await watch(current.id, quality: quality, startAt: position);
+    // The next episode opens at the quality chosen here, once the PC has given it.
+    if (await watch(current.id, quality: quality, startAt: position)) _chosenQuality = quality;
   }
 
   /// Waits until the link is connected, or [limit] has passed.
@@ -390,7 +390,12 @@ class PhonePlayback extends ChangeNotifier {
       notifyListeners();
     }));
     _subscriptions.add(player.stream.completed.listen((completed) {
-      if (!completed || _stream == null || !identical(player, _player) || _switching) return;
+      if (_stream == null || !identical(player, _player) || _switching) return;
+      // Seeking back or playing again after the end: the next end counts again.
+      if (!completed) {
+        _ended = false;
+        return;
+      }
       // libmpv also says "completed" when the data runs out mid-video.
       final position = _positionOf(player);
       final shortFile = _endsAt != null && (position - _endsAt!).abs() < 3000;
@@ -448,7 +453,10 @@ class PhonePlayback extends ChangeNotifier {
   }
 
   /// Plays another episode on the same player, at the quality chosen in this viewing.
-  Future<bool> playEpisode(EpisodeStep step) => watch(step.id, quality: _chosenQuality, step: step);
+  Future<bool> playEpisode(EpisodeStep step) async {
+    if (pending.value?.episode?.id == step.id) return false;
+    return watch(step.id, quality: _chosenQuality, step: step);
+  }
 
   /// The next episode, offered when this one ends.
   final ValueNotifier<UpNextOffer?> upNext = ValueNotifier(null);
@@ -630,6 +638,7 @@ class PhonePlayback extends ChangeNotifier {
     final stream = _stream;
     final player = _player;
     if (stream == null || player == null) return null;
+    _endUpNext();
     await player.pause();
     // While stalled, where the video stopped: a stopped player may have gone back to 0:00.
     final position = _stalledAt ?? _positionOf(player);
