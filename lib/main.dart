@@ -6,19 +6,23 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:media_kit/media_kit.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_model.dart';
+import 'background/background_link.dart';
 import 'connection/remote_connection.dart';
 import 'connection/webrtc_peer.dart';
 import 'debug/loopback.dart';
 import 'debug/preview.dart';
+import 'playback/phone_playback.dart';
 import 'protocol/pair_link.dart';
+import 'storage/app_settings.dart';
 import 'storage/paired_pcs.dart';
 import 'ui/app_prompts.dart';
+import 'ui/home_shell.dart';
 import 'ui/pairing_screen.dart';
 import 'ui/pc_chooser.dart';
-import 'ui/remote_screen.dart';
 import 'ui/theme.dart';
 import 'ui/update_banner.dart';
 import 'update/android_update_platform.dart';
@@ -26,6 +30,8 @@ import 'update/app_update.dart';
 
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  // libmpv, for watching the PC's videos on the phone.
+  MediaKit.ensureInitialized();
   // Debug builds only: `--preview=<screen>` shows a screen with made-up state, for screenshots on a PC.
   if (kDebugMode) {
     final preview = args.where((a) => a.startsWith('--preview=')).map((a) => a.substring(10)).firstOrNull;
@@ -39,8 +45,13 @@ Future<void> main(List<String> args) async {
     }
   }
   final identity = await _identity();
+  final settings = AppSettings(PreferencesSettingsStore());
+  await settings.load();
   final model = AppModel(
     store: PairedPcStore(SecureSecretStore()),
+    settings: settings,
+    background: BackgroundLink.supported ? BackgroundLink() : null,
+    createPlayback: (connection) => PhonePlayback(link: connection),
     connect: (target, {onPaired, onPcName}) => RemoteConnection(
       target: target,
       identity: identity,
@@ -68,6 +79,7 @@ Future<void> _runLoopback(List<String> args) async {
   final identity = await _identity();
   final model = AppModel(
     store: PairedPcStore(MemorySecretStore()),
+    createPlayback: (connection) => PhonePlayback(link: connection),
     connect: (target, {onPaired, onPcName}) => RemoteConnection(
       target: target,
       identity: identity,
@@ -258,8 +270,9 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
           onCancel: connection != null || model.pcs.isNotEmpty ? model.cancelPairing : null,
         );
       }
-      return RemoteScreen(
-        link: connection,
+      return HomeShell(
+        model: model,
+        connection: connection,
         onChoosePc: () => showPcChooser(context, model, updater: widget.updater),
         onPairAgain: () => model.requestPairing(error: connection.status.message),
       );

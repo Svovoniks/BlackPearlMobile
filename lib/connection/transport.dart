@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 /// How the link reaches the PC, from the selected ICE candidate pair.
 enum NetworkPath {
@@ -45,6 +46,17 @@ abstract class PeerLink {
 
   /// The link is gone (channel closed, ICE failed or stayed disconnected). Called at most once.
   void Function(String reason)? onClosed;
+
+  // The `media-v1` channel beside `remote-v1`, for video and picture bytes. A link without one never opens it.
+
+  /// Sends a text message on the media channel.
+  void sendMedia(String text) {}
+  void Function()? onMediaOpen;
+  void Function(Uint8List data)? onMediaBinary;
+  void Function(String text)? onMediaText;
+
+  /// The media channel closed, as it does at once on a PC that doesn't know it.
+  void Function()? onMediaClosed;
 }
 
 typedef PeerFactory = Future<PeerLink> Function(List<Map<String, dynamic>> iceServers, bool forceRelay);

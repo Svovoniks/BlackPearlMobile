@@ -113,7 +113,9 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 ### Opening
 
 1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>"}`
-2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true}`.
+2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch"]}`.
+   `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"); a PC from
+   before them sends none.
    If the PC can't speak the phone's protocol it sends `{"type":"error","code":"protocol","message":"…"}` saying which
    app to update, and closes.
 3. While pairing (the session was signed with a pairing code), the phone then sends
@@ -139,7 +141,8 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
  "fullscreen":false,
  "hasPrevious":true, "hasNext":true,
  "canControl":true,            // false in a room where only whoever plays the video may control it
- "room":null}                  // or {"name":"Movie club","people":3} while the PC is in a room
+ "room":null,                  // or {"name":"Movie club","people":3} while the PC is in a room
+ "mediaId":"<library id>"}     // the library video the PC plays on its own, or null (nothing, music, or a room's video)
 ```
 
 While playing, the phone advances the position itself from when the message arrived; the PC also sends a fresh
@@ -173,3 +176,95 @@ the same way. With `canControl` false, every action except `volume`, `mute` and 
 
 Unknown message types and actions are ignored, so either side can add new ones within version 1. Changing the
 meaning of an existing message needs version 2.
+
+## The library and watching on the phone
+
+A PC whose welcome lists `library` answers `browse`; one that lists `watch` also streams videos to the phone and takes
+them back. All of these messages travel on `remote-v1`, except the video and picture bytes, which use a second data
+channel the phone opens beside it.
+
+### Browsing
+
+Phone → PC: `{"type":"browse","request":<n>,"home":false,"category":0,"query":"","parentId":null,"season":null,"page":0,"seed":0}`.
+`category` is 0 for all videos, 1 films, 2 shows, 3 anime, 6 music. `parentId` with a show's entry id lists its
+seasons; with a `season` as well, that season's episodes. `home` true lists Home instead: Continue watching, then
+suggestions for each kind (shuffled by `seed`), then one random pick.
+
+PC → phone:
+
+```json
+{"type":"page","request":7,"total":53,"page":0,"pageSize":40,"location":"All titles",
+ "entries":[{"id":"…","title":"Night Signal","caption":"Show · 2021","level":"series|season|episode|movie",
+   "season":null,"episode":null,"overview":"…","kind":"Movie|Show|Anime|Music","runtimeMinutes":48,"year":2021,
+   "episodes":10,"homeSection":"continue|suggestions|mystery|null","positionMs":0,"watched":false,
+   "artwork":"<token or null>","playable":false}]}
+```
+
+`playable` entries are files the phone can watch or start on the PC: films, episodes, and Continue watching entries
+(which name the episode to resume even when their level is `series`). `positionMs` and `watched` are the PC's own
+resume point and watched mark. A failure is an `error` with code `browse` and the `request`.
+
+### Watching on the phone
+
+Phone → PC: `{"type":"watch","request":<n>,"id":"<entry id>","quality":"auto|original|1080p|720p|480p","network":"home|away|relayed","takeOver":false}`.
+`auto` plays the file itself on the home network and a 720p conversion elsewhere. `takeOver` true, for the video in
+the PC's `mediaId`, makes the PC save where it is and stop, so the phone continues it.
+
+PC → phone, for the file itself:
+
+```json
+{"type":"stream","request":3,"id":"…","title":"Night Signal","detail":"Season 2 · Episode 3","positionMs":1122000,
+ "durationMs":2830000,"kind":"file","resource":"file/<id>","length":1834567890,"extension":".mkv",
+ "quality":"original","qualities":["original","1080p","720p","480p"],"note":null}
+```
+
+or for a conversion (H.264 and AAC in MPEG-TS pieces of `segmentMs`, the last one shorter):
+
+```json
+{"type":"stream","request":3,"id":"…","title":"…","detail":null,"positionMs":0,"durationMs":2830000,"kind":"hls",
+ "streamId":"<32 hex>","segments":708,"segmentMs":4000,"quality":"720p","qualities":["original","720p","480p"],"note":null}
+```
+
+`positionMs` is where to start: the PC's saved position, 0 for a watched video. `note` says why the phone got the
+file when it asked for a conversion (no converter, or a file already smaller). The PC keeps one stream per phone; a
+new `watch` replaces it and `{"type":"stream-stop"}` ends it. A failure is an `error` with the `request` and the code
+`gone` (not in the library, or its drive is disconnected).
+
+Phone → PC while watching, every 10 seconds, on pause, and when it stops:
+`{"type":"progress","id":"…","positionMs":1180000,"durationMs":2830000,"ended":false,"final":false}`. The PC saves it
+as its own playback: the resume point, when it was last played, and the watched mark once `ended` is true or the
+position is within 2 seconds of the end. `final` is true for the last report of a viewing. The PC ignores reports for
+the video it is playing itself at that moment.
+
+### Continuing on the PC
+
+Phone → PC: `{"type":"play","request":<n>,"id":"…","positionMs":1180000}` plays the video on the PC from that
+position, and answers `{"type":"done","request":<n>}` once it has started. It needs `canStart`; a refusal is an
+`error` with code `not-allowed`, `in-room` (the PC is in a room) or `gone`.
+
+### The media channel, `media-v1`
+
+The phone opens a second data channel labelled `media-v1`, reliable and ordered, with the first. A PC that doesn't
+know it closes it. The phone asks with text messages:
+
+`{"type":"read","id":<u32>,"resource":"<resource>","offset":<bytes>,"count":<1 to 262144>}`, and
+`{"type":"cancel","id":<u32>}` for a read it no longer needs.
+
+Resources: `file/<id>` (the video of the phone's current `file` stream), `stream/<stream id>/<piece>` (a piece of
+its current conversion) and `art/<token>/<width>` (an entry's picture as JPEG, at most `width` pixels wide, 64 to
+1280, never enlarged).
+
+The PC answers reads in the order they were asked, each as binary frames of at most 16 KiB of data after a 24-byte
+little-endian header:
+
+| bytes | field |
+| --- | --- |
+| 0–3 | read id (u32) |
+| 4–7 | offset of this frame's data in the reply (i32) |
+| 8–11 | the reply's length (i32); shorter than `count` at the end of the resource, 0 past it |
+| 12–15 | reserved, 0 |
+| 16–23 | the whole resource's length (i64) |
+
+A read that can't be answered gets a text `{"type":"read-error","id":<u32>,"code":"busy|gone|invalid|failed","message":"…"}`.
+`busy` means not ready yet (a piece still converting): ask again shortly. The PC queues at most 64 reads per phone and
+answers `busy` past that.

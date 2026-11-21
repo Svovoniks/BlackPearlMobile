@@ -44,6 +44,7 @@ class RemoteState {
     this.hasNext = false,
     this.canControl = true,
     this.room,
+    this.mediaId,
   });
 
   /// False when nothing is loaded in the player; the playback fields are then meaningless.
@@ -65,6 +66,9 @@ class RemoteState {
   /// False in a room where only whoever plays the video may control it.
   final bool canControl;
   final RemoteRoom? room;
+
+  /// The library video the PC plays on its own, which the phone can take over; null in a room or for music.
+  final String? mediaId;
 
   static const RemoteState nothing = RemoteState(media: false);
 
@@ -104,6 +108,7 @@ class RemoteState {
       hasNext: flag('hasNext', false),
       canControl: flag('canControl', true),
       room: room,
+      mediaId: media && json['mediaId'] is String && (json['mediaId'] as String).isNotEmpty ? json['mediaId'] as String : null,
     );
   }
 
@@ -130,6 +135,7 @@ class RemoteState {
     hasNext: hasNext,
     canControl: canControl,
     room: room,
+    mediaId: mediaId,
   );
 }
 
