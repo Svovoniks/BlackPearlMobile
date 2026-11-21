@@ -15,6 +15,7 @@ import '../storage/paired_pcs.dart';
 import '../ui/pairing_screen.dart';
 import '../ui/pc_chooser.dart';
 import '../ui/remote_screen.dart';
+import '../ui/settings_screen.dart';
 import '../ui/theme.dart';
 import '../ui/update_banner.dart';
 import '../update/app_update.dart';
@@ -195,7 +196,13 @@ class PreviewApp extends StatelessWidget {
           ),
         ),
       ),
-      'chooser' => _ChooserPreview(updater: _updater()),
+      'chooser' => const _ChooserPreview(),
+      'settings' => SettingsScreen(
+        model: AppModel(store: PairedPcStore(MemorySecretStore()), connect: (_, {onPaired, onPcName}) => throw UnsupportedError('preview')),
+        link: link(connected, sampleState),
+        onChoosePc: () {},
+        updater: _updater(),
+      ),
       _ when screen.startsWith('update-') => _updatePreview(_remote(link(connected, sampleState))),
       _ => _remote(link(connected, sampleState)),
     };
@@ -276,8 +283,7 @@ class _UpToDate implements UpdatePlatform {
 
 /// The PC sheet over the Remote screen, with two paired PCs.
 class _ChooserPreview extends StatefulWidget {
-  const _ChooserPreview({required this.updater});
-  final AppUpdater updater;
+  const _ChooserPreview();
   @override
   State<_ChooserPreview> createState() => _ChooserPreviewState();
 }
@@ -304,7 +310,7 @@ class _ChooserPreviewState extends State<_ChooserPreview> {
         PairedPc(pcId: 'B' * 32, name: 'Study', server: 'https://rooms.example.com', phoneId: 'c' * 32, secret: 'd' * 64),
       ]);
       await _model.load();
-      if (mounted) unawaited(showPcChooser(context, _model, updater: widget.updater));
+      if (mounted) unawaited(showPcChooser(context, _model));
     }());
   }
 

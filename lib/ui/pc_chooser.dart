@@ -3,24 +3,22 @@ import 'package:material_ui/material_ui.dart';
 import '../app_model.dart';
 import '../connection/remote_link.dart';
 import '../storage/paired_pcs.dart';
-import '../update/app_update.dart';
 import 'pebbles.dart';
 import 'theme.dart';
 
 /// The sheet behind the PC chip: switch PCs, pair another, forget this one.
-Future<void> showPcChooser(BuildContext context, AppModel model, {AppUpdater? updater}) => showModalBottomSheet<void>(
+Future<void> showPcChooser(BuildContext context, AppModel model) => showModalBottomSheet<void>(
   context: context,
   isScrollControlled: true,
   builder: (context) => ListenableBuilder(
     listenable: model,
-    builder: (context, _) => _PcChooser(model: model, updater: updater),
+    builder: (context, _) => _PcChooser(model: model),
   ),
 );
 
 class _PcChooser extends StatelessWidget {
-  const _PcChooser({required this.model, this.updater});
+  const _PcChooser({required this.model});
   final AppModel model;
-  final AppUpdater? updater;
 
   @override
   Widget build(BuildContext context) {
@@ -81,7 +79,6 @@ class _PcChooser extends StatelessWidget {
                 },
               ),
             ],
-            if (updater != null) ...[const SizedBox(height: 14), _AppVersion(updater: updater!)],
           ],
         ),
       ),
@@ -114,56 +111,6 @@ class _PcChooser extends StatelessWidget {
           child: const Text('Forget', style: TextStyle(color: Palette.danger)),
         ),
       ],
-    ),
-  );
-}
-
-/// The app's version, and a way to check for a newer one now instead of waiting for the next automatic check.
-class _AppVersion extends StatefulWidget {
-  const _AppVersion({required this.updater});
-  final AppUpdater updater;
-
-  @override
-  State<_AppVersion> createState() => _AppVersionState();
-}
-
-class _AppVersionState extends State<_AppVersion> {
-  /// What the last check from here found, shown in place of the version.
-  String? _result;
-
-  Future<void> _check() async {
-    final updater = widget.updater;
-    final result = await updater.check(manual: true);
-    if (!mounted || result == null) return;
-    // A newer version shows in the banner, which this sheet would cover.
-    if (updater.showBanner) {
-      Navigator.of(context).pop();
-    } else {
-      setState(() => _result = result);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    listenable: widget.updater,
-    // The button keeps its place and label while the text beside it changes, so nothing moves under the finger.
-    builder: (context, _) => Padding(
-      padding: const EdgeInsets.only(left: 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              widget.updater.checking ? 'Checking…' : _result ?? 'BlackPearl Mobile ${widget.updater.currentVersion}',
-              style: const TextStyle(color: Palette.muted, fontSize: 12.5, height: 1.3),
-            ),
-          ),
-          TextButton(
-            onPressed: widget.updater.checking ? null : _check,
-            style: TextButton.styleFrom(foregroundColor: Palette.accent, textStyle: const TextStyle(fontSize: 12.5)),
-            child: const Text('Check for updates'),
-          ),
-        ],
-      ),
     ),
   );
 }

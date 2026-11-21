@@ -65,7 +65,7 @@ must match `version:` in `pubspec.yaml`. Signing uses the repository secrets `AN
 without `android/key.properties` is signed with the debug key, so it can't update an installed release.
 
 Installed releases update themselves from those GitHub releases. On start, and on return after six hours, the app asks
-GitHub for the latest release. When it is newer, a banner offers it. The app downloads the APK, checks its size and the
+GitHub for the latest release, and Settings › Check for updates asks right away. When it is newer, a banner offers it. The app downloads the APK, checks its size and the
 SHA-256 GitHub lists for it, and hands it to Android's installer. Android asks the user once to let the app install
 apps, and again to confirm each update. It installs only an APK signed with the same key. Debug builds don't check.
 
