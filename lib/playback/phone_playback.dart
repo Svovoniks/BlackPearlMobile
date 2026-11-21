@@ -360,6 +360,8 @@ class PhonePlayback extends ChangeNotifier {
     await _report(final_: true);
     try {
       if (!link.status.isConnected) await _whenConnected(const Duration(seconds: 20));
+      // Left while it waited.
+      if (!identical(_stream, stream)) return null;
       await link.ask('play', {'id': stream.id, 'positionMs': position}, timeout: const Duration(seconds: 30));
     } on RemoteRequestException catch (e) {
       return e.message;
@@ -374,6 +376,7 @@ class PhonePlayback extends ChangeNotifier {
   /// must not be in use when it goes. With [viewing], only that viewing stops; a newer one plays on.
   Future<void> stop({int? viewing}) async {
     if (viewing != null && viewing != _viewing) return;
+    _resumeOnReturn = false;
     // A stall in progress: the PC keeps the position it last heard, not the stalled player's.
     final stalled = _stalledAt != null;
     _endRecovery();
@@ -399,6 +402,9 @@ class PhonePlayback extends ChangeNotifier {
   /// The app went to the background (and not to a small picture-in-picture window): the video waits, and the PC
   /// learns where it is.
   Future<void> background() async {
+    // Already in the background (a second call, as when the background service is turned off from its notification):
+    // what was playing then is still what to resume.
+    if (_inBackground) return;
     _inBackground = true;
     final player = _player;
     if (player == null) {
@@ -414,13 +420,25 @@ class PhonePlayback extends ChangeNotifier {
   /// The app is back: a video that was playing carries on.
   Future<void> foreground() async {
     _inBackground = false;
-    final player = _player;
-    if (!_resumeOnReturn || player == null) return;
+    // Once only: a video still opening plays as it opens now, and a later return to the app (the notification shade
+    // closing counts) doesn't start a video the user paused since.
+    final resume = _resumeOnReturn;
     _resumeOnReturn = false;
-    await player.play();
+    final player = _player;
+    if (resume && player != null) await player.play();
+  }
+
+  /// The small picture-in-picture window was closed: the video stops, and stays stopped when the app opens again.
+  Future<void> pictureInPictureClosed() async {
+    _resumeOnReturn = false;
+    final player = _player;
+    if (player == null) return;
+    if (player.state.playing) await player.pause();
+    await _report(final_: true);
   }
 
   void _fail(String message) {
+    _resumeOnReturn = false;
     // Whatever was playing stops: the error covers the screen.
     final previous = _detachPlayer();
     if (previous != null) unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () => _release(previous)));

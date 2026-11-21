@@ -34,7 +34,7 @@ Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   // libmpv, for watching the PC's videos on the phone.
   MediaKit.ensureInitialized();
-  unawaited(PictureInPicture.instance.start());
+  PictureInPicture.instance.start();
   // Debug builds only: `--preview=<screen>` shows a screen with made-up state, for screenshots on a PC.
   if (kDebugMode) {
     final preview = args.where((a) => a.startsWith('--preview=')).map((a) => a.substring(10)).firstOrNull;

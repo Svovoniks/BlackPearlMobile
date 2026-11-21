@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import androidx.lifecycle.Lifecycle
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -29,6 +30,29 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         pictureInPicture?.dispose()
         pictureInPicture = PictureInPicture(this, flutterEngine.dartExecutor.binaryMessenger)
+        // The camera cutout's safe insets, in pixels. Flutter reports none while the system bars are hidden, which is
+        // when the player needs them.
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "blackpearl/display").setMethodCallHandler { call, result ->
+            if (call.method == "cutout") {
+                // In the window's current rotation, whether or not the bars show.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val insets = windowManager.currentWindowMetrics.windowInsets.getInsetsIgnoringVisibility(android.view.WindowInsets.Type.displayCutout())
+                    result.success(mapOf("left" to insets.left, "top" to insets.top, "right" to insets.right, "bottom" to insets.bottom))
+                } else {
+                    val cutout = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) window?.decorView?.rootWindowInsets?.displayCutout else null
+                    result.success(
+                        mapOf(
+                            "left" to (cutout?.safeInsetLeft ?: 0),
+                            "top" to (cutout?.safeInsetTop ?: 0),
+                            "right" to (cutout?.safeInsetRight ?: 0),
+                            "bottom" to (cutout?.safeInsetBottom ?: 0),
+                        )
+                    )
+                }
+            } else {
+                result.notImplemented()
+            }
+        }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "blackpearl/notifications").setMethodCallHandler { call, result ->
             if (call.method == "request") {
                 // Android 13 and later show the background service's notification only with this permission.
@@ -89,6 +113,14 @@ class MainActivity : FlutterActivity() {
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         pictureInPicture?.changed(isInPictureInPictureMode)
+        // Leaving picture in picture while stopped means its window was closed, not expanded back to the app.
+        if (!isInPictureInPictureMode && lifecycle.currentState == Lifecycle.State.CREATED) pictureInPicture?.dismissed()
+    }
+
+    override fun onStop() {
+        // Stopping while still in picture in picture means its window was closed.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) pictureInPicture?.dismissed()
+        super.onStop()
     }
 
     override fun onDestroy() {

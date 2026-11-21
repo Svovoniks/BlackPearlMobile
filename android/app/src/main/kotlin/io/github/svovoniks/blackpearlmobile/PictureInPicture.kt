@@ -24,6 +24,9 @@ import io.flutter.plugin.common.MethodChannel
 class PictureInPicture(private val activity: Activity, messenger: BinaryMessenger) {
     companion object {
         private const val ACTION_TOGGLE = "io.github.svovoniks.blackpearlmobile.PIP_TOGGLE"
+        // The activity's instance that owns the channel now. An old activity going away after a new one attached must
+        // not take the handler from it.
+        private var current: PictureInPicture? = null
     }
 
     private val channel = MethodChannel(messenger, "blackpearl/pip")
@@ -74,6 +77,10 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
             ContextCompat.registerReceiver(activity, toggle, IntentFilter(ACTION_TOGGLE), ContextCompat.RECEIVER_NOT_EXPORTED)
             registered = true
         }
+        current = this
+        // The app may have started without a window (the background service), or this is a new activity: the player
+        // says again what it wants.
+        channel.invokeMethod("ready", supported)
     }
 
     private fun params(): PictureInPictureParams {
@@ -112,8 +119,14 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
 
     fun changed(active: Boolean) = channel.invokeMethod("changed", active)
 
+    /** The small window was closed: the activity stops while still in picture in picture. */
+    fun dismissed() = channel.invokeMethod("dismissed", null)
+
     fun dispose() {
-        channel.setMethodCallHandler(null)
+        if (current === this) {
+            channel.setMethodCallHandler(null)
+            current = null
+        }
         if (registered) {
             try {
                 activity.unregisterReceiver(toggle)
