@@ -118,6 +118,13 @@ class MainActivity : FlutterActivity() {
         if (!isInPictureInPictureMode && lifecycle.currentState == Lifecycle.State.CREATED) pictureInPicture?.dismissed()
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Flutter hears "resumed" only from onResume, which a picture-in-picture window doesn't reach after the screen
+        // was off; the app still believes it is in the background.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) pictureInPicture?.shown()
+    }
+
     override fun onDestroy() {
         pictureInPicture?.dispose()
         pictureInPicture = null

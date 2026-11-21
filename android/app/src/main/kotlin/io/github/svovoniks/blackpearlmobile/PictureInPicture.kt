@@ -119,8 +119,11 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
 
     fun changed(active: Boolean) = channel.invokeMethod("changed", active)
 
-    /** The small window was closed: the activity stops while still in picture in picture. */
+    /** The small window was closed (picture in picture ended while the activity was stopped). */
     fun dismissed() = channel.invokeMethod("dismissed", null)
+
+    /** The window shows again after the screen was off: the activity starts, but goes no further than paused. */
+    fun shown() = channel.invokeMethod("shown", null)
 
     fun dispose() {
         if (current === this) {

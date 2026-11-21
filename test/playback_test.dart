@@ -56,6 +56,24 @@ void main() {
     playback.dispose();
   });
 
+  test('leaving while a video opens resumes it once on return; a picture-in-picture window showing again clears that', () async {
+    final pc = link();
+    pc.answer = (type, fields) => Completer<Map<String, dynamic>>().future;
+    final playback = PhonePlayback(link: pc, createPlayer: () => throw StateError('no player'));
+    unawaited(playback.watch('film'));
+    await pumpEventQueue();
+    await playback.background();
+    expect(playback.resumesOnReturn, isTrue);
+    expect(playback.inBackground, isTrue);
+    playback.pictureInPictureShown();
+    expect(playback.resumesOnReturn, isFalse);
+    expect(playback.inBackground, isFalse);
+    await playback.background();
+    await playback.foreground();
+    expect(playback.resumesOnReturn, isFalse, reason: 'used once');
+    playback.dispose();
+  });
+
   test('a refused watch says why', () async {
     final pc = link();
     pc.answer = (type, fields) => Future.error(const RemoteRequestException('gone', 'Its drive may be disconnected.'));

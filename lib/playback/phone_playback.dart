@@ -428,6 +428,18 @@ class PhonePlayback extends ChangeNotifier {
     if (resume && player != null) await player.play();
   }
 
+  /// The picture-in-picture window is on screen (again, after the screen was off, or its button was used): the app
+  /// isn't in the background, and what the user does in the window stands; nothing resumes later on its own.
+  void pictureInPictureShown() {
+    _inBackground = false;
+    _resumeOnReturn = false;
+  }
+
+  @visibleForTesting
+  bool get resumesOnReturn => _resumeOnReturn;
+  @visibleForTesting
+  bool get inBackground => _inBackground;
+
   /// The small picture-in-picture window was closed: the video stops, and stays stopped when the app opens again.
   Future<void> pictureInPictureClosed() async {
     _resumeOnReturn = false;

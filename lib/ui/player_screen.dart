@@ -69,6 +69,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     pip.active.addListener(_pipChanged);
     pip.onToggle = _toggle;
     pip.onDismissed = _pipDismissed;
+    pip.onShown = playback.pictureInPictureShown;
     pip.onReady = _syncPip;
     // The app may have started without a window to ask whether picture in picture is there.
     unawaited(pip.refresh().then((_) {
@@ -90,6 +91,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     pip.active.removeListener(_pipChanged);
     if (pip.onToggle == _toggle) pip.onToggle = null;
     if (pip.onDismissed == _pipDismissed) pip.onDismissed = null;
+    if (pip.onShown == playback.pictureInPictureShown) pip.onShown = null;
     if (pip.onReady == _syncPip) pip.onReady = null;
     // Leaving the player: leaving the app no longer moves anything to a small window.
     unawaited(pip.update(wanted: false));
@@ -130,7 +132,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (mounted) setState(() {});
   }
 
-  void _toggle() => unawaited(_player?.playOrPause());
+  // The window's button: the user is watching the window, so nothing waits to resume.
+  void _toggle() {
+    playback.pictureInPictureShown();
+    unawaited(_player?.playOrPause());
+  }
 
   // Closing the small window stops the video; it doesn't start again by itself when the app is next opened.
   void _pipDismissed() => unawaited(playback.pictureInPictureClosed());

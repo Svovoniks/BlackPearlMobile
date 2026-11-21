@@ -28,6 +28,12 @@ class PictureInPicture {
   /// The user closed the small window: the video stops there.
   VoidCallback? onDismissed;
 
+  /// The window shows again after the screen was off; the app isn't in the background any more.
+  VoidCallback? onShown;
+
+  /// The same, for the app as a whole: its link to the PC comes back, as on any return to the app.
+  VoidCallback? onAppShown;
+
   /// An activity attached and learned nothing yet: whoever uses picture in picture says what it wants again.
   VoidCallback? onReady;
 
@@ -49,6 +55,9 @@ class PictureInPicture {
         case 'dismissed':
           active.value = false;
           onDismissed?.call();
+        case 'shown':
+          onShown?.call();
+          onAppShown?.call();
         case 'toggle':
           onToggle?.call();
       }
