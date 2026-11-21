@@ -93,6 +93,9 @@ class PhonePlayback extends ChangeNotifier {
     final StreamInfo? info;
     _asking++;
     try {
+      // The link may be coming back, as after the app was in the background: wait for it a while.
+      if (!link.status.isConnected) await _whenConnected(const Duration(seconds: 20));
+      if (attempt != _opening) return false;
       final reply = await link.ask('watch', {
         'id': id,
         'quality': quality ?? (_network == 'home' ? 'auto' : awayQuality),
@@ -140,7 +143,8 @@ class PhonePlayback extends ChangeNotifier {
     final player = _player = _createPlayer();
     _listen(player);
     final address = _address = await proxy.open(info);
-    await player.open(Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null));
+    await player.open(Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null), play: !_inBackground);
+    if (_inBackground) _resumeOnReturn = true;
     if (previous != null) unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () => _release(previous)));
     // The same spot running out again on a fresh stream is where the file itself ends.
     _endsAt = stalledAt;
@@ -174,6 +178,24 @@ class PhonePlayback extends ChangeNotifier {
     // Where it stopped while stalled; the opening position until the player has said where it is.
     final position = _stalledAt ?? (player == null ? current.positionMs : _positionOf(player));
     await watch(current.id, quality: quality, startAt: position);
+  }
+
+  /// Waits until the link is connected, or [limit] has passed.
+  Future<void> _whenConnected(Duration limit) {
+    if (link.status.isConnected) return Future.value();
+    final done = Completer<void>();
+    void check() {
+      if (link.status.isConnected && !done.isCompleted) done.complete();
+    }
+
+    link.addListener(check);
+    final timer = Timer(limit, () {
+      if (!done.isCompleted) done.complete();
+    });
+    return done.future.whenComplete(() {
+      timer.cancel();
+      link.removeListener(check);
+    });
   }
 
   void _say(String text) {
@@ -337,6 +359,7 @@ class PhonePlayback extends ChangeNotifier {
     final position = _stalledAt ?? _positionOf(player);
     await _report(final_: true);
     try {
+      if (!link.status.isConnected) await _whenConnected(const Duration(seconds: 20));
       await link.ask('play', {'id': stream.id, 'positionMs': position}, timeout: const Duration(seconds: 30));
     } on RemoteRequestException catch (e) {
       return e.message;
@@ -369,12 +392,32 @@ class PhonePlayback extends ChangeNotifier {
     if (previous != null) await _release(previous);
   }
 
-  /// The app went to the background: the video waits, and the PC learns where it is.
+  // Whether the video was playing when the app went to the background, to carry on when it comes back.
+  bool _resumeOnReturn = false;
+  bool _inBackground = false;
+
+  /// The app went to the background (and not to a small picture-in-picture window): the video waits, and the PC
+  /// learns where it is.
   Future<void> background() async {
+    _inBackground = true;
     final player = _player;
-    if (player == null) return;
+    if (player == null) {
+      // Still opening: it starts paused, and plays when the app is back.
+      _resumeOnReturn = _phase == PhonePlaybackPhase.opening;
+      return;
+    }
+    _resumeOnReturn = player.state.playing || _phase == PhonePlaybackPhase.opening;
     if (player.state.playing) await player.pause();
     await _report(final_: true);
+  }
+
+  /// The app is back: a video that was playing carries on.
+  Future<void> foreground() async {
+    _inBackground = false;
+    final player = _player;
+    if (!_resumeOnReturn || player == null) return;
+    _resumeOnReturn = false;
+    await player.play();
   }
 
   void _fail(String message) {

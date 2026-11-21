@@ -90,10 +90,15 @@ class BackgroundLinkService : Service() {
             fun action(name: String, code: Int) = PendingIntent.getService(
                 context, code, Intent(context, BackgroundLinkService::class.java).setAction(name), flags,
             )
+            // The header says what this is ("BlackPearl · Stays connected to your PC"); the title names the PC.
             val builder = NotificationCompat.Builder(context, CHANNEL)
                 .setSmallIcon(R.drawable.ic_stat_link)
+                .setSubText("Stays connected to your PC")
                 .setContentTitle(notice.title)
                 .setContentText(notice.text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(
+                    notice.text + "\nBlackPearl keeps the remote ready while the app is closed. Turn off stops it; Settings in the app turns it back on."
+                ))
                 .setContentIntent(open)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)

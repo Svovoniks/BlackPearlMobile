@@ -27,6 +27,9 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   (Settings › Quality away from home; the player's tune button changes it for one video). The phone reports where it is
   every 10 seconds, when it pauses and when it stops, so the PC's Continue watching and watched marks follow.
   **Continue on PC** hands the video back: the PC plays it from where the phone was.
+- **Picture in picture (Android).** While a video plays, leaving the app (Home, or switching apps) moves it to a small
+  window with Play/Pause; the player's picture-in-picture button does it at once. A video left without picture in
+  picture (paused, or on a phone that doesn't allow it) waits, and carries on when the app is back.
 - **Background connection (Android).** With Settings › Stay connected in the background on (the default), closing the
   app leaves a foreground service running that keeps the link to the PC. Its notification shows what the PC plays,
   with Play/Pause, and a Turn off button that switches the setting off. The Flutter engine lives apart from the activity

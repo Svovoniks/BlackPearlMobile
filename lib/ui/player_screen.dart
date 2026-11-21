@@ -6,6 +6,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../playback/phone_playback.dart';
+import '../playback/picture_in_picture.dart';
 import '../protocol/library.dart';
 import 'pebbles.dart';
 import 'theme.dart';
@@ -28,20 +29,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
   Player? _player;
   String? _noteShown;
   bool _handing = false;
+  final List<StreamSubscription<Object?>> _playerSubscriptions = [];
 
   PhonePlayback get playback => widget.playback;
+  PictureInPicture get pip => PictureInPicture.instance;
 
   @override
   void initState() {
     super.initState();
     playback.addListener(_changed);
     playback.notice.addListener(_notice);
+    pip.active.addListener(_pipChanged);
+    pip.onToggle = _toggle;
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
     _changed();
   }
 
   @override
   void dispose() {
+    for (final subscription in _playerSubscriptions) {
+      unawaited(subscription.cancel());
+    }
+    pip.active.removeListener(_pipChanged);
+    if (pip.onToggle == _toggle) pip.onToggle = null;
+    // Leaving the player: leaving the app no longer moves anything to a small window.
+    unawaited(pip.update(wanted: false));
     playback.removeListener(_changed);
     playback.notice.removeListener(_notice);
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
@@ -54,6 +66,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (!identical(player, _player)) {
       _player = player;
       _controller = player == null ? null : VideoController(player);
+      for (final subscription in _playerSubscriptions) {
+        unawaited(subscription.cancel());
+      }
+      _playerSubscriptions.clear();
+      if (player != null) {
+        void sync(Object? _) => _syncPip();
+        _playerSubscriptions
+          ..add(player.stream.playing.listen(sync))
+          ..add(player.stream.width.listen(sync))
+          ..add(player.stream.height.listen(sync));
+      }
+      _syncPip();
     }
     final note = playback.stream?.note;
     if (note != null && note != _noteShown) {
@@ -61,6 +85,24 @@ class _PlayerScreenState extends State<PlayerScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) => _say(note));
     }
     if (mounted) setState(() {});
+  }
+
+  void _pipChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _toggle() => unawaited(_player?.playOrPause());
+
+  // While a video plays, leaving the app moves it to a small window, shaped like the video.
+  void _syncPip() {
+    final player = _player;
+    final state = player?.state;
+    unawaited(pip.update(
+      wanted: state?.playing ?? false,
+      width: (state?.width ?? 0) > 0 ? state!.width! : 16,
+      height: (state?.height ?? 0) > 0 ? state!.height! : 9,
+      playing: state?.playing ?? false,
+    ));
   }
 
   void _notice() {
@@ -122,6 +164,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ],
         ),
       ),
+      if (pip.supported)
+        IconButton(tooltip: 'Picture in picture', onPressed: () => unawaited(pip.enter()), icon: const Icon(Icons.picture_in_picture_alt_rounded, color: Colors.white)),
       IconButton(tooltip: 'Audio, subtitles and quality', onPressed: _options, icon: const Icon(Icons.tune_rounded, color: Colors.white)),
       Padding(
         padding: const EdgeInsets.only(left: 4, right: 4),
@@ -142,12 +186,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ),
       ),
     ];
+    // The controls keep clear of the camera cutout and the rounded corners; the picture may go under them.
+    final view = MediaQuery.of(context);
+    final safe = EdgeInsets.fromLTRB(
+      view.viewPadding.left > view.padding.left ? view.viewPadding.left : view.padding.left,
+      view.viewPadding.top > view.padding.top ? view.viewPadding.top : view.padding.top,
+      view.viewPadding.right > view.padding.right ? view.viewPadding.right : view.padding.right,
+      // With the bars hidden the bottom insets read 0; the gesture strip is still there.
+      [view.viewPadding.bottom, view.padding.bottom, view.systemGestureInsets.bottom].reduce((a, b) => a > b ? a : b),
+    );
     final theme = MaterialVideoControlsThemeData(
+      padding: safe.copyWith(bottom: 0),
       topButtonBar: top,
       topButtonBarMargin: const EdgeInsets.fromLTRB(4, 8, 8, 0),
       seekBarPositionColor: Palette.accent,
-      seekBarMargin: const EdgeInsets.fromLTRB(16, 0, 16, 18),
-      bottomButtonBarMargin: const EdgeInsets.fromLTRB(16, 0, 16, 26),
+      // Above the gesture strip along the bottom edge, where a drag would go home instead of seeking.
+      seekBarMargin: EdgeInsets.fromLTRB(16, 0, 16, 18 + safe.bottom),
+      bottomButtonBarMargin: EdgeInsets.fromLTRB(16, 0, 16, 26 + safe.bottom),
       seekBarThumbColor: Palette.knob,
       seekBarBufferColor: const Color(0x66FFFFFF),
       seekOnDoubleTap: true,
@@ -164,6 +219,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
       child: Scaffold(
         backgroundColor: Colors.black,
         body: switch (playback.phase) {
+          // The small window shows the picture alone; its own buttons replace the controls.
+          _ when pip.active.value && controller != null => Video(key: ObjectKey(controller), controller: controller, controls: NoVideoControls, fill: Colors.black),
           PhonePlaybackPhase.failed => _Problem(message: playback.error ?? "The video didn't open.", onBack: _leave),
           _ when controller == null => _Opening(title: title, onBack: _leave),
           _ => MaterialVideoControlsTheme(
