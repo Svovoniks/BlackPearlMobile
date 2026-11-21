@@ -77,6 +77,25 @@ class FakeRemoteLink extends RemoteLink {
 
   @override
   void retryNow() {}
+
+  /// What the stand-in PC offers; none by default, as a PC from before the library.
+  Set<String> offered = const {};
+  @override
+  Set<String> get features => offered;
+
+  /// Answers requests (`browse`, `watch`, `play`); unanswered ones fail as if the PC were offline.
+  Future<Map<String, dynamic>> Function(String type, Map<String, dynamic> fields)? answer;
+  final List<(String, Map<String, dynamic>)> asked = [];
+  final List<(String, Map<String, dynamic>)> told = [];
+
+  @override
+  Future<Map<String, dynamic>> ask(String type, Map<String, dynamic> fields, {Duration timeout = const Duration(seconds: 20)}) {
+    asked.add((type, fields));
+    return answer?.call(type, fields) ?? super.ask(type, fields, timeout: timeout);
+  }
+
+  @override
+  void tell(String type, Map<String, dynamic> fields) => told.add((type, fields));
 }
 
 const RemoteState sampleState = RemoteState(

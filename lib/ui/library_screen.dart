@@ -46,6 +46,30 @@ class LibraryListing extends ChangeNotifier {
     await more();
   }
 
+  /// Loads the first page again and swaps it in when it arrives, so the list doesn't blank meanwhile; for progress that
+  /// changed elsewhere.
+  Future<void> reload() async {
+    if (loading) return;
+    loading = true;
+    try {
+      final page = LibraryPage.fromJson(await link.ask('browse', request.toJson()));
+      if (_disposed) return;
+      entries
+        ..clear()
+        ..addAll(page.entries);
+      total = page.total;
+      location = page.location;
+      _next = page.hasMore ? request.nextPage() : null;
+      error = null;
+      _started = true;
+    } on RemoteRequestException catch (e) {
+      if (entries.isEmpty) error = e.message;
+    } finally {
+      loading = false;
+      _notify();
+    }
+  }
+
   Future<void> more() async {
     final request = _next;
     if (request == null || loading) return;
@@ -96,9 +120,12 @@ enum _Mode { home, category, search }
 
 /// The Library tab: Home's rows, each category as a grid of posters, and search.
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key, required this.link, required this.actions});
+  const LibraryScreen({super.key, required this.link, required this.actions, this.changed});
   final RemoteLink link;
   final LibraryActions actions;
+
+  /// Fires when playback elsewhere changed resume points or watched marks: the list loads again.
+  final Listenable? changed;
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -121,8 +148,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void initState() {
     super.initState();
     link.addListener(_linkChanged);
+    widget.changed?.addListener(_playbackChanged);
     _wasConnected = link.status.isConnected;
     if (_wasConnected && _available) _open();
+  }
+
+  void _playbackChanged() {
+    final listing = _listing;
+    if (listing != null && listing.started) unawaited(listing.reload());
   }
 
   @override
@@ -141,6 +174,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   void dispose() {
     link.removeListener(_linkChanged);
+    widget.changed?.removeListener(_playbackChanged);
     _searchDebounce?.cancel();
     _search.dispose();
     _searchFocus.dispose();
@@ -198,7 +232,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Future<void> _openEntry(LibraryEntry entry) async {
     if (entry.opensList) {
-      await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => ShowScreen(link: link, show: entry, actions: widget.actions)));
+      await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => ShowScreen(link: link, show: entry, actions: widget.actions, changed: widget.changed)));
       return;
     }
     await showTitleSheet(context, link: link, entry: entry, actions: widget.actions);
@@ -637,10 +671,11 @@ class _PickCard extends StatelessWidget {
 
 /// A show's seasons, or one season's episodes.
 class ShowScreen extends StatefulWidget {
-  const ShowScreen({super.key, required this.link, required this.show, required this.actions, this.season});
+  const ShowScreen({super.key, required this.link, required this.show, required this.actions, this.season, this.changed});
   final RemoteLink link;
   final LibraryEntry show;
   final LibraryActions actions;
+  final Listenable? changed;
 
   /// The season's entry, when listing its episodes.
   final LibraryEntry? season;
@@ -661,10 +696,14 @@ class _ShowScreenState extends State<ShowScreen> {
       BrowseRequest(category: LibraryCategory.all, parentId: widget.show.id, season: parent?.season),
     );
     unawaited(_listing.load());
+    widget.changed?.addListener(_reload);
   }
+
+  void _reload() => unawaited(_listing.reload());
 
   @override
   void dispose() {
+    widget.changed?.removeListener(_reload);
     _listing.dispose();
     super.dispose();
   }
@@ -672,13 +711,14 @@ class _ShowScreenState extends State<ShowScreen> {
   Future<void> _open(LibraryEntry entry) async {
     if (entry.level == 'season' && !entry.playable) {
       await Navigator.of(context).push(MaterialPageRoute<void>(
-        builder: (_) => ShowScreen(link: widget.link, show: widget.show, season: entry, actions: widget.actions),
+        builder: (_) => ShowScreen(link: widget.link, show: widget.show, season: entry, actions: widget.actions, changed: widget.changed),
       ));
-      if (mounted) unawaited(_listing.load());
+      if (mounted) unawaited(_listing.reload());
       return;
     }
     await showTitleSheet(context, link: widget.link, entry: entry, actions: widget.actions);
-    if (mounted) unawaited(_listing.load());
+    // Playing it on either side moves its resume point.
+    if (mounted) unawaited(Future<void>.delayed(const Duration(milliseconds: 600), () => mounted ? _listing.reload() : null));
   }
 
   @override
@@ -910,7 +950,13 @@ class _TitleSheetState extends State<_TitleSheet> {
                   children: [
                     const Icon(Icons.phone_android_rounded, size: 20),
                     const SizedBox(width: 8),
-                    Text(resume ? 'Resume on phone · ${formatClock(entry.positionMs)}' : 'Play on phone', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+                    Flexible(
+                      child: Text(
+                        resume ? 'Resume on phone · ${formatClock(entry.positionMs)}' : 'Play on phone',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+                      ),
+                    ),
                   ],
                 ),
               ),

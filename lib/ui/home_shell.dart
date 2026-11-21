@@ -33,6 +33,15 @@ class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
   bool _playerOpen = false;
 
+  /// Bumped when the phone's player closes or the PC starts a title, so the Library shows the new resume points.
+  final ValueNotifier<int> _playbackChanged = ValueNotifier(0);
+
+  @override
+  void dispose() {
+    _playbackChanged.dispose();
+    super.dispose();
+  }
+
   RemoteLink get link => widget.connection;
   PhonePlayback? get playback => widget.model.playback;
 
@@ -57,6 +66,9 @@ class _HomeShellState extends State<HomeShell> {
     await opened;
     // The player is off screen now, so its picture can go.
     await playback.stop();
+    // The PC saves the last report a moment after it arrives.
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    if (mounted) _playbackChanged.value++;
   }
 
   late final LibraryActions _actions = LibraryActions(
@@ -68,6 +80,7 @@ class _HomeShellState extends State<HomeShell> {
         return e.message;
       }
       if (mounted) setState(() => _tab = 0);
+      _playbackChanged.value++;
       return null;
     },
   );
@@ -81,7 +94,7 @@ class _HomeShellState extends State<HomeShell> {
         onPairAgain: widget.onPairAgain,
         onWatchHere: playback == null ? null : (id) => _openPlayer((playback) => playback.watch(id, takeOver: true)),
       ),
-      LibraryScreen(link: link, actions: _actions),
+      LibraryScreen(link: link, actions: _actions, changed: _playbackChanged),
       SettingsScreen(model: widget.model, link: link, onChoosePc: widget.onChoosePc, version: widget.version),
     ];
     return Scaffold(
