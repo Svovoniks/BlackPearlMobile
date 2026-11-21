@@ -265,6 +265,7 @@ class AppModel extends ChangeNotifier {
     _backgroundTimer?.cancel();
     _backgroundTimer = null;
     _connection?.resume();
+    unawaited(_playback?.foreground());
     _syncBackground();
   }
 

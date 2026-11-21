@@ -16,6 +16,9 @@ void main() {
     final playback = PhonePlayback(link: pc, createPlayer: () => throw StateError('no player for an abandoned watch'));
     final viewing = playback.startViewing();
     final opening = playback.watch('film');
+    // The request is out; then the phone gives up.
+    await pumpEventQueue();
+    expect(pc.asked.map((a) => a.$1), ['watch']);
     await playback.stop(viewing: viewing);
     answer.complete({'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 10});
     await opening;
@@ -38,6 +41,36 @@ void main() {
     expect(second, isNot(first));
     await playback.stop(viewing: second);
     expect(playback.phase, PhonePlaybackPhase.idle);
+    playback.dispose();
+  });
+
+  test('a viewing stopped before its request went out sends none', () async {
+    final pc = link();
+    pc.answer = (type, fields) => Completer<Map<String, dynamic>>().future;
+    final playback = PhonePlayback(link: pc, createPlayer: () => throw StateError('no player'));
+    final viewing = playback.startViewing();
+    final opening = playback.watch('film');
+    await playback.stop(viewing: viewing);
+    expect(await opening, isFalse);
+    expect(pc.asked, isEmpty);
+    playback.dispose();
+  });
+
+  test('leaving while a video opens resumes it once on return; a picture-in-picture window showing again clears that', () async {
+    final pc = link();
+    pc.answer = (type, fields) => Completer<Map<String, dynamic>>().future;
+    final playback = PhonePlayback(link: pc, createPlayer: () => throw StateError('no player'));
+    unawaited(playback.watch('film'));
+    await pumpEventQueue();
+    await playback.background();
+    expect(playback.resumesOnReturn, isTrue);
+    expect(playback.inBackground, isTrue);
+    playback.pictureInPictureShown();
+    expect(playback.resumesOnReturn, isFalse);
+    expect(playback.inBackground, isFalse);
+    await playback.background();
+    await playback.foreground();
+    expect(playback.resumesOnReturn, isFalse, reason: 'used once');
     playback.dispose();
   });
 

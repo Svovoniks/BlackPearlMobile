@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show DisplayFeatureType;
 
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
@@ -6,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../playback/phone_playback.dart';
+import '../playback/picture_in_picture.dart';
 import '../protocol/library.dart';
 import 'pebbles.dart';
 import 'theme.dart';
@@ -23,25 +25,76 @@ class PlayerScreen extends StatefulWidget {
   State<PlayerScreen> createState() => _PlayerScreenState();
 }
 
-class _PlayerScreenState extends State<PlayerScreen> {
+class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver {
+  static const MethodChannel _display = MethodChannel('blackpearl/display');
+
+  // The camera cutout's safe insets from Android, in logical pixels.
+  EdgeInsets _cutout = EdgeInsets.zero;
+
+  Future<void> _readCutout() async {
+    try {
+      final values = await _display.invokeMapMethod<String, int>('cutout');
+      if (values == null || !mounted) return;
+      final ratio = MediaQuery.devicePixelRatioOf(context);
+      double at(String side) => (values[side] ?? 0) / ratio;
+      final cutout = EdgeInsets.fromLTRB(at('left'), at('top'), at('right'), at('bottom'));
+      if (cutout != _cutout) setState(() => _cutout = cutout);
+    } on PlatformException {
+      // No window to ask.
+    } on MissingPluginException {
+      // Not on Android.
+    }
+  }
+
+  // Turning the phone moves the cutout to another edge.
+  @override
+  void didChangeMetrics() => WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_readCutout()));
+
   VideoController? _controller;
   Player? _player;
   String? _noteShown;
   bool _handing = false;
+  final List<StreamSubscription<Object?>> _playerSubscriptions = [];
 
   PhonePlayback get playback => widget.playback;
+  PictureInPicture get pip => PictureInPicture.instance;
 
   @override
   void initState() {
     super.initState();
     playback.addListener(_changed);
     playback.notice.addListener(_notice);
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_readCutout()));
+    pip.active.addListener(_pipChanged);
+    pip.onToggle = _toggle;
+    pip.onDismissed = _pipDismissed;
+    pip.onShown = playback.pictureInPictureShown;
+    pip.onReady = _syncPip;
+    // The app may have started without a window to ask whether picture in picture is there.
+    unawaited(pip.refresh().then((_) {
+      if (mounted) {
+        _syncPip();
+        setState(() {});
+      }
+    }));
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
     _changed();
   }
 
   @override
   void dispose() {
+    for (final subscription in _playerSubscriptions) {
+      unawaited(subscription.cancel());
+    }
+    WidgetsBinding.instance.removeObserver(this);
+    pip.active.removeListener(_pipChanged);
+    if (pip.onToggle == _toggle) pip.onToggle = null;
+    if (pip.onDismissed == _pipDismissed) pip.onDismissed = null;
+    if (pip.onShown == playback.pictureInPictureShown) pip.onShown = null;
+    if (pip.onReady == _syncPip) pip.onReady = null;
+    // Leaving the player: leaving the app no longer moves anything to a small window.
+    unawaited(pip.update(wanted: false));
     playback.removeListener(_changed);
     playback.notice.removeListener(_notice);
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
@@ -54,6 +107,18 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (!identical(player, _player)) {
       _player = player;
       _controller = player == null ? null : VideoController(player);
+      for (final subscription in _playerSubscriptions) {
+        unawaited(subscription.cancel());
+      }
+      _playerSubscriptions.clear();
+      if (player != null) {
+        void sync(Object? _) => _syncPip();
+        _playerSubscriptions
+          ..add(player.stream.playing.listen(sync))
+          ..add(player.stream.width.listen(sync))
+          ..add(player.stream.height.listen(sync));
+      }
+      _syncPip();
     }
     final note = playback.stream?.note;
     if (note != null && note != _noteShown) {
@@ -61,6 +126,31 @@ class _PlayerScreenState extends State<PlayerScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) => _say(note));
     }
     if (mounted) setState(() {});
+  }
+
+  void _pipChanged() {
+    if (mounted) setState(() {});
+  }
+
+  // The window's button: the user is watching the window, so nothing waits to resume.
+  void _toggle() {
+    playback.pictureInPictureShown();
+    unawaited(_player?.playOrPause());
+  }
+
+  // Closing the small window stops the video; it doesn't start again by itself when the app is next opened.
+  void _pipDismissed() => unawaited(playback.pictureInPictureClosed());
+
+  // While a video plays, leaving the app moves it to a small window, shaped like the video.
+  void _syncPip() {
+    final player = _player;
+    final state = player?.state;
+    unawaited(pip.update(
+      wanted: state?.playing ?? false,
+      width: (state?.width ?? 0) > 0 ? state!.width! : 16,
+      height: (state?.height ?? 0) > 0 ? state!.height! : 9,
+      playing: state?.playing ?? false,
+    ));
   }
 
   void _notice() {
@@ -122,6 +212,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
           ],
         ),
       ),
+      if (pip.supported)
+        IconButton(tooltip: 'Picture in picture', onPressed: () => unawaited(pip.enter()), icon: const Icon(Icons.picture_in_picture_alt_rounded, color: Colors.white)),
       IconButton(tooltip: 'Audio, subtitles and quality', onPressed: _options, icon: const Icon(Icons.tune_rounded, color: Colors.white)),
       Padding(
         padding: const EdgeInsets.only(left: 4, right: 4),
@@ -142,15 +234,21 @@ class _PlayerScreenState extends State<PlayerScreen> {
         ),
       ),
     ];
+    // The controls keep clear of the camera cutout and the rounded corners; the picture may go under them.
+    final safe = controlInsets(MediaQuery.of(context), cutout: _cutout);
     final theme = MaterialVideoControlsThemeData(
+      padding: safe.copyWith(bottom: 0),
       topButtonBar: top,
       topButtonBarMargin: const EdgeInsets.fromLTRB(4, 8, 8, 0),
       seekBarPositionColor: Palette.accent,
-      seekBarMargin: const EdgeInsets.fromLTRB(16, 0, 16, 18),
-      bottomButtonBarMargin: const EdgeInsets.fromLTRB(16, 0, 16, 26),
+      // Above the gesture strip along the bottom edge, where a drag would go home instead of seeking.
+      seekBarMargin: EdgeInsets.fromLTRB(16, 0, 16, 18 + safe.bottom),
+      bottomButtonBarMargin: EdgeInsets.fromLTRB(16, 0, 16, 26 + safe.bottom),
       seekBarThumbColor: Palette.knob,
       seekBarBufferColor: const Color(0x66FFFFFF),
       seekOnDoubleTap: true,
+      // Subtitles move up while the controls show, rather than sit on the timeline.
+      shiftSubtitlesOnControlsVisibilityChange: true,
       volumeGesture: false,
       brightnessGesture: false,
       bottomButtonBar: const [MaterialPositionIndicator(), Spacer()],
@@ -164,9 +262,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
       child: Scaffold(
         backgroundColor: Colors.black,
         body: switch (playback.phase) {
+          // The small window shows the picture alone; its own buttons replace the controls.
+          _ when pip.active.value && controller != null => Video(key: ObjectKey(controller), controller: controller, controls: NoVideoControls, fill: Colors.black),
           PhonePlaybackPhase.failed => _Problem(message: playback.error ?? "The video didn't open.", onBack: _leave),
           _ when controller == null => _Opening(title: title, onBack: _leave),
+          // media_kit_video 2.0.1 tells its controls about a new theme only when it is the same one
+          // (updateShouldNotify is inverted), so new insets, after turning the phone or leaving picture in picture,
+          // need new controls.
           _ => MaterialVideoControlsTheme(
+            key: ValueKey(safe),
             normal: theme,
             fullscreen: theme,
             // A new player (another quality) needs a new surface; the widget doesn't swap one by itself.
@@ -329,4 +433,33 @@ class _PlayerOptionsState extends State<_PlayerOptions> {
 
 extension on String {
   String ifEmpty(String fallback) => isEmpty ? fallback : this;
+}
+
+/// How far the player's controls keep from the screen's edges: clear of the camera cutout and of the gesture strip.
+/// With the system bars hidden, Android reports neither in the padding, so the cutout comes from [cutout] (asked of
+/// Android) or the display features, and the strip from the gesture insets.
+@visibleForTesting
+EdgeInsets controlInsets(MediaQueryData view, {EdgeInsets cutout = EdgeInsets.zero}) {
+  final reported = cutout;
+  double most(Iterable<double> values) => values.fold(0, (a, b) => a > b ? a : b);
+  cutout = EdgeInsets.zero;
+  final size = view.size;
+  for (final feature in view.displayFeatures.where((f) => f.type == DisplayFeatureType.cutout)) {
+    final b = feature.bounds;
+    // The cutout belongs to the edge it is nearest; the controls stay past its far side.
+    final distances = {'top': b.top, 'bottom': size.height - b.bottom, 'left': b.left, 'right': size.width - b.right};
+    final edge = distances.entries.reduce((a, b) => a.value <= b.value ? a : b).key;
+    cutout = switch (edge) {
+      'top' => cutout.copyWith(top: most([cutout.top, b.bottom])),
+      'bottom' => cutout.copyWith(bottom: most([cutout.bottom, size.height - b.top])),
+      'left' => cutout.copyWith(left: most([cutout.left, b.right])),
+      _ => cutout.copyWith(right: most([cutout.right, size.width - b.left])),
+    };
+  }
+  return EdgeInsets.fromLTRB(
+    most([view.viewPadding.left, view.padding.left, cutout.left, reported.left]),
+    most([view.viewPadding.top, view.padding.top, cutout.top, reported.top]),
+    most([view.viewPadding.right, view.padding.right, cutout.right, reported.right]),
+    most([view.viewPadding.bottom, view.padding.bottom, view.systemGestureInsets.bottom, cutout.bottom, reported.bottom]),
+  );
 }

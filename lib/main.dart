@@ -17,6 +17,7 @@ import 'connection/webrtc_peer.dart';
 import 'debug/loopback.dart';
 import 'debug/preview.dart';
 import 'playback/phone_playback.dart';
+import 'playback/picture_in_picture.dart';
 import 'protocol/pair_link.dart';
 import 'storage/app_settings.dart';
 import 'storage/paired_pcs.dart';
@@ -33,6 +34,7 @@ Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   // libmpv, for watching the PC's videos on the phone.
   MediaKit.ensureInitialized();
+  PictureInPicture.instance.start();
   // Debug builds only: `--preview=<screen>` shows a screen with made-up state, for screenshots on a PC.
   if (kDebugMode) {
     final preview = args.where((a) => a.startsWith('--preview=')).map((a) => a.substring(10)).firstOrNull;
@@ -52,7 +54,9 @@ Future<void> main(List<String> args) async {
   // Debug builds only: `--paired-pc=<JSON of a paired PC>` starts already paired, for trying the Windows build against a
   // real PC, which has no camera to scan the code with and keeps nothing between runs.
   if (kDebugMode) {
-    final paired = args.where((a) => a.startsWith('--paired-pc=')).map((a) => PairedPc.fromJson(jsonDecode(a.substring(12)))).firstOrNull;
+    // As JSON, or as base64 of it where commas can't pass (Android's `am start` splits on them).
+    String decode(String value) => value.startsWith('{') ? value : utf8.decode(base64.decode(value));
+    final paired = args.where((a) => a.startsWith('--paired-pc=')).map((a) => PairedPc.fromJson(jsonDecode(decode(a.substring(12))))).firstOrNull;
     if (paired != null) await store.save([paired]);
   }
   final model = AppModel(
@@ -190,6 +194,8 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     model.notice.addListener(_showNotice);
+    // A picture-in-picture window back on screen after the screen was off never gets "resumed" from Flutter.
+    PictureInPicture.instance.onAppShown = model.resumed;
     try {
       // Covers both the link the app was opened with and links that arrive while it runs.
       _links = (widget.links ?? AppLinks().uriLinkStream).listen(_openLink, onError: (_) {});

@@ -351,6 +351,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
             icon: Icons.video_library_outlined,
             title: _mode == _Mode.search ? 'Nothing found' : 'Nothing here yet',
             text: _mode == _Mode.search ? 'Try another word.' : 'Titles appear here once the PC has them in its library.',
+            // A PC that has just started may not have read its library yet.
+            action: _mode == _Mode.search ? null : ('Refresh', _open),
           );
         }
         return RefreshIndicator(
