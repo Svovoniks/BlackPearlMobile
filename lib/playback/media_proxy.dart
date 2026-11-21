@@ -93,6 +93,10 @@ class MediaProxy {
       response.statusCode = HttpStatus.notFound;
       await response.close();
     } catch (_) {
+      // Nothing sent yet: say it failed, so the player doesn't take an empty answer for the video.
+      try {
+        response.statusCode = HttpStatus.badGateway;
+      } catch (_) {}
       try {
         await response.close();
       } catch (_) {}
@@ -169,6 +173,12 @@ class MediaProxy {
     }
     final last = min(end ?? length - 1, length - 1);
     final count = last - start + 1;
+    if (end != null && end < start) {
+      response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+      response.headers.set(HttpHeaders.contentRangeHeader, 'bytes */$length');
+      await response.close();
+      return;
+    }
     response.headers.contentType = type;
     response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
     response.contentLength = max(0, count);

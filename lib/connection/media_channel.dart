@@ -84,12 +84,22 @@ class MediaReader {
         _finish(read, error: const MediaReadException('closed', 'The connection to the PC closed.'));
         continue;
       }
-      final id = read.id;
-      Timer(timeout, () {
-        final pending = _active[id];
-        if (identical(pending, read)) _abort(read, const MediaReadException('timeout', "The PC didn't send the video in time."));
-      });
+      _arm(read);
     }
+  }
+
+  // The PC answers in order, so on a slow link a read waits behind the ones before it. It times out only when no
+  // frame at all has arrived for [timeout].
+  DateTime _lastFrame = DateTime.now();
+  void _arm(MediaRead read) {
+    Timer(timeout, () {
+      if (!identical(_active[read.id], read)) return;
+      if (DateTime.now().difference(_lastFrame) < timeout) {
+        _arm(read);
+        return;
+      }
+      _abort(read, const MediaReadException('timeout', "The PC didn't send the video in time."));
+    });
   }
 
   void _cancel(MediaRead read) {
@@ -128,6 +138,7 @@ class MediaReader {
   /// A binary frame from the PC.
   void onBinary(Uint8List frame) {
     if (frame.length < headerBytes) return;
+    _lastFrame = DateTime.now();
     final header = ByteData.sublistView(frame, 0, headerBytes);
     final id = header.getUint32(0, Endian.little);
     final read = _active[id];
@@ -141,7 +152,10 @@ class MediaReader {
       return;
     }
     final bytes = read._bytes ??= Uint8List(total);
-    if (bytes.length != total) return;
+    if (bytes.length != total) {
+      _finish(read, error: const MediaReadException('invalid', 'The PC sent a broken frame.'));
+      return;
+    }
     bytes.setRange(offset, offset + data, frame, headerBytes);
     read._received += data;
     if (read._received >= total) _finish(read, reply: MediaReply(bytes, resourceLength));

@@ -56,6 +56,20 @@ class PhonePlayback extends ChangeNotifier {
 
   bool get active => _stream != null || _phase == PhonePlaybackPhase.opening;
 
+  // One "viewing" per time the player screen opens; a quality change or a recovery stays in the same viewing. Whoever
+  // opened a viewing stops only that one, so a late cleanup never stops the next video.
+  int _viewing = 0;
+  int startViewing() => ++_viewing;
+
+  // `watch` requests the PC hasn't answered yet.
+  int _asking = 0;
+
+  /// A short message for the player to show, such as a quality change that didn't work.
+  final ValueNotifier<String?> notice = ValueNotifier(null);
+
+  // Recoveries of a stream that stopped: the times they started, to give up after a few in a short while.
+  final List<DateTime> _recoveries = [];
+
   String get _network => switch (link.status.path) {
     NetworkPath.home => 'home',
     NetworkPath.relayed => 'relayed',
@@ -66,12 +80,18 @@ class PhonePlayback extends ChangeNotifier {
   /// where it was. [quality] overrides the automatic choice; [startAt] the PC's resume point.
   Future<void> watch(String id, {bool takeOver = false, String? quality, int? startAt}) async {
     final attempt = ++_opening;
+    // Another stream of the video on screen (a quality change, a recovery): the old one plays on until the new one is
+    // ready, and stays if the new one can't be had.
+    final replacing = _stream?.id == id && _player != null;
     _handedOver = false;
-    await _report(final_: true);
-    _phase = PhonePlaybackPhase.opening;
-    _error = null;
-    notifyListeners();
+    if (!replacing) {
+      await _report(final_: true);
+      _phase = PhonePlaybackPhase.opening;
+      _error = null;
+      notifyListeners();
+    }
     final StreamInfo? info;
+    _asking++;
     try {
       final reply = await link.ask('watch', {
         'id': id,
@@ -81,10 +101,23 @@ class PhonePlayback extends ChangeNotifier {
       }, timeout: const Duration(seconds: 45));
       info = StreamInfo.fromJson(reply);
     } on RemoteRequestException catch (e) {
-      if (attempt == _opening) _fail(e.message);
+      if (attempt == _opening) {
+        if (replacing && _player != null) {
+          _say(e.message);
+        } else {
+          _fail(e.message);
+        }
+      }
+      return;
+    } finally {
+      _asking--;
+    }
+    if (attempt != _opening) {
+      // An answer nobody waits for any more: the PC holds a stream for it, which nothing will read. Let it go, unless
+      // a newer request or stream is the PC's current one now.
+      if (_asking == 0 && _stream == null && _player == null) link.tell('stream-stop', {});
       return;
     }
-    if (attempt != _opening) return;
     if (info == null) {
       _fail("The PC's answer didn't say how to play the video.");
       return;
@@ -117,6 +150,34 @@ class PhonePlayback extends ChangeNotifier {
     await watch(current.id, quality: quality, startAt: position);
   }
 
+  void _say(String text) {
+    notice.value = null;
+    notice.value = text;
+  }
+
+  /// The player ran out of video before its end: the PC gave the stream up (the phone was away longer than it waits)
+  /// or the link failed. Ask for it again from where it stopped; after a few tries in a short while, say so.
+  Future<void> _recover() async {
+    final stream = _stream;
+    final player = _player;
+    if (stream == null || player == null) return;
+    final now = DateTime.now();
+    _recoveries.removeWhere((at) => now.difference(at) > const Duration(minutes: 2));
+    if (_recoveries.length >= 3) {
+      _fail('The video stopped coming from the PC. Check the connection and try again.');
+      return;
+    }
+    _recoveries.add(now);
+    await watch(stream.id, quality: stream.quality, startAt: player.state.position.inMilliseconds);
+  }
+
+  /// Whether a position is the end of the video rather than where the data ran out.
+  bool _atEnd(Player player) {
+    var duration = player.state.duration.inMilliseconds;
+    if (duration <= 0) duration = _stream?.durationMs ?? 0;
+    return duration <= 0 || player.state.position.inMilliseconds >= duration - 15000;
+  }
+
   void _listen(Player player) {
     _subscriptions.add(player.stream.playing.listen((playing) {
       // A pause is a natural moment to save where the phone is.
@@ -124,7 +185,12 @@ class PhonePlayback extends ChangeNotifier {
       notifyListeners();
     }));
     _subscriptions.add(player.stream.completed.listen((completed) {
-      if (!completed || _stream == null) return;
+      if (!completed || _stream == null || !identical(player, _player)) return;
+      // libmpv also says "completed" when the data runs out mid-video.
+      if (!_atEnd(player)) {
+        unawaited(_recover());
+        return;
+      }
       _ended = true;
       unawaited(_report(final_: true));
       notifyListeners();
@@ -169,9 +235,11 @@ class PhonePlayback extends ChangeNotifier {
   bool _handedOver = false;
 
   /// Stops playing on the phone, saving where it got to. Call it once the player is off screen: libmpv's picture
-  /// must not be in use when it goes.
-  Future<void> stop() async {
+  /// must not be in use when it goes. With [viewing], only that viewing stops; a newer one plays on.
+  Future<void> stop({int? viewing}) async {
+    if (viewing != null && viewing != _viewing) return;
     _opening++;
+    _recoveries.clear();
     // The PC plays it now and keeps its own position.
     if (!_handedOver) await _report(final_: true);
     _handedOver = false;
@@ -193,6 +261,9 @@ class PhonePlayback extends ChangeNotifier {
   }
 
   void _fail(String message) {
+    // Whatever was playing stops: the error covers the screen.
+    final previous = _detachPlayer();
+    if (previous != null) unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () => _release(previous)));
     _phase = PhonePlaybackPhase.failed;
     _error = message;
     notifyListeners();
@@ -229,6 +300,7 @@ class PhonePlayback extends ChangeNotifier {
     _stream = null;
     if (previous != null) unawaited(_release(previous));
     unawaited(proxy.dispose());
+    notice.dispose();
     super.dispose();
   }
 }

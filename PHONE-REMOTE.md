@@ -232,8 +232,8 @@ new `watch` replaces it and `{"type":"stream-stop"}` ends it. A failure is an `e
 
 Phone → PC while watching, every 10 seconds, on pause, and when it stops:
 `{"type":"progress","id":"…","positionMs":1180000,"durationMs":2830000,"ended":false,"final":false}`. The PC saves it
-as its own playback: the resume point, when it was last played, and the watched mark once `ended` is true or the
-position is within 2 seconds of the end. `final` is true for the last report of a viewing. The PC ignores reports for
+as its own playback: the resume point, when it was last played, and the watched mark once the position is within
+2 seconds of the end, or `ended` is true within the last minute (or anywhere, when `durationMs` is 0). `final` is true for the last report of a viewing. The PC ignores reports for
 the video it is playing itself at that moment.
 
 ### Continuing on the PC

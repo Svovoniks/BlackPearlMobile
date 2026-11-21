@@ -116,6 +116,14 @@ void main() {
       await expectLater(reader.read('file/a', 0, 1).future, throwsA(isA<MediaReadException>()));
     });
 
+    test("a frame that disagrees with the first one about the reply's length fails the read at once", () async {
+      final reader = MediaReader(send: (_) {});
+      final read = reader.read('file/a', 0, 20);
+      reader.onBinary(frame(read.id, 0, 20, 100, List.filled(5, 1)));
+      reader.onBinary(frame(read.id, 5, 30, 100, List.filled(5, 1)));
+      await expectLater(read.future, throwsA(isA<MediaReadException>().having((e) => e.code, 'code', 'invalid')));
+    });
+
     test('a frame that runs past its reply is refused', () async {
       final reader = MediaReader(send: (_) {});
       final read = reader.read('file/a', 0, 10);
@@ -158,6 +166,8 @@ void main() {
       expect(end, video.sublist(1499000));
       final (beyond, _, _) = await get(uri, range: 'bytes=1500000-');
       expect(beyond, 416);
+      final (reversed, _, _) = await get(uri, range: 'bytes=500-100');
+      expect(reversed, 416);
     });
 
     test('a conversion is a playlist of its pieces, and a piece still converting is waited for', () async {

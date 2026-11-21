@@ -35,6 +35,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   void initState() {
     super.initState();
     playback.addListener(_changed);
+    playback.notice.addListener(_notice);
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
     _changed();
   }
@@ -42,6 +43,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
   @override
   void dispose() {
     playback.removeListener(_changed);
+    playback.notice.removeListener(_notice);
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     unawaited(SystemChrome.setPreferredOrientations([]));
     super.dispose();
@@ -59,6 +61,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) => _say(note));
     }
     if (mounted) setState(() {});
+  }
+
+  void _notice() {
+    final text = playback.notice.value;
+    if (text != null) _say(text);
   }
 
   void _say(String text) {

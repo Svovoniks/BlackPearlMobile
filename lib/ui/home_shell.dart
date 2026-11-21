@@ -57,6 +57,7 @@ class _HomeShellState extends State<HomeShell> {
     }
     if (_playerOpen) return;
     _playerOpen = true;
+    final viewing = playback.startViewing();
     final opened = start(playback);
     await Navigator.of(context).push(MaterialPageRoute<void>(
       fullscreenDialog: true,
@@ -65,7 +66,7 @@ class _HomeShellState extends State<HomeShell> {
     _playerOpen = false;
     await opened;
     // The player is off screen now, so its picture can go.
-    await playback.stop();
+    await playback.stop(viewing: viewing);
     // The PC saves the last report a moment after it arrives.
     await Future<void>.delayed(const Duration(milliseconds: 600));
     if (mounted) _playbackChanged.value++;
