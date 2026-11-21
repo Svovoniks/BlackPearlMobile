@@ -170,7 +170,9 @@ class PhonePlayback extends ChangeNotifier {
   Future<void> changeQuality(String quality) async {
     final current = _stream;
     if (current == null) return;
-    final position = _player?.state.position.inMilliseconds ?? current.positionMs;
+    final player = _player;
+    // Where it stopped while stalled; the opening position until the player has said where it is.
+    final position = _stalledAt ?? (player == null ? current.positionMs : _positionOf(player));
     await watch(current.id, quality: quality, startAt: position);
   }
 
@@ -198,6 +200,7 @@ class PhonePlayback extends ChangeNotifier {
         : 'Lost the connection to the PC. Open the video again from the Library to carry on where it stopped.'));
     // One request at a time; another one (a quality change) in flight brings its own new stream, or tries again later.
     if (_recovering || _asking > 0) {
+      _retryTimer?.cancel();
       _retryTimer = Timer(const Duration(seconds: 5), () => unawaited(_recover()));
       return;
     }
@@ -220,15 +223,21 @@ class PhonePlayback extends ChangeNotifier {
       _recovering = false;
     }
     // Still the stalled stream: try again shortly (or once the link is back), within the same budget.
-    if (!ok && identical(_stream, stream) && _stalledAt != null) _retryTimer = Timer(const Duration(seconds: 5), () => unawaited(_recover()));
+    if (!ok && identical(_stream, stream) && _stalledAt != null) {
+      _retryTimer?.cancel();
+      _retryTimer = Timer(const Duration(seconds: 5), () => unawaited(_recover()));
+    }
   }
 
   void _giveUp(String message) {
     if (_stalledAt == null) return;
     _endRecovery();
-    // A request still in flight is answered to nobody.
+    // A request still in flight is answered to nobody, and the PC lets the stream go now rather than when the error is
+    // dismissed.
     _opening++;
     _fail(message);
+    if (_stream != null) link.tell('stream-stop', {});
+    _stream = null;
   }
 
   void _waitForLink() {
@@ -261,6 +270,7 @@ class PhonePlayback extends ChangeNotifier {
     // video is being asked for: the PC lets the old one go before it answers.
     if (!identical(lost, _stream) || player == null || _stalledAt != null || _phase != PhonePlaybackPhase.playing || _asking > 0) return;
     _stalledAt = _positionOf(player);
+    _lastRefusal = null;
     unawaited(_recover());
   }
 
@@ -286,7 +296,10 @@ class PhonePlayback extends ChangeNotifier {
       final position = _positionOf(player);
       final shortFile = _endsAt != null && (position - _endsAt!).abs() < 3000;
       if (!_atEnd(player) && !shortFile) {
-        _stalledAt ??= position;
+        if (_stalledAt == null) {
+          _stalledAt = position;
+          _lastRefusal = null;
+        }
         unawaited(_recover());
         return;
       }
