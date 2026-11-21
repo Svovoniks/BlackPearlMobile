@@ -15,7 +15,17 @@ enum LibraryCategory {
 /// What to list: Home, a category (searched or not), or inside a show.
 @immutable
 class BrowseRequest {
-  const BrowseRequest({this.home = false, this.category = LibraryCategory.all, this.query = '', this.parentId, this.season, this.page = 0, this.seed = 0});
+  const BrowseRequest({
+    this.home = false,
+    this.category = LibraryCategory.all,
+    this.query = '',
+    this.parentId,
+    this.season,
+    this.page = 0,
+    this.seed = 0,
+    this.queue,
+    this.episodesOf,
+  });
 
   final bool home;
   final LibraryCategory category;
@@ -25,7 +35,23 @@ class BrowseRequest {
   final int page;
   final int seed;
 
-  BrowseRequest nextPage() => BrowseRequest(home: home, category: category, query: query, parentId: parentId, season: season, page: page + 1, seed: seed);
+  /// A saved queue's videos in order, instead of a library listing.
+  final String? queue;
+
+  /// The episodes of the show [episodesOf] (an entry id) belongs to, in the order Previous and Next follow.
+  final String? episodesOf;
+
+  BrowseRequest nextPage() => BrowseRequest(
+    home: home,
+    category: category,
+    query: query,
+    parentId: parentId,
+    season: season,
+    page: page + 1,
+    seed: seed,
+    queue: queue,
+    episodesOf: episodesOf,
+  );
 
   Map<String, dynamic> toJson() => {
     'home': home,
@@ -35,6 +61,8 @@ class BrowseRequest {
     'season': season,
     'page': page,
     'seed': seed,
+    'queue': ?queue,
+    'episodesOf': ?episodesOf,
   };
 
   @override
@@ -46,9 +74,11 @@ class BrowseRequest {
       other.parentId == parentId &&
       other.season == season &&
       other.page == page &&
-      other.seed == seed;
+      other.seed == seed &&
+      other.queue == queue &&
+      other.episodesOf == episodesOf;
   @override
-  int get hashCode => Object.hash(home, category, query, parentId, season, page, seed);
+  int get hashCode => Object.hash(home, category, query, parentId, season, page, seed, queue, episodesOf);
 }
 
 /// One card in a library page.
@@ -71,7 +101,11 @@ class LibraryEntry {
     this.watched = false,
     this.artwork,
     this.playable = false,
+    this.index,
   });
+
+  /// In a queue's or a show's list (BrowseRequest.queue, episodesOf): its place, which watch and play take back.
+  final int? index;
 
   final String id;
   final String title;
@@ -128,6 +162,7 @@ class LibraryEntry {
     watched: watched,
     artwork: artwork,
     playable: playable,
+    index: index,
   );
 
   static LibraryEntry? fromJson(Object? value) {
@@ -154,6 +189,7 @@ class LibraryEntry {
       watched: value['watched'] == true,
       artwork: optional('artwork'),
       playable: value['playable'] == true,
+      index: number('index'),
     );
   }
 }
@@ -205,6 +241,7 @@ class StreamInfo {
     this.next,
     this.first,
     this.tracks = TrackPreferences.none,
+    this.queue,
   });
 
   final String id;
@@ -234,6 +271,9 @@ class StreamInfo {
   /// The PC's audio and subtitle language priorities, to start with the tracks it would.
   final TrackPreferences tracks;
 
+  /// The saved queue this video plays from, and its place there; Previous, Next and Loop all then follow the queue.
+  final QueueRef? queue;
+
   static StreamInfo? fromJson(Map<String, dynamic> json) {
     String? text(String name) => json[name] is String && (json[name] as String).isNotEmpty ? json[name] as String : null;
     int number(String name) => json[name] is num && (json[name] as num).isFinite ? (json[name] as num).round() : 0;
@@ -262,6 +302,7 @@ class StreamInfo {
       next: EpisodeStep.fromJson(json['next']),
       first: EpisodeStep.fromJson(json['first']),
       tracks: TrackPreferences.fromJson(json['tracks']),
+      queue: QueueRef.fromJson(json['queue']),
     );
   }
 
@@ -283,18 +324,90 @@ class StreamInfo {
   }
 }
 
-/// An episode the player can step to.
+/// A video the player can step to: the next episode, or the next video of the queue it plays from.
 class EpisodeStep {
-  const EpisodeStep({required this.id, required this.title, this.detail});
+  const EpisodeStep({required this.id, required this.title, this.detail, this.queueIndex});
   final String id;
   final String title;
   final String? detail;
 
+  /// Its place in the queue the player plays from.
+  final int? queueIndex;
+
   static EpisodeStep? fromJson(Object? json) {
     if (json is! Map) return null;
-    final id = json['id'], title = json['title'], detail = json['detail'];
+    final id = json['id'], title = json['title'], detail = json['detail'], place = json['queueIndex'];
     if (id is! String || id.isEmpty) return null;
-    return EpisodeStep(id: id, title: title is String && title.isNotEmpty ? title : 'Episode', detail: detail is String && detail.isNotEmpty ? detail : null);
+    return EpisodeStep(
+      id: id,
+      title: title is String && title.isNotEmpty ? title : 'Episode',
+      detail: detail is String && detail.isNotEmpty ? detail : null,
+      queueIndex: place is num && place >= 0 ? place.round() : null,
+    );
+  }
+
+  /// The step to a listed video.
+  static EpisodeStep ofEntry(LibraryEntry entry, {bool inQueue = false}) =>
+      EpisodeStep(id: entry.id, title: entry.title, detail: entry.caption.isEmpty ? null : entry.caption, queueIndex: inQueue ? entry.index : null);
+}
+
+/// A saved queue on the PC and a place in it.
+@immutable
+class QueueRef {
+  const QueueRef({required this.id, required this.name, this.index});
+  final String id;
+  final String name;
+  final int? index;
+
+  QueueRef at(int? place) => QueueRef(id: id, name: name, index: place);
+
+  static QueueRef? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final id = json['id'], name = json['name'], index = json['index'];
+    if (id is! String || id.isEmpty) return null;
+    return QueueRef(id: id, name: name is String && name.isNotEmpty ? name : 'Queue', index: index is num && index >= 0 ? index.round() : null);
+  }
+
+  @override
+  bool operator ==(Object other) => other is QueueRef && other.id == id && other.index == index;
+  @override
+  int get hashCode => Object.hash(id, index);
+}
+
+/// One of the PC's saved queues, as its Queues page shows it.
+@immutable
+class QueueSummary {
+  const QueueSummary({required this.id, required this.name, this.count = 0, this.upNext, this.active = false, this.artwork});
+  final String id;
+  final String name;
+
+  /// Its videos that the library has.
+  final int count;
+
+  /// The place Play continues from, or null when everything in it is watched.
+  final int? upNext;
+
+  /// The queue the PC's player uses.
+  final bool active;
+  final String? artwork;
+
+  QueueRef get ref => QueueRef(id: id, name: name);
+
+  static List<QueueSummary> listFromJson(Map<String, dynamic> json) {
+    final queues = json['queues'];
+    if (queues is! List) return const [];
+    return [
+      for (final queue in queues.whereType<Map>())
+        if (queue['id'] is String && (queue['id'] as String).isNotEmpty)
+          QueueSummary(
+            id: queue['id'] as String,
+            name: queue['name'] is String && (queue['name'] as String).isNotEmpty ? queue['name'] as String : 'Queue',
+            count: queue['count'] is num ? (queue['count'] as num).round() : 0,
+            upNext: queue['upNext'] is num ? (queue['upNext'] as num).round() : null,
+            active: queue['active'] == true,
+            artwork: queue['artwork'] is String && (queue['artwork'] as String).isNotEmpty ? queue['artwork'] as String : null,
+          ),
+    ];
   }
 }
 

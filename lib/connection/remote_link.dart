@@ -91,6 +91,11 @@ abstract class RemoteLink extends ChangeNotifier {
   /// Sends a message that needs no answer (`progress`, `stream-stop`).
   void tell(String type, Map<String, dynamic> fields) {}
 
+  /// Completes once no request waits for its answer, or after [limit]. The PC's answers travel behind the video it
+  /// sends, and wait there until the video already on its way has gone: the phone's player holds its next reads back
+  /// meanwhile.
+  Future<void> answered(Duration limit) => Future.value();
+
   /// The position the player is at now, advanced from [stateReceivedAt] while playing.
   int currentPositionMs() {
     final current = state;

@@ -305,10 +305,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     // Previous and Next show for an episode, as on the PC: Previous goes back to the start after 3 seconds, and to the
     // episode before near the start.
     Widget step(bool forward) => live((context) {
-      final stream = playback.stream;
-      if (stream?.previous == null && stream?.next == null) return const SizedBox.shrink();
+      final previous = playback.previousEpisode, next = playback.nextEpisode;
+      if (previous == null && next == null && playback.followed == null) return const SizedBox.shrink();
       return forward
-          ? round(Icons.skip_next_rounded, 'Next episode', stream?.next == null ? null : () => unawaited(playback.next()))
+          ? round(Icons.skip_next_rounded, playback.followed != null ? 'Next in the queue' : 'Next episode', next == null ? null : () => unawaited(playback.next()))
           : round(Icons.skip_previous_rounded, 'Previous', () => unawaited(playback.previous()));
     });
     final primary = <Widget>[
@@ -335,6 +335,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           icon: Icon(loop == 'one' ? Icons.repeat_one_rounded : Icons.repeat_rounded, color: loop == 'off' ? const Color(0x99FFFFFF) : Palette.accent),
         ),
       ),
+      if (playback.link.features.contains('queues'))
+        IconButton(
+          tooltip: 'Up next',
+          onPressed: () => _options(PlayerOptionsTab.upNext),
+          icon: const Icon(Icons.queue_play_next_rounded, color: white),
+        ),
       IconButton(
         tooltip: 'Subtitles',
         onPressed: () => _options(PlayerOptionsTab.subtitles),

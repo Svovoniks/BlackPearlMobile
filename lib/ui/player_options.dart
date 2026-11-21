@@ -6,10 +6,12 @@ import 'package:media_kit/media_kit.dart';
 import '../playback/phone_playback.dart';
 import '../playback/track_languages.dart';
 import '../protocol/library.dart';
+import 'library_screen.dart';
+import 'queue_widgets.dart';
 import 'theme.dart';
 
 /// A page of the player's options.
-enum PlayerOptionsTab { audio, subtitles, quality }
+enum PlayerOptionsTab { upNext, audio, subtitles, quality }
 
 /// Opens the player's options on [tab]: beside the video in landscape, so the picture stays in view, and as a short
 /// sheet in portrait.
@@ -124,6 +126,7 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
     final stream = playback.stream;
     final tracks = playback.player?.state.tracks ?? const Tracks();
     final tabs = [
+      if (playback.link.features.contains('queues')) PlayerOptionsTab.upNext,
       PlayerOptionsTab.audio,
       PlayerOptionsTab.subtitles,
       if (stream != null && stream.qualities.length > 1) PlayerOptionsTab.quality,
@@ -144,9 +147,10 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
                     children: [
                       for (final each in tabs)
                         Padding(
-                          padding: const EdgeInsets.only(right: 6),
+                          padding: const EdgeInsets.only(right: 4),
                           child: _TabPill(
                             label: switch (each) {
+                              PlayerOptionsTab.upNext => 'Up next',
                               PlayerOptionsTab.audio => 'Audio',
                               PlayerOptionsTab.subtitles => 'Subtitles',
                               PlayerOptionsTab.quality => 'Quality',
@@ -173,6 +177,7 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
             child: KeyedSubtree(
               key: ValueKey(tab),
               child: switch (tab) {
+                PlayerOptionsTab.upNext => _UpNextPage(playback: playback),
                 PlayerOptionsTab.audio => _audioPage(tracks),
                 PlayerOptionsTab.subtitles => _subtitlePage(tracks, stream),
                 PlayerOptionsTab.quality => _qualityPage(stream!),
@@ -269,10 +274,11 @@ class _TabPill extends StatelessWidget {
         customBorder: const StadiumBorder(),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          // Four pages fit beside the close button in the landscape panel.
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
           child: Text(
             label,
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: selected ? Palette.accentInk : Palette.ink),
+            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: selected ? Palette.accentInk : Palette.ink),
           ),
         ),
       ),
@@ -368,4 +374,155 @@ class _Note extends StatelessWidget {
       ],
     ),
   );
+}
+
+/// What plays after this video: the show's episodes, or one of the PC's queues. Choosing a list makes Previous, Next and
+/// up next follow it, as the PC's queue menu does; choosing a video plays it.
+class _UpNextPage extends StatefulWidget {
+  const _UpNextPage({required this.playback});
+  final PhonePlayback playback;
+
+  @override
+  State<_UpNextPage> createState() => _UpNextPageState();
+}
+
+class _UpNextPageState extends State<_UpNextPage> {
+  List<QueueSummary>? _queues;
+  late String? _selected = widget.playback.followed?.id;
+  LibraryListing? _listing;
+  bool _following = false;
+  // Scrolled to the playing video's row once the list is there.
+  final ScrollController _scroll = ScrollController();
+
+  PhonePlayback get playback => widget.playback;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(loadQueues(playback.link).then((queues) {
+      if (mounted) setState(() => _queues = queues);
+    }, onError: (Object _) {
+      if (mounted) setState(() => _queues = const []);
+    }));
+    unawaited(_open(follow: false));
+  }
+
+  @override
+  void dispose() {
+    _listing?.dispose();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  QueueRef? get _queue {
+    final selected = _selected;
+    if (selected == null) return null;
+    final known = _queues?.where((q) => q.id == selected).firstOrNull;
+    if (known != null) return known.ref;
+    final followed = playback.followed;
+    return followed != null && followed.id == selected ? QueueRef(id: followed.id, name: followed.name) : QueueRef(id: selected, name: 'Queue');
+  }
+
+  // Loads the chosen list; once it is whole, the player follows it when [follow].
+  Future<void> _open({required bool follow}) async {
+    final stream = playback.stream;
+    if (stream == null) return;
+    _listing?.dispose();
+    final selected = _selected;
+    final listing = _listing = LibraryListing(playback.link, selected != null ? BrowseRequest(queue: selected) : BrowseRequest(episodesOf: stream.id))
+      ..addListener(() {
+        if (mounted) setState(() {});
+      });
+    setState(() => _following = follow);
+    await loadWholeList(listing, mustHave: stream.id);
+    if (!mounted || !identical(listing, _listing)) return;
+    if (follow && listing.error == null) playback.followList(_queue, listing.entries);
+    setState(() => _following = false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) showQueueRow(_scroll, listing.entries.indexWhere(_current), queueRowExtentOf(context));
+    });
+  }
+
+  bool _current(LibraryEntry entry) {
+    final stream = playback.stream;
+    if (stream == null || entry.id != stream.id) return false;
+    final place = stream.queue?.id == _selected ? stream.queue?.index : null;
+    return place == null || entry.index == place;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final listing = _listing;
+    final entries = listing?.entries ?? const <LibraryEntry>[];
+    final next = playback.nextEpisode;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+          child: ListChooser(
+            queues: _queues,
+            selected: _selected,
+            loading: _following,
+            onSelect: (queue) {
+              if (queue?.id == _selected) return;
+              setState(() => _selected = queue?.id);
+              unawaited(_open(follow: true));
+            },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 2, 20, 8),
+          child: Text(
+            next != null ? 'Next: ${next.title}' : (_selected == null ? 'Nothing comes after this video.' : 'This is the last video of the queue.'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12.5, color: Palette.muted),
+          ),
+        ),
+        Flexible(
+          child: listing == null || (entries.isEmpty && listing.loading)
+              ? const Padding(padding: EdgeInsets.all(28), child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)))
+              : entries.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+                  child: Text(
+                    listing.error ?? (_selected == null ? 'This video has no episodes around it.' : 'This queue is empty. Add videos to it on the PC.'),
+                    style: const TextStyle(color: Palette.muted, fontSize: 13.5, height: 1.35),
+                  ),
+                )
+              : Builder(
+                  builder: (context) {
+                    // One row is the playing one, also when the video is in the list twice. Rows are built as they
+                    // scroll into view, so pictures load a screen at a time.
+                    final at = entries.indexWhere(_current);
+                    return ListView.builder(
+                      controller: _scroll,
+                      shrinkWrap: true,
+                      padding: const EdgeInsets.fromLTRB(10, 0, 10, 16),
+                      itemExtent: queueRowExtentOf(context),
+                      itemCount: entries.length,
+                      itemBuilder: (context, i) => _row(entries[i], current: i == at),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _row(LibraryEntry entry, {required bool current}) {
+                    return QueueEntryRow(
+                      link: playback.link,
+                      entry: entry,
+                      current: current,
+                      onTap: current
+                          ? null
+                          : () {
+                              Navigator.of(context).maybePop();
+                              unawaited(playback.playListed(entry, _queue?.at(entry.index)));
+                            },
+                    );
+  }
 }

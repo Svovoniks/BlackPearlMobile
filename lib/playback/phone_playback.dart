@@ -36,7 +36,8 @@ class UpNextOffer {
 class PhonePlayback extends ChangeNotifier {
   PhonePlayback({required this.link, MediaProxy? proxy, Player Function()? createPlayer, this.awayQuality = 'auto'})
     : _createPlayer = createPlayer ?? _defaultPlayer {
-    this.proxy = proxy ?? MediaProxy(reader: () => link.media, onLost: _streamLost);
+    // While the phone waits for an answer, new reads hold back for up to 4 seconds; the player plays from its cache.
+    this.proxy = proxy ?? MediaProxy(reader: () => link.media, onLost: _streamLost, beforeRead: () => link.answered(const Duration(seconds: 4)));
   }
 
   final RemoteLink link;
@@ -107,7 +108,7 @@ class PhonePlayback extends ChangeNotifier {
   ///
   /// One player serves the whole viewing: another quality, a recovery or another episode opens on the player already
   /// on screen. A second player got no video surface on Android, and libmpv took that for the end of the video.
-  Future<bool> watch(String id, {bool takeOver = false, String? quality, int? startAt, EpisodeStep? step}) async {
+  Future<bool> watch(String id, {bool takeOver = false, String? quality, int? startAt, EpisodeStep? step, QueueRef? queue}) async {
     final attempt = ++_opening;
     final hadPlayer = _player != null;
     // Another stream of the video on screen (a quality change, a recovery): the old one plays on until the new one is
@@ -141,6 +142,8 @@ class PhonePlayback extends ChangeNotifier {
         'quality': quality ?? (_network == 'home' ? 'auto' : awayQuality),
         'network': _network,
         'takeOver': takeOver,
+        // A video played as part of a queue: the PC's Previous, Next and Loop all follow the queue.
+        if ((queue ?? (replacing ? _followed : null)) case final inQueue?) ...{'queue': inQueue.id, 'queueIndex': ?inQueue.index},
       }, timeout: const Duration(seconds: 45));
       info = StreamInfo.fromJson(reply);
     } on RemoteRequestException catch (e) {
@@ -183,6 +186,12 @@ class PhonePlayback extends ChangeNotifier {
       _chosenSubtitle = null;
     }
     _stream = info;
+    // Another video's answer says what comes next; another stream of this one keeps the list the player follows, unless
+    // a list asked for it (the same video at another place of a queue).
+    if (!replacing || queue != null) {
+      _listSteps = null;
+      _followed = info.queue;
+    }
     _ended = false;
     _lastReported = -1;
     final start = startAt ?? info.positionMs;
@@ -421,8 +430,62 @@ class PhonePlayback extends ChangeNotifier {
 
   // ---- Episodes, Loop and up next ----
 
-  EpisodeStep? get previousEpisode => _stream?.previous;
-  EpisodeStep? get nextEpisode => _stream?.next;
+  EpisodeStep? get previousEpisode => _listSteps != null ? _listSteps!.previous : _stream?.previous;
+  EpisodeStep? get nextEpisode => _listSteps != null ? _listSteps!.next : _stream?.next;
+  EpisodeStep? get _firstEpisode => _listSteps != null ? _listSteps!.first : _stream?.first;
+
+  // What Previous, Next and up next follow: the queue played from (null: the show's episodes), and, after the player
+  // switched lists, the steps worked out from that list here.
+  QueueRef? _followed;
+  ({EpisodeStep? previous, EpisodeStep? next, EpisodeStep? first})? _listSteps;
+
+  /// The saved queue Previous and Next follow, or null for the show's episodes.
+  QueueRef? get followed => _followed;
+
+  /// Follows [entries], a queue's videos ([queue]) or the show's episodes (null), from now on, as the PC's player does
+  /// when another list is chosen: the video carries on, Previous and Next step through the list from its place, and in
+  /// a queue that doesn't have it, Next starts the queue from its first video.
+  void followList(QueueRef? queue, List<LibraryEntry> entries) {
+    final stream = _stream;
+    if (stream == null) return;
+    _followed = queue;
+    _listSteps = stepsIn(entries, stream.id, queue == null ? null : (queue.id == stream.queue?.id ? stream.queue?.index : null), inQueue: queue != null);
+    notifyListeners();
+  }
+
+  /// Previous, Next and Loop all's start in a list, from the video [id] (at [place] when it is there twice).
+  @visibleForTesting
+  static ({EpisodeStep? previous, EpisodeStep? next, EpisodeStep? first}) stepsIn(List<LibraryEntry> entries, String id, int? place, {required bool inQueue}) {
+    var at = place == null ? -1 : entries.indexWhere((e) => e.id == id && e.index == place);
+    if (at < 0) at = entries.indexWhere((e) => e.id == id);
+    EpisodeStep step(LibraryEntry entry) => EpisodeStep.ofEntry(entry, inQueue: inQueue);
+    if (at < 0) {
+      // A queue without the video starts from its first one, as on the PC; a show's list without it has nothing to step to.
+      final start = inQueue ? entries.where((e) => e.playable).firstOrNull : null;
+      return (previous: null, next: start == null ? null : step(start), first: null);
+    }
+    LibraryEntry? previous, next, first;
+    for (var i = at - 1; i >= 0 && previous == null; i--) {
+      if (entries[i].playable) previous = entries[i];
+    }
+    for (var i = at + 1; i < entries.length && next == null; i++) {
+      if (entries[i].playable) next = entries[i];
+    }
+    if (next == null) {
+      for (var i = 0; i < entries.length && first == null; i++) {
+        if (i != at && entries[i].playable) first = entries[i];
+      }
+    }
+    return (previous: previous == null ? null : step(previous), next: next == null ? null : step(next), first: first == null ? null : step(first));
+  }
+
+  /// Plays a listed video: from a queue ([queue]) or the show's episodes. The player follows that list once the video
+  /// has started, from the PC's answer, so a video that can't be had leaves the list it followed as it was.
+  Future<bool> playListed(LibraryEntry entry, QueueRef? queue) async {
+    final step = EpisodeStep.ofEntry(entry, inQueue: queue != null);
+    if (pending.value?.episode?.id == step.id) return false;
+    return watch(step.id, quality: _chosenQuality, step: step, queue: queue?.at(entry.index));
+  }
 
   /// Whether Previous goes back to the start of this video rather than to the episode before: once it has played more
   /// than 3 seconds, or after it ended, as on the PC.
@@ -455,7 +518,8 @@ class PhonePlayback extends ChangeNotifier {
   /// Plays another episode on the same player, at the quality chosen in this viewing.
   Future<bool> playEpisode(EpisodeStep step) async {
     if (pending.value?.episode?.id == step.id) return false;
-    return watch(step.id, quality: _chosenQuality, step: step);
+    final followed = _followed;
+    return watch(step.id, quality: _chosenQuality, step: step, queue: followed != null && step.queueIndex != null ? followed.at(step.queueIndex) : null);
   }
 
   /// The next episode, offered when this one ends.
@@ -466,7 +530,7 @@ class PhonePlayback extends ChangeNotifier {
     final stream = _stream;
     final player = _player;
     if (stream == null || player == null) return;
-    final (replay, step) = afterEnd(loopMode, stream);
+    final (replay, step) = afterEnd(loopMode, nextEpisode, _firstEpisode);
     if (replay) {
       unawaited(_replay());
       return;
@@ -483,9 +547,9 @@ class PhonePlayback extends ChangeNotifier {
   /// What follows the end of [stream], as on the PC: Loop one replays it; otherwise the next episode is offered, or with
   /// Loop all the show's first; Loop all with nothing else to play replays it.
   @visibleForTesting
-  static (bool replay, EpisodeStep? offer) afterEnd(String loopMode, StreamInfo stream) {
+  static (bool replay, EpisodeStep? offer) afterEnd(String loopMode, EpisodeStep? next, EpisodeStep? first) {
     if (loopMode == 'one') return (true, null);
-    final step = stream.next ?? (loopMode == 'all' ? stream.first : null);
+    final step = next ?? (loopMode == 'all' ? first : null);
     if (step == null) return (loopMode == 'all', null);
     return (false, step);
   }
@@ -677,6 +741,8 @@ class PhonePlayback extends ChangeNotifier {
     _chosenQuality = null;
     _chosenAudio = null;
     _chosenSubtitle = null;
+    _followed = null;
+    _listSteps = null;
     final previous = _detachPlayer();
     if (_stream != null) link.tell('stream-stop', {});
     _stream = null;

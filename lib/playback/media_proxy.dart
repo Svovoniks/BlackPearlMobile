@@ -14,13 +14,17 @@ import '../protocol/library.dart';
 /// A link that drops mid-video is waited for: [reader] gives the current connection's reader, and a read that fails
 /// because the link closed is tried again on the next one.
 class MediaProxy {
-  MediaProxy({required this.reader, this.chunk = 262144, this.ahead = 6, this.reconnectWait = const Duration(seconds: 45), this.onLost});
+  MediaProxy({required this.reader, this.chunk = 262144, this.ahead = 6, this.reconnectWait = const Duration(seconds: 45), this.onLost, this.beforeRead});
 
   final MediaReader? Function() reader;
 
   /// The PC no longer has the stream (it was restarted, or waited for the phone longer than it keeps one), or the link
   /// stayed down past [reconnectWait]. The player itself would only wait; whoever plays asks for the stream again.
   final void Function(StreamInfo stream)? onLost;
+
+  /// Waited for before each read is sent: while the phone waits for an answer from the PC, new reads hold back so the
+  /// answer isn't queued behind more video.
+  final Future<void> Function()? beforeRead;
   final int chunk;
   final int ahead;
   final Duration reconnectWait;
@@ -122,6 +126,8 @@ class MediaProxy {
         await Future<void>.delayed(const Duration(milliseconds: 400));
         continue;
       }
+      await beforeRead?.call();
+      if (!wanted()) throw const MediaReadException('closed', 'The connection to the PC closed.');
       final read = current.read(resource, offset, count);
       live.add(read);
       try {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 
@@ -7,17 +8,24 @@ import '../protocol/library.dart';
 import '../protocol/remote_state.dart';
 import 'artwork.dart';
 import 'pebbles.dart';
+import 'queue_widgets.dart';
 import 'theme.dart';
 
 /// What the library screens do with a title: play it here, or start it on the PC.
 class LibraryActions {
   const LibraryActions({required this.watchHere, required this.playOnPc});
 
-  /// Plays [entry] on the phone. [fromStart] ignores the resume point.
-  final Future<void> Function(LibraryEntry entry, {bool fromStart}) watchHere;
+  /// Plays [entry] on the phone. [fromStart] ignores the resume point; [queue] plays it as part of a saved queue.
+  final Future<void> Function(LibraryEntry entry, {bool fromStart, QueueRef? queue}) watchHere;
 
-  /// Starts [entry] on the PC; returns why it couldn't, or null.
-  final Future<String?> Function(LibraryEntry entry, {bool fromStart}) playOnPc;
+  /// Starts [entry] on the PC, as part of [queue] when given; returns why it couldn't, or null.
+  final Future<String?> Function(LibraryEntry entry, {bool fromStart, QueueRef? queue}) playOnPc;
+
+  /// The same actions, playing each listed video as part of [list] at the video's place.
+  LibraryActions inQueue(QueueRef list) => LibraryActions(
+    watchHere: (entry, {bool fromStart = false, QueueRef? queue}) => watchHere(entry, fromStart: fromStart, queue: queue ?? list.at(entry.index)),
+    playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) => playOnPc(entry, fromStart: fromStart, queue: queue ?? list.at(entry.index)),
+  );
 }
 
 /// Pages of one library listing, loaded as the list scrolls.
@@ -36,6 +44,12 @@ class LibraryListing extends ChangeNotifier {
   bool _disposed = false;
 
   bool get hasMore => _next != null;
+
+  /// Closed: it loads nothing more.
+  bool get disposed => _disposed;
+
+  /// The page [more] asks for next, if any.
+  int? get nextPage => _next?.page;
   bool get started => _started;
 
   Future<void> load() async {
@@ -79,8 +93,9 @@ class LibraryListing extends ChangeNotifier {
       final page = LibraryPage.fromJson(await link.ask('browse', request.toJson()));
       if (_disposed) return;
       // A page can repeat a title the previous one ended with when the library changed in between.
-      final seen = {for (final entry in entries) '${entry.id}/${entry.level}/${entry.homeSection}'};
-      entries.addAll(page.entries.where((entry) => seen.add('${entry.id}/${entry.level}/${entry.homeSection}')));
+      // A queue can hold a video twice: its place tells them apart.
+      final seen = {for (final entry in entries) '${entry.id}/${entry.level}/${entry.homeSection}/${entry.index}'};
+      entries.addAll(page.entries.where((entry) => seen.add('${entry.id}/${entry.level}/${entry.homeSection}/${entry.index}')));
       total = page.total;
       location = page.location;
       _next = page.hasMore ? request.nextPage() : null;
@@ -116,7 +131,7 @@ class LibraryListing extends ChangeNotifier {
   }
 }
 
-enum _Mode { home, category, search }
+enum _Mode { home, category, queues, search }
 
 /// The Library tab: Home's rows, each category as a grid of posters, and search.
 class LibraryScreen extends StatefulWidget {
@@ -195,10 +210,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _Mode.home => BrowseRequest(home: true, seed: _seed),
     _Mode.category => BrowseRequest(category: _category),
     _Mode.search => BrowseRequest(query: _search.text.trim()),
+    _Mode.queues => const BrowseRequest(),
   };
 
   void _open() {
     _listing?.dispose();
+    // Queues load their own list.
+    if (_mode == _Mode.queues) {
+      _listing = null;
+      if (mounted) setState(() {});
+      return;
+    }
     final listing = _listing = LibraryListing(link, _request);
     if (_mode != _Mode.search || _search.text.trim().isNotEmpty) unawaited(listing.load());
     if (mounted) setState(() {});
@@ -317,6 +339,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           pill('Home', _mode == _Mode.home, () => _select(_Mode.home)),
           for (final category in [LibraryCategory.films, LibraryCategory.shows, LibraryCategory.anime])
             pill(category.label, _mode == _Mode.category && _category == category, () => _select(_Mode.category, category)),
+          if (link.features.contains('queues')) pill('Queues', _mode == _Mode.queues, () => _select(_Mode.queues), icon: Icons.queue_play_next_rounded),
           pill('Search', _mode == _Mode.search, () => _select(_Mode.search), icon: Icons.search_rounded),
         ],
       ),
@@ -334,6 +357,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         text: '${link.pcName} runs a BlackPearl from before the phone could browse it. Update it on the PC to see its library here.',
       );
     }
+    if (_mode == _Mode.queues) return QueuesView(link: link, actions: widget.actions, changed: widget.changed);
     final listing = _listing;
     if (listing == null) return const SizedBox.shrink();
     if (_mode == _Mode.search && _search.text.trim().isEmpty) {
@@ -386,7 +410,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         if (continuing.isNotEmpty) ...[
           const _RowTitle('Continue watching'),
           SizedBox(
-            height: 182,
+            height: math.max(182, 130 + cardCaptionHeight(context)).ceilToDouble(),
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -399,7 +423,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         for (final row in suggestions.entries) ...[
           _RowTitle(rowName(row.key)),
           SizedBox(
-            height: 214,
+            height: math.max(214, 112 * 3 / 2 + cardCaptionHeight(context)).ceilToDouble(),
             child: ListView.separated(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -534,6 +558,12 @@ class PosterCard extends StatelessWidget {
   }
 }
 
+/// The room a card's title and caption take under its picture at the phone's text size (with the gap above them).
+double cardCaptionHeight(BuildContext context) {
+  final scaler = MediaQuery.textScalerOf(context);
+  return 7 + (scaler.scale(13.5) + scaler.scale(12)) * 1.4 + 2;
+}
+
 /// A listing as a grid of posters that loads more as it scrolls.
 class PosterGrid extends StatelessWidget {
   const PosterGrid({super.key, required this.link, required this.listing, required this.onOpen});
@@ -543,7 +573,11 @@ class PosterGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final columns = (MediaQuery.sizeOf(context).width / 130).floor().clamp(3, 8);
+    final width = MediaQuery.sizeOf(context).width;
+    final columns = (width / 130).floor().clamp(3, 8);
+    // A poster and, under it, its title and year at the phone's text size, so larger text doesn't overflow the card.
+    final tile = (width - 32 - 12 * (columns - 1)) / columns;
+    final height = math.max(tile / 0.52, (tile * 3 / 2 + cardCaptionHeight(context)).ceilToDouble());
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         if (notification.metrics.extentAfter < 600 && listing.hasMore) unawaited(listing.more());
@@ -555,7 +589,7 @@ class PosterGrid extends StatelessWidget {
           SliverPadding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
             sliver: SliverGrid.builder(
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: columns, mainAxisSpacing: 16, crossAxisSpacing: 12, childAspectRatio: 0.52),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: columns, mainAxisSpacing: 16, crossAxisSpacing: 12, mainAxisExtent: height),
               itemCount: listing.entries.length,
               itemBuilder: (context, index) => PosterCard(link: link, entry: listing.entries[index], onOpen: onOpen),
             ),
