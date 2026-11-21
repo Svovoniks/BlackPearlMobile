@@ -103,6 +103,7 @@ class PhonePlayback extends ChangeNotifier {
     } on RemoteRequestException catch (e) {
       if (attempt == _opening) {
         if (replacing && _player != null) {
+          _lastRefusal = e.message;
           _say(e.message);
         } else {
           _fail(e.message);
@@ -133,10 +134,12 @@ class PhonePlayback extends ChangeNotifier {
     _stream = info;
     _ended = false;
     _lastReported = -1;
+    final start = startAt ?? info.positionMs;
+    _openedAt = start;
+    _positionKnown = false;
     final player = _player = _createPlayer();
     _listen(player);
     final address = _address = await proxy.open(info);
-    final start = startAt ?? info.positionMs;
     await player.open(Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null));
     if (previous != null) unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () => _release(previous)));
     // The same spot running out again on a fresh stream is where the file itself ends.
@@ -153,6 +156,15 @@ class PhonePlayback extends ChangeNotifier {
 
   // Where a recovered stream started; data running out there again means the file is shorter than its header says.
   int? _endsAt;
+
+  // Where the current player opened, and whether it has said where it is since. media_kit reports 0:00 until libmpv
+  // has loaded and seeked, so until then the opening position is the player's.
+  int _openedAt = 0;
+  bool _positionKnown = false;
+  int _positionOf(Player player) => _positionKnown ? player.state.position.inMilliseconds : _openedAt;
+
+  String? _lastRefusal;
+  bool _recovering = false;
 
   /// Opens the same video again at another quality, from where it is now.
   Future<void> changeQuality(String quality) async {
@@ -180,6 +192,15 @@ class PhonePlayback extends ChangeNotifier {
     final stream = _stream;
     if (stream == null || _player == null || _stalledAt == null) return;
     _retryTimer?.cancel();
+    // Three minutes from the stall at most, however the tries go.
+    _giveUpTimer ??= Timer(const Duration(minutes: 3), () => _giveUp(link.status.isConnected
+        ? _lastRefusal ?? 'The video stopped coming from the PC. Check the connection and try again.'
+        : 'Lost the connection to the PC. Open the video again from the Library to carry on where it stopped.'));
+    // One request at a time; another one (a quality change) in flight brings its own new stream, or tries again later.
+    if (_recovering || _asking > 0) {
+      _retryTimer = Timer(const Duration(seconds: 5), () => unawaited(_recover()));
+      return;
+    }
     if (!link.status.isConnected) {
       _waitForLink();
       return;
@@ -187,25 +208,33 @@ class PhonePlayback extends ChangeNotifier {
     final now = DateTime.now();
     _recoveries.removeWhere((at) => now.difference(at) > const Duration(minutes: 2));
     if (_recoveries.length >= 3) {
-      _endRecovery();
-      _fail('The video stopped coming from the PC. Check the connection and try again.');
+      _giveUp(_lastRefusal ?? 'The video stopped coming from the PC. Check the connection and try again.');
       return;
     }
     _recoveries.add(now);
-    final ok = await watch(stream.id, quality: stream.quality, startAt: _stalledAt);
+    _recovering = true;
+    final bool ok;
+    try {
+      ok = await watch(stream.id, quality: stream.quality, startAt: _stalledAt);
+    } finally {
+      _recovering = false;
+    }
     // Still the stalled stream: try again shortly (or once the link is back), within the same budget.
     if (!ok && identical(_stream, stream) && _stalledAt != null) _retryTimer = Timer(const Duration(seconds: 5), () => unawaited(_recover()));
+  }
+
+  void _giveUp(String message) {
+    if (_stalledAt == null) return;
+    _endRecovery();
+    // A request still in flight is answered to nobody.
+    _opening++;
+    _fail(message);
   }
 
   void _waitForLink() {
     if (_waitingForLink) return;
     _waitingForLink = true;
     link.addListener(_linkChanged);
-    _giveUpTimer ??= Timer(const Duration(minutes: 3), () {
-      if (_stalledAt == null) return;
-      _endRecovery();
-      _fail('Lost the connection to the PC. Open the video again from the Library to carry on where it stopped.');
-    });
   }
 
   void _linkChanged() {
@@ -222,14 +251,16 @@ class PhonePlayback extends ChangeNotifier {
     if (_waitingForLink) link.removeListener(_linkChanged);
     _waitingForLink = false;
     _stalledAt = null;
+    _lastRefusal = null;
   }
 
   /// The proxy found the PC's stream gone, or the link down for too long: recover from where the player is.
   void _streamLost(StreamInfo lost) {
     final player = _player;
-    // A read of a stream already replaced (another quality) failing is no news.
-    if (!identical(lost, _stream) || player == null || _stalledAt != null || _phase != PhonePlaybackPhase.playing) return;
-    _stalledAt = player.state.position.inMilliseconds;
+    // A read of a stream already replaced (another quality) failing is no news, nor is one while a new stream of the same
+    // video is being asked for: the PC lets the old one go before it answers.
+    if (!identical(lost, _stream) || player == null || _stalledAt != null || _phase != PhonePlaybackPhase.playing || _asking > 0) return;
+    _stalledAt = _positionOf(player);
     unawaited(_recover());
   }
 
@@ -241,6 +272,9 @@ class PhonePlayback extends ChangeNotifier {
   }
 
   void _listen(Player player) {
+    _subscriptions.add(player.stream.position.listen((position) {
+      if (position > Duration.zero && identical(player, _player)) _positionKnown = true;
+    }));
     _subscriptions.add(player.stream.playing.listen((playing) {
       // A pause is a natural moment to save where the phone is.
       if (!playing) unawaited(_report());
@@ -249,7 +283,7 @@ class PhonePlayback extends ChangeNotifier {
     _subscriptions.add(player.stream.completed.listen((completed) {
       if (!completed || _stream == null || !identical(player, _player)) return;
       // libmpv also says "completed" when the data runs out mid-video.
-      final position = player.state.position.inMilliseconds;
+      final position = _positionOf(player);
       final shortFile = _endsAt != null && (position - _endsAt!).abs() < 3000;
       if (!_atEnd(player) && !shortFile) {
         _stalledAt ??= position;
@@ -269,7 +303,7 @@ class PhonePlayback extends ChangeNotifier {
   Future<void> _report({bool final_ = false}) async {
     final stream = _stream;
     final player = _player;
-    if (stream == null || player == null || _stalledAt != null) return;
+    if (stream == null || player == null || _stalledAt != null || !_positionKnown) return;
     final position = player.state.position.inMilliseconds;
     var duration = player.state.duration.inMilliseconds;
     if (duration <= 0) duration = stream.durationMs;
@@ -286,7 +320,8 @@ class PhonePlayback extends ChangeNotifier {
     final player = _player;
     if (stream == null || player == null) return null;
     await player.pause();
-    final position = player.state.position.inMilliseconds;
+    // While stalled, where the video stopped: a stopped player may have gone back to 0:00.
+    final position = _stalledAt ?? _positionOf(player);
     await _report(final_: true);
     try {
       await link.ask('play', {'id': stream.id, 'positionMs': position}, timeout: const Duration(seconds: 30));
