@@ -53,7 +53,7 @@ class SettingsScreen extends StatelessWidget {
                         BackgroundLink.supported
                             ? 'The phone keeps its connection to ${link.pcName} after you close the app, so the notification '
                                   'shows what plays there with a Play/Pause button, and the app opens already connected. '
-                                  'Android shows the notification while this is on; its Turn off button switches it off too.'
+                                  'Android shows the notification while this is on; its Disconnect button drops the connection until you open the app again.'
                             : 'Only BlackPearl on Android stays connected in the background.',
                         style: const TextStyle(color: Palette.muted, fontSize: 13, height: 1.35),
                       ),

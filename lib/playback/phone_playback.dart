@@ -759,7 +759,7 @@ class PhonePlayback extends ChangeNotifier {
   /// The app went to the background (and not to a small picture-in-picture window): the video waits, and the PC
   /// learns where it is.
   Future<void> background() async {
-    // Already in the background (a second call, as when the background service is turned off from its notification):
+    // Already in the background (a second call, as when the background setting is turned off while the app is away):
     // what was playing then is still what to resume.
     if (_inBackground) return;
     _inBackground = true;

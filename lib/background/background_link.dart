@@ -23,7 +23,8 @@ class BackgroundNotice {
 }
 
 /// The Android foreground service that keeps the app, and its link to the PC, running after the app is closed. Android
-/// shows its notification while it runs; the notification's Turn off button stops it.
+/// shows its notification while it runs; the notification's Disconnect button stops it
+/// until the app is opened again.
 class BackgroundLink {
   BackgroundLink({MethodChannel? channel, MethodChannel? notifications})
     : _channel = channel ?? const MethodChannel('blackpearl/background'),
@@ -39,7 +40,7 @@ class BackgroundLink {
   bool get running => _running;
   BackgroundNotice? _shown;
 
-  /// Called with `toggle` (the notification's Play/Pause) and `turnOff`.
+  /// Called with `toggle` (the notification's Play/Pause) and `disconnect`.
   void listen(void Function(String action) onAction) {
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'action' && call.arguments is String) onAction(call.arguments as String);

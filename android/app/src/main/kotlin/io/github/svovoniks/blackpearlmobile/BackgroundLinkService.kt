@@ -17,7 +17,7 @@ import androidx.core.content.ContextCompat
 
 /**
  * Keeps BlackPearl running after the user closes it, so the phone stays connected to the PC. Its notification shows
- * what plays on the PC, with Play/Pause, and a Turn off button that stops it and switches the setting off.
+ * what plays on the PC, with Play/Pause, and a Disconnect button that drops the link until the app is opened again.
  */
 class BackgroundLinkService : Service() {
     data class Notice(val title: String, val text: String, val playing: Boolean?)
@@ -26,7 +26,7 @@ class BackgroundLinkService : Service() {
         private const val CHANNEL = "link"
         private const val NOTIFICATION = 7
         private const val ACTION_TOGGLE = "io.github.svovoniks.blackpearlmobile.TOGGLE"
-        private const val ACTION_TURN_OFF = "io.github.svovoniks.blackpearlmobile.TURN_OFF"
+        private const val ACTION_DISCONNECT = "io.github.svovoniks.blackpearlmobile.DISCONNECT"
 
         @Volatile
         var running = false
@@ -97,7 +97,7 @@ class BackgroundLinkService : Service() {
                 .setContentTitle(notice.title)
                 .setContentText(notice.text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(
-                    notice.text + "\nBlackPearl keeps the remote ready while the app is closed. Turn off stops it; Settings in the app turns it back on."
+                    notice.text + "\nBlackPearl keeps the remote ready while the app is closed. Disconnect drops it until you open the app again."
                 ))
                 .setContentIntent(open)
                 .setOngoing(true)
@@ -113,7 +113,7 @@ class BackgroundLinkService : Service() {
                     action(ACTION_TOGGLE, 1),
                 )
             }
-            builder.addAction(0, "Turn off", action(ACTION_TURN_OFF, 2))
+            builder.addAction(0, "Disconnect", action(ACTION_DISCONNECT, 2))
             return builder.build()
         }
     }
@@ -138,8 +138,8 @@ class BackgroundLinkService : Service() {
         starting = false
         when (intent?.action) {
             ACTION_TOGGLE -> LinkEngine.send("toggle")
-            ACTION_TURN_OFF -> {
-                LinkEngine.send("turnOff")
+            ACTION_DISCONNECT -> {
+                LinkEngine.send("disconnect")
                 stopSelf()
                 return START_NOT_STICKY
             }

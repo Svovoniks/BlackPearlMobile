@@ -155,7 +155,10 @@ class AppModel extends ChangeNotifier {
 
   // ---- the background service ----
 
-  bool get _keepsLink => background != null && settings.backgroundLink && _connection != null && !_connection!.target.isPairing;
+  /// A stopped connection (the notification's Disconnect, or the app closed without the service) needs no service; it
+  /// comes back with the connection when the app is opened again.
+  bool get _keepsLink =>
+      background != null && settings.backgroundLink && _connection != null && _connection!.running && !_connection!.target.isPairing;
 
   void _settingsChanged() {
     _playback?.awayQuality = settings.awayQuality;
@@ -205,9 +208,12 @@ class AppModel extends ChangeNotifier {
     switch (action) {
       case 'toggle':
         _connection?.command('toggle');
-      case 'turnOff':
-        unawaited(background?.stop());
-        unawaited(settings.setBackgroundLink(false));
+      case 'disconnect':
+        // Drops the link now and leaves the setting alone. The service stops as the connection does.
+        _backgroundTimer?.cancel();
+        _backgroundTimer = null;
+        // A connection halted by a failure says nothing when it stops, so look again once it has.
+        unawaited(_connection?.stop().then((_) => _syncBackground()));
     }
   }
 

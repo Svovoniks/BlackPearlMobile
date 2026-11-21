@@ -45,7 +45,7 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   picture (paused, or on a phone that doesn't allow it) waits, and carries on when the app is back.
 - **Background connection (Android).** With Settings › Stay connected in the background on (the default), closing the
   app leaves a foreground service running that keeps the link to the PC. Its notification shows what the PC plays,
-  with Play/Pause, and a Turn off button that switches the setting off. The Flutter engine lives apart from the activity
+  with Play/Pause, and a Disconnect button that drops the link until the app is opened again, without changing the setting. The Flutter engine lives apart from the activity
   (`LinkEngine`), so opening the app again shows it already connected.
 
 ## Building

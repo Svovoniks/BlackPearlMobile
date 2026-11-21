@@ -46,7 +46,7 @@ object LinkEngine {
         return engine
     }
 
-    /** Tells the app about a notification button: `toggle` or `turnOff`. */
+    /** Tells the app about a notification button: `toggle` or `disconnect`. */
     fun send(action: String) {
         main.post { channel?.invokeMethod("action", action) }
     }
