@@ -277,6 +277,10 @@ void main() {
     expect(await updater.check(manual: true), 'BlackPearl Mobile 0.1.4 is being published. Try again in a few minutes.');
     expect(updater.release!.version, '0.1.3');
     expect(updater.phase, UpdatePhase.available);
+    // Once it's uploaded, the next automatic check finds it within the half hour, not six hours later.
+    platform.latest = releaseJson('v0.1.4', name: 'BlackPearl-v0.1.4.apk');
+    await withClock(Clock.fixed(DateTime.now().add(const Duration(minutes: 31))), () => updater.check());
+    expect(updater.release!.version, '0.1.4');
   });
 
   test('after a failed check the next automatic one waits half an hour, not six', () async {

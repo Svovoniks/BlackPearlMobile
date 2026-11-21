@@ -179,8 +179,11 @@ class AppUpdater extends ChangeNotifier {
       final found = newerRelease(json, currentVersion);
       if (found == null) {
         final publishing = newerVersion(json, currentVersion);
-        // A release whose APK is still uploading: keep what the banner offers, and say so.
-        if (publishing != null) return 'BlackPearl Mobile $publishing is being published. Try again in a few minutes.';
+        // A release whose APK is still uploading: keep what the banner offers, say so, and look again soon.
+        if (publishing != null) {
+          _nextCheck = clock.now().add(retryAfterFailure);
+          return 'BlackPearl Mobile $publishing is being published. Try again in a few minutes.';
+        }
         if (_phase != UpdatePhase.ready) {
           _phase = UpdatePhase.none;
           _release = null;
