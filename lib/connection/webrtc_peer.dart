@@ -7,10 +7,27 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'transport.dart';
 
 const String channelLabel = 'remote-v1';
+const String mediaLabel = 'media-v1';
 
 /// [PeerLink] over flutter_webrtc.
 class WebRtcPeerLink extends PeerLink {
-  WebRtcPeerLink._(this._pc, this._channel) {
+  WebRtcPeerLink._(this._pc, this._channel, this._media) {
+    _media.onDataChannelState = (state) {
+      if (state == RTCDataChannelState.RTCDataChannelOpen) {
+        _mediaOpen = true;
+        onMediaOpen?.call();
+      } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
+        _mediaOpen = false;
+        onMediaClosed?.call();
+      }
+    };
+    _media.onMessage = (message) {
+      if (message.isBinary) {
+        onMediaBinary?.call(message.binary);
+      } else {
+        onMediaText?.call(message.text);
+      }
+    };
     _pc.onIceCandidate = (candidate) {
       var line = candidate.candidate;
       if (line == null || line.isEmpty) return; // end of candidates
@@ -54,11 +71,14 @@ class WebRtcPeerLink extends PeerLink {
       'sdpSemantics': 'unified-plan',
     });
     final channel = await pc.createDataChannel(channelLabel, RTCDataChannelInit()..ordered = true);
-    return WebRtcPeerLink._(pc, channel);
+    final media = await pc.createDataChannel(mediaLabel, RTCDataChannelInit()..ordered = true);
+    return WebRtcPeerLink._(pc, channel, media);
   }
 
   final RTCPeerConnection _pc;
   final RTCDataChannel _channel;
+  final RTCDataChannel _media;
+  bool _mediaOpen = false;
   String? _localSdp, _remoteSdp;
   Timer? _disconnectTimer;
   bool _open = false, _finished = false;
@@ -106,6 +126,11 @@ class WebRtcPeerLink extends PeerLink {
   }
 
   @override
+  void sendMedia(String text) {
+    if (_mediaOpen && !_finished) _media.send(RTCDataChannelMessage(text));
+  }
+
+  @override
   Future<NetworkPath> path() async {
     try {
       final reports = await _pc.getStats();
@@ -150,6 +175,13 @@ class WebRtcPeerLink extends PeerLink {
     onOpen = null;
     onMessage = null;
     onClosed = null;
+    onMediaOpen = null;
+    onMediaBinary = null;
+    onMediaText = null;
+    onMediaClosed = null;
+    try {
+      await _media.close();
+    } catch (_) {}
     try {
       await _channel.close();
     } catch (_) {}

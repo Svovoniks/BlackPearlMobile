@@ -12,9 +12,12 @@ import 'theme.dart';
 
 /// The Remote tab: what's playing on the PC and everything the player's bars do.
 class RemoteScreen extends StatefulWidget {
-  const RemoteScreen({super.key, required this.link, required this.onChoosePc, required this.onPairAgain});
+  const RemoteScreen({super.key, required this.link, required this.onChoosePc, required this.onPairAgain, this.onWatchHere});
 
   final RemoteLink link;
+
+  /// Moves the PC's video to the phone: the PC stops and the phone continues it.
+  final void Function(String mediaId)? onWatchHere;
 
   /// Opens the PC chooser (switch, pair another, forget).
   final VoidCallback onChoosePc;
@@ -226,8 +229,6 @@ class _RemoteScreenState extends State<RemoteScreen> {
               ),
             ),
             Expanded(child: _body(status, state)),
-            // The bar holds only Remote for now, so on short screens its height goes to the controls instead.
-            if (MediaQuery.sizeOf(context).height >= 720) const _TabBar() else SizedBox(height: MediaQuery.paddingOf(context).bottom),
           ],
         ),
       ),
@@ -281,16 +282,42 @@ class _RemoteScreenState extends State<RemoteScreen> {
         ),
       ),
       const SizedBox(height: 16),
-      Text(state.title.isEmpty ? 'Untitled' : state.title, style: display(26), maxLines: 2, overflow: TextOverflow.ellipsis),
-      if (state.detail.isNotEmpty) ...[
-        const SizedBox(height: 4),
-        Text(
-          state.detail,
-          style: const TextStyle(color: Palette.muted, fontSize: 14),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-        ),
-      ],
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(state.title.isEmpty ? 'Untitled' : state.title, style: display(26), maxLines: 2, overflow: TextOverflow.ellipsis),
+                if (state.detail.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    state.detail,
+                    style: const TextStyle(color: Palette.muted, fontSize: 14),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (state.mediaId != null && widget.onWatchHere != null && link.features.contains('watch')) ...[
+            const SizedBox(width: 12),
+            Pebble(
+              height: 40,
+              enabled: _connected,
+              onTap: () => widget.onWatchHere!(state.mediaId!),
+              semanticLabel: 'Watch on this phone',
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [Icon(Icons.phone_android_rounded, size: 18), SizedBox(width: 6), Text('Watch here', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600))],
+              ),
+            ),
+          ],
+        ],
+      ),
       const SizedBox(height: 16),
       _Timeline(
         fraction: _dragFraction ?? fraction,
@@ -1138,40 +1165,4 @@ class _DashedRing extends CustomPainter {
 
   @override
   bool shouldRepaint(_DashedRing old) => old.color != color;
-}
-
-/// The bottom tab bar. Only Remote exists so far; the other tabs come with their screens.
-class _TabBar extends StatelessWidget {
-  const _TabBar();
-  @override
-  Widget build(BuildContext context) {
-    final bottom = MediaQuery.paddingOf(context).bottom;
-    return Container(
-      padding: EdgeInsets.only(top: 8, bottom: math.max(10, bottom)),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.bottomCenter,
-          end: Alignment.topCenter,
-          colors: [Palette.canvas, Palette.canvas, Color(0x000F1311)],
-          stops: [0, 0.7, 1],
-        ),
-      ),
-      child: const Row(
-        mainAxisAlignment: MainAxisAlignment.spaceAround,
-        children: [
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.settings_remote_outlined, color: Palette.accent, size: 22),
-              SizedBox(height: 3),
-              Text(
-                'Remote',
-                style: TextStyle(color: Palette.accent, fontSize: 11.5, fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
 }

@@ -9,6 +9,10 @@
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- flutter_webrtc asks for Bluetooth (for call audio); the remote plays no sound, so don't require the hardware. -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
+    <!-- Staying connected to the PC with the app closed (BackgroundLinkService), with its notification. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Updating itself: Android asks the user once to allow it, and again to confirm each update. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
 
@@ -53,6 +57,16 @@
             <!-- app_links handles incoming links, not Flutter's router. -->
             <meta-data android:name="flutter_deeplinking_enabled" android:value="false"/>
         </activity>
+        <!-- Keeps the app and its link to the PC running after the app is closed. The user turns it off in the app's
+             Settings or with the notification's Turn off button. -->
+        <service
+            android:name=".BackgroundLinkService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a remote-control connection to the user's own PC open while the app is closed, so the PC can be controlled from the notification and the app reconnects at once."/>
+        </service>
         <!-- Hands a downloaded update to Android's installer (see MainActivity and res/xml/update_files.xml). -->
         <provider
             android:name="androidx.core.content.FileProvider"

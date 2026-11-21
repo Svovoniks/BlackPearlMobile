@@ -2,9 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import 'background/background_link.dart';
 import 'connection/remote_connection.dart';
+import 'connection/remote_link.dart';
 import 'connection/transport.dart';
+import 'playback/phone_playback.dart';
 import 'protocol/pair_link.dart';
+import 'storage/app_settings.dart';
 import 'storage/paired_pcs.dart';
 
 typedef ConnectionFactory = RemoteConnection Function(
@@ -13,12 +17,28 @@ typedef ConnectionFactory = RemoteConnection Function(
   void Function(String pcId, String name)? onPcName,
 });
 
-/// The app's state: the paired PCs, which one the remote is using, and its connection.
+/// The app's state: the paired PCs, which one the remote is using, its connection, the phone's own player, and the
+/// background service that keeps the connection while the app is closed.
 class AppModel extends ChangeNotifier {
-  AppModel({required this.store, required this.connect});
+  AppModel({required this.store, required this.connect, AppSettings? settings, this.background, this.createPlayback})
+    : settings = settings ?? AppSettings(MemorySettingsStore()) {
+    this.settings.addListener(_settingsChanged);
+    background?.listen(_backgroundAction);
+  }
 
   final PairedPcStore store;
   final ConnectionFactory connect;
+  final AppSettings settings;
+
+  /// The Android foreground service; null where there is none.
+  final BackgroundLink? background;
+
+  /// Makes the phone's player for a connection; null leaves the phone without one (tests).
+  final PhonePlayback Function(RemoteConnection connection)? createPlayback;
+
+  PhonePlayback? _playback;
+  PhonePlayback? get playback => _playback;
+  bool _foreground = true;
 
   List<PairedPc> _pcs = [];
   List<PairedPc> get pcs => List.unmodifiable(_pcs);
@@ -118,12 +138,77 @@ class AppModel extends ChangeNotifier {
     _disposeConnection();
     final connection = connect(target, onPaired: _paired, onPcName: _renamed);
     _connection = connection;
+    _playback = createPlayback?.call(connection)?..awayQuality = settings.awayQuality;
+    connection.addListener(_syncBackground);
     connection.start();
+    _syncBackground();
   }
 
   void _disposeConnection() {
+    _connection?.removeListener(_syncBackground);
+    _playback?.dispose();
+    _playback = null;
     _connection?.dispose();
     _connection = null;
+    _syncBackground();
+  }
+
+  // ---- the background service ----
+
+  bool get _keepsLink => background != null && settings.backgroundLink && _connection != null && !_connection!.target.isPairing;
+
+  void _settingsChanged() {
+    _playback?.awayQuality = settings.awayQuality;
+    _syncBackground();
+    // Turned off while the app isn't showing: let the link go, as it would have without the service.
+    if (!settings.backgroundLink && !_foreground) paused();
+    notifyListeners();
+  }
+
+  /// Starts, updates or stops the service to match the setting and the link.
+  void _syncBackground() {
+    final service = background;
+    if (service == null) return;
+    if (!_keepsLink) {
+      if (service.running) unawaited(service.stop());
+      return;
+    }
+    // Android starts a foreground service only while the app is showing; one already running can be updated any time.
+    if (!service.running && !_foreground) return;
+    final connection = _connection!;
+    final state = connection.state;
+    final status = connection.status;
+    final String text;
+    bool? playing;
+    if (status.isConnected) {
+      if (state != null && state.media) {
+        text = '${state.title.isEmpty ? 'Video' : state.title} · ${state.playing ? 'playing' : 'paused'} on the PC';
+        if (state.canControl) playing = state.playing;
+      } else {
+        text = 'Connected. Nothing is playing on the PC.';
+      }
+    } else if (status.phase == LinkPhase.waitingForPc) {
+      text = "Waiting for the PC to come online";
+    } else {
+      text = 'Reconnecting to the PC';
+    }
+    final first = !service.running;
+    unawaited(service.show(BackgroundNotice(title: connection.pcName, text: text, playing: playing)).then((started) {
+      if (started && first && !settings.askedNotifications) {
+        unawaited(settings.markAskedNotifications());
+        unawaited(service.askForNotifications());
+      }
+    }));
+  }
+
+  void _backgroundAction(String action) {
+    switch (action) {
+      case 'toggle':
+        _connection?.command('toggle');
+      case 'turnOff':
+        unawaited(background?.stop());
+        unawaited(settings.setBackgroundLink(false));
+    }
   }
 
   void _paired(PairedPc pc) {
@@ -164,16 +249,23 @@ class AppModel extends ChangeNotifier {
 
   // ---- app lifecycle and network ----
 
-  /// The app went to the background: keep the link a little while (a quick look at another app), then let it go.
+  /// The app went to the background: the phone's video pauses. With the background service the link stays;
+  /// without it, it stays a little while (a quick look at another app), then goes.
   void paused() {
+    _foreground = false;
+    unawaited(_playback?.background());
     _backgroundTimer?.cancel();
+    _backgroundTimer = null;
+    if (_keepsLink && (background?.running ?? false)) return;
     _backgroundTimer = Timer(const Duration(seconds: 30), () => unawaited(_connection?.stop()));
   }
 
   void resumed() {
+    _foreground = true;
     _backgroundTimer?.cancel();
     _backgroundTimer = null;
     _connection?.resume();
+    _syncBackground();
   }
 
   void networkChanged() => _connection?.networkChanged();
@@ -181,6 +273,7 @@ class AppModel extends ChangeNotifier {
   @override
   void dispose() {
     _backgroundTimer?.cancel();
+    settings.removeListener(_settingsChanged);
     _disposeConnection();
     notice.dispose();
     super.dispose();

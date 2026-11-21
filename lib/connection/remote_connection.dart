@@ -10,6 +10,7 @@ import '../protocol/pair_link.dart';
 import '../protocol/remote_state.dart';
 import '../protocol/signing.dart';
 import '../storage/paired_pcs.dart';
+import 'media_channel.dart';
 import 'remote_link.dart';
 import 'transport.dart';
 
@@ -114,6 +115,12 @@ class RemoteConnection extends RemoteLink {
   List<Map<String, dynamic>> _iceServers = const [];
   bool _forceRelay = false;
   int _pingNumber = 0;
+  Set<String> _features = const {};
+  bool _canStart = true;
+  MediaReader? _media;
+  bool _mediaOpen = false;
+  int _requestNumber = 0;
+  final Map<int, Completer<Map<String, dynamic>>> _requests = {};
 
   static const List<int> _backoffSeconds = [1, 2, 4, 8, 15, 30];
 
@@ -129,6 +136,40 @@ class RemoteConnection extends RemoteLink {
   ValueListenable<String?> get notice => _notice;
 
   bool get running => _running;
+
+  @override
+  Set<String> get features => _features;
+  @override
+  bool get canStart => _canStart;
+  @override
+  MediaReader? get media => _status.isConnected && _mediaOpen && !(_media?.closed ?? true) ? _media : null;
+
+  @override
+  Future<Map<String, dynamic>> ask(String type, Map<String, dynamic> fields, {Duration timeout = const Duration(seconds: 20)}) {
+    if (!_status.isConnected || _peer == null) return Future.error(const RemoteRequestException('offline', "The PC isn't connected."));
+    final number = ++_requestNumber;
+    final completer = Completer<Map<String, dynamic>>();
+    _requests[number] = completer;
+    _peer!.send(jsonEncode({...fields, 'type': type, 'request': number}));
+    return completer.future.timeout(timeout, onTimeout: () {
+      _requests.remove(number);
+      throw const RemoteRequestException('timeout', "The PC didn't answer. Try again.");
+    });
+  }
+
+  @override
+  void tell(String type, Map<String, dynamic> fields) {
+    if (!_status.isConnected) return;
+    _peer?.send(jsonEncode({...fields, 'type': type}));
+  }
+
+  void _failRequests(String message) {
+    final pending = _requests.values.toList();
+    _requests.clear();
+    for (final request in pending) {
+      if (!request.isCompleted) request.completeError(RemoteRequestException('offline', message));
+    }
+  }
 
   /// Stopped by a failure only the user can fix; see [retryNow].
   bool get halted => _halted;
@@ -339,6 +380,21 @@ class RemoteConnection extends RemoteLink {
       return;
     }
     _peer = peer;
+    final media = MediaReader(send: peer.sendMedia);
+    _media = media;
+    _mediaOpen = false;
+    peer.onMediaOpen = () {
+      if (generation != _generation || _session != session) return;
+      _mediaOpen = true;
+      notifyListeners();
+    };
+    peer.onMediaBinary = media.onBinary;
+    peer.onMediaText = media.onText;
+    peer.onMediaClosed = () {
+      _mediaOpen = false;
+      media.close();
+      if (generation == _generation && _session == session) notifyListeners();
+    };
     peer.onLocalCandidate = (candidate, mid) {
       if (generation != _generation || _session != session) return;
       if (!_offerSent) {
@@ -469,6 +525,9 @@ class RemoteConnection extends RemoteLink {
         _welcomed = true;
         _helloTimer?.cancel();
         _answerTimer?.cancel();
+        final features = message['features'];
+        _features = features is List ? features.whereType<String>().toSet() : const {};
+        _canStart = message['canStart'] != false;
         final name = message['pc'];
         if (name is String && name.trim().isNotEmpty && name != _pcName) {
           _pcName = name.trim();
@@ -501,6 +560,12 @@ class RemoteConnection extends RemoteLink {
         _target = LinkTarget.paired(paired);
         onPaired?.call(paired);
         _connected();
+      case 'page' || 'stream' || 'done' when message['request'] is num:
+        _requests.remove((message['request'] as num).toInt())?.complete(message);
+      case 'error' when message['request'] is num && _requests.containsKey((message['request'] as num).toInt()):
+        final code = message['code'] is String ? message['code'] as String : 'failed';
+        final text = message['message'] is String && (message['message'] as String).isNotEmpty ? message['message'] as String : "The PC couldn't do that.";
+        _requests.remove((message['request'] as num).toInt())?.completeError(RemoteRequestException(code, text));
       case 'state':
         _state = RemoteState.fromJson(message);
         _stateAt = clock.now();
@@ -564,6 +629,10 @@ class RemoteConnection extends RemoteLink {
     _pathTimer?.cancel();
     _remoteDescriptionSet = false;
     _session = null;
+    _mediaOpen = false;
+    _media?.close();
+    _media = null;
+    _failRequests('Lost the connection to the PC.');
     final peer = _peer;
     _peer = null;
     if (peer != null) await peer.close();

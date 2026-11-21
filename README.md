@@ -16,6 +16,21 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
 - **Remote.** Play and pause, ±10 s, previous and next, stop, loop (off, all, one), the timeline, the PC's volume and
   mute, and fullscreen. The artwork area is a touch pad: tap to play or pause, swipe sideways to skip 10 s, slide up
   and down for volume.
+  When the PC plays a video of its own library, **Watch here** moves it to the phone: the PC stops and the phone carries
+  on from the same moment.
+- **Library.** The PC's Home (Continue watching, suggestions for each kind, a random pick), films, shows and anime as
+  posters, search, and a show's seasons and episodes, with the PC's resume points and watched marks. A title's sheet plays
+  it on the phone (resume or start over) or on the PC.
+- **Watching on the phone.** The PC sends the video over the same direct link; the phone plays it with libmpv
+  (media_kit) through a small HTTP server on `127.0.0.1` that turns the player's byte ranges into reads on the link's
+  `media-v1` channel. At home the phone gets the file itself; away from home it asks for a 720p conversion by default
+  (Settings › Quality away from home; the player's tune button changes it for one video). The phone reports where it is
+  every 10 seconds, when it pauses and when it stops, so the PC's Continue watching and watched marks follow.
+  **Continue on PC** hands the video back: the PC plays it from where the phone was.
+- **Background connection (Android).** With Settings › Stay connected in the background on (the default), closing the
+  app leaves a foreground service running that keeps the link to the PC. Its notification shows what the PC plays,
+  with Play/Pause, and a Turn off button that switches the setting off. The Flutter engine lives apart from the activity
+  (`LinkEngine`), so opening the app again shows it already connected.
 
 ## Building
 
@@ -55,6 +70,10 @@ Screens: `remote`, `away`, `relay`, `cant-control`, `nothing`, `waiting`, `conne
 sets up the WebRTC link with flutter_webrtc on both ends, and the stand-in answers commands with a made-up state.
 `--loopback-log=<file>` writes each connection change and the commands the stand-in received. It follows
 PHONE-REMOTE.md but is not the desktop app.
+
+`--paired-pc=<JSON>` starts already paired with a real PC, for trying the Windows build against the desktop app: the
+JSON is a paired PC as the app stores it, `{"pcId":…,"name":…,"server":…,"phoneId":…,"secret":…}`, with a phone id and
+secret the PC knows (its `phoneRemotePhones` setting).
 
 Building for Windows needs symlinks for plugins. Without Developer Mode, run `tool/link-windows-plugins.ps1` after
 `flutter pub get`; it makes directory junctions instead. flutter_secure_storage's Windows plugin needs Visual Studio's

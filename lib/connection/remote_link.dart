@@ -2,6 +2,7 @@ import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 
 import '../protocol/remote_state.dart';
+import 'media_channel.dart';
 import 'transport.dart';
 
 enum LinkPhase {
@@ -46,7 +47,16 @@ class LinkStatus {
   bool get isConnected => phase == LinkPhase.connected;
 }
 
-/// What the Remote screen talks to: the real connection, or a stand-in for previews and tests.
+/// The PC refused a request (its `error` message with the request's number), or the link went before it answered.
+class RemoteRequestException implements Exception {
+  const RemoteRequestException(this.code, this.message);
+  final String code;
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// What the screens talk to: the real connection, or a stand-in for previews and tests.
 abstract class RemoteLink extends ChangeNotifier {
   String get pcName;
   LinkStatus get status;
@@ -64,6 +74,22 @@ abstract class RemoteLink extends ChangeNotifier {
 
   /// Starts a new attempt now instead of waiting for the retry timer.
   void retryNow();
+
+  /// What the PC offers beyond the remote, from its welcome: `library`, `watch`.
+  Set<String> get features => const {};
+
+  /// Whether the PC lets phones start videos on it.
+  bool get canStart => true;
+
+  /// Reads video and picture bytes, while the link and its media channel are up.
+  MediaReader? get media => null;
+
+  /// Sends a request and waits for the PC's answer with the same number (`page`, `stream`), or its `error`.
+  Future<Map<String, dynamic>> ask(String type, Map<String, dynamic> fields, {Duration timeout = const Duration(seconds: 20)}) =>
+      Future.error(const RemoteRequestException('offline', "The PC isn't connected."));
+
+  /// Sends a message that needs no answer (`progress`, `stream-stop`).
+  void tell(String type, Map<String, dynamic> fields) {}
 
   /// The position the player is at now, advanced from [stateReceivedAt] while playing.
   int currentPositionMs() {
