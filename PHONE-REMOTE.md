@@ -113,7 +113,7 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 ### Opening
 
 1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>"}`
-2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","shuffle"]}`.
+2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","shuffle","tracks"]}`.
    `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"); a PC from
    before them sends none.
    If the PC can't speak the phone's protocol it sends `{"type":"error","code":"protocol","message":"…"}` saying which
@@ -143,7 +143,12 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
  "hasPrevious":true, "hasNext":true,
  "canControl":true,            // false in a room where only whoever plays the video may control it
  "room":null,                  // or {"name":"Movie club","people":3} while the PC is in a room
- "mediaId":"<library id>"}     // the library video the PC plays on its own, or null (nothing, music, or a room's video)
+ "mediaId":"<library id>",     // the library video the PC plays on its own, or null (nothing, music, or a room's video)
+ "audioTracks":[{"id":1,"name":"Japanese","detail":"Stereo"}],   // PCs whose welcome lists `tracks` (see "Tracks")
+ "audioTrack":1,
+ "subtitleTracks":[{"id":-1,"name":"Off","detail":null},{"id":3,"name":"English","detail":"Full"}],
+ "subtitleTrack":3,
+ "canChangeTracks":true}
 ```
 
 While playing, the phone advances the position itself from when the message arrived; the PC also sends a fresh
@@ -171,10 +176,27 @@ paired link) and `protocol`.
 | `loop` | | L (off → all → one) |
 | `shuffle` | | R (Shuffle on or off; PCs whose welcome lists `shuffle`) |
 | `fullscreen` | | F |
+| `audio-track` | a track's `id` from `audioTracks` | choosing it in the player's Audio menu (PCs whose welcome lists `tracks`) |
+| `subtitle-track` | a track's `id` from `subtitleTracks`, -1 for Off | choosing it in the player's Subtitles menu (same) |
 
 Commands go through the same code as the PC's keys and buttons, so a room's shared-controls rule applies to them
 the same way. With `canControl` false, every action except `volume`, `mute` and `fullscreen` is refused with
-`not-allowed`: those three change only this PC.
+`not-allowed`: those three change only this PC. The track actions follow `canChangeTracks` instead.
+
+### Tracks
+
+A PC whose welcome lists `tracks` puts its player's Audio and Subtitles menus in the `state`: `audioTracks` and
+`subtitleTracks` list the menus' choices in their order, each with the `name` the menu leads with (usually the
+language) and the muted `detail` under it, or null. Off is the choice with id -1, first in `subtitleTracks` (and
+in `audioTracks` when the player offers no audio as a choice). `audioTrack` and
+`subtitleTrack` are the ticked ids, or null when the menu has none ticked. The lists are empty until the video has
+opened. Ids are the player's own and last only for the loaded video.
+
+`audio-track` and `subtitle-track` choose as a click in the menu does: an audio track also switches the subtitles to
+the PC's rule for its language, and in a room the choice is the room's, for everyone. `canChangeTracks` is false where
+the menus are greyed out: in a room, for everyone but whoever plays the video unless controls are shared, and while
+the player loads or stops. A track command is then refused with `not-allowed`. An id the menu doesn't have is ignored. The PC sends a fresh
+`state` after each track command.
 
 Unknown message types and actions are ignored, so either side can add new ones within version 1. Changing the
 meaning of an existing message needs version 2.
