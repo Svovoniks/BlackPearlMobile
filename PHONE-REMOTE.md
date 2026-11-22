@@ -234,7 +234,9 @@ resume point and watched mark. A failure is an `error` with code `browse` and th
 
 Phone → PC: `{"type":"watch","request":<n>,"id":"<entry id>","quality":"auto|original|1080p|720p|480p","network":"home|away|relayed","takeOver":false}`.
 `auto` plays the file itself on the home network and a 720p conversion elsewhere. `takeOver` true, for the video in
-the PC's `mediaId`, makes the PC save where it is and stop, so the phone continues it.
+the PC's `mediaId`, makes the PC save where it is and close its player, so the phone continues it. Nothing is left
+loaded on the PC for its Play, a media key or the remote's `play` to start again; the PC's empty player says the video
+went on to the phone.
 
 PC → phone, for the file itself:
 
@@ -266,7 +268,7 @@ new `watch` replaces it and `{"type":"stream-stop"}` ends it. A failure is an `e
 Phone → PC while watching, every 10 seconds, on pause, and when it stops:
 `{"type":"progress","id":"…","positionMs":1180000,"durationMs":2830000,"ended":false,"final":false}`. The PC saves it
 as its own playback: the resume point, when it was last played, and the watched mark once the position is within
-2 seconds of the end, or `ended` is true within the last minute (or anywhere, when `durationMs` is 0). `final` is true for the last report of a viewing. The PC ignores reports for
+2 seconds of the end, or `ended` is true within the last minute (or anywhere, when `durationMs` is 0). `final` is true for the last report of a viewing. A `final` report in the last tenth of the video, as when Next skips the credits, also marks it watched, as the PC's "Next episode" button does. The PC ignores reports for
 the video it is playing itself at that moment.
 
 ### Continuing on the PC
