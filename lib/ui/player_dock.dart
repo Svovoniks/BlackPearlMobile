@@ -164,42 +164,77 @@ class PlayerDock extends StatelessWidget {
         ],
       );
     } else {
-      content = Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          faded(timeline),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              // The sides take equal shares, so playback stays in the middle; chips shrink before anything overflows.
-              Expanded(
-                child: Row(
-                  children: _spaced(6, [Flexible(child: audioChip), Flexible(child: subtitleChip)]),
-                ),
-              ),
-              const SizedBox(width: 10),
-              faded(transport),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
+      final modes = <Widget>[
+        if (shuffle != null) faded(DockButton(icon: Icons.shuffle_rounded, label: shuffle! ? 'Shuffle on' : 'Shuffle off', on: shuffle!, onTap: onShuffle)),
+        faded(DockButton(icon: loopIcon, label: loopLabel(loop), on: loop != 'off', onTap: onLoop)),
+        if (onUpNext != null) faded(DockButton(icon: Icons.queue_play_next_rounded, label: 'Up next', onTap: onUpNext)),
+      ];
+      content = LayoutBuilder(
+        builder: (context, constraints) {
+          // Below this the chips beside playback would be cut down to nothing (the playback buttons take 278 dp, the mode
+          // buttons up to 132, and each side gets half of what is left): they get a row of their own, as in portrait.
+          if (constraints.maxWidth < landscapeTwoRowWidth) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                faded(timeline),
+                const SizedBox(height: 8),
+                Center(child: faded(transport)),
+                const SizedBox(height: 10),
+                Row(
                   children: _spaced(6, [
+                    Flexible(child: audioChip),
+                    Flexible(child: subtitleChip),
                     ?(qualityChip == null ? null : Flexible(child: qualityChip)),
-                    if (shuffle != null)
-                      faded(DockButton(icon: Icons.shuffle_rounded, label: shuffle! ? 'Shuffle on' : 'Shuffle off', on: shuffle!, onTap: onShuffle)),
-                    faded(DockButton(icon: loopIcon, label: loopLabel(loop), on: loop != 'off', onTap: onLoop)),
-                    if (onUpNext != null) faded(DockButton(icon: Icons.queue_play_next_rounded, label: 'Up next', onTap: onUpNext)),
+                    const Spacer(),
+                    ...modes,
                   ]),
                 ),
-              ),
-            ],
-          ),
-        ],
+              ],
+            );
+          }
+          return _wideLandscape(timeline, transport, audioChip, subtitleChip, qualityChip, modes, faded);
+        },
       );
     }
     return DockSlab(padding: portrait ? const EdgeInsets.fromLTRB(16, 16, 16, 16) : const EdgeInsets.fromLTRB(16, 12, 16, 12), child: content);
   }
+
+  /// The landscape dock's width, inside its padding, from which the chips fit beside playback.
+  static const landscapeTwoRowWidth = 740.0;
+
+  Widget _wideLandscape(
+    Widget timeline,
+    Widget transport,
+    Widget audioChip,
+    Widget subtitleChip,
+    Widget? qualityChip,
+    List<Widget> modes,
+    Widget Function(Widget) faded,
+  ) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      faded(timeline),
+      const SizedBox(height: 8),
+      Row(
+        children: [
+          // The sides take equal shares, so playback stays in the middle.
+          Expanded(child: Row(children: _spaced(6, [Flexible(child: audioChip), Flexible(child: subtitleChip)]))),
+          const SizedBox(width: 10),
+          faded(transport),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: _spaced(6, [?(qualityChip == null ? null : Flexible(child: qualityChip)), ...modes]),
+            ),
+          ),
+        ],
+      ),
+    ],
+  );
 }
 
 List<Widget> _spaced(double gap, List<Widget> children) => [
@@ -410,9 +445,13 @@ class _DockTimelineState extends State<DockTimeline> {
             onHorizontalDragUpdate: length > 0 ? (d) => setState(() => _drag = _fraction(d.localPosition.dx, width)) : null,
             onHorizontalDragEnd: (_) => _end(),
             onHorizontalDragCancel: _end,
-            onTapDown: length > 0 ? (d) => _start(_fraction(d.localPosition.dx, width)) : null,
-            onTapUp: (_) => _end(),
-            onTapCancel: _end,
+            // A tap seeks where it lands. A hold that becomes a drag is the drag's: it seeks once, where it lets go.
+            onTapUp: length > 0
+                ? (d) {
+                    _start(_fraction(d.localPosition.dx, width));
+                    _end();
+                  }
+                : null,
             child: SizedBox(
               height: 28,
               child: CustomPaint(painter: _TimelinePainter(shown, buffered, dragging: _drag != null)),

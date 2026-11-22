@@ -158,6 +158,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   }
 
   void _pipChanged() {
+    // Back from the small window the picture is new, with its subtitles where they rest: place them again.
+    _subtitleLift = -1;
     if (mounted) setState(() {});
   }
 
@@ -244,7 +246,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     unawaited(widget.settings?.setLoopMode(next));
     _say(switch (next) {
       'all' =>
-        playback.stream?.next != null || playback.stream?.first != null
+        playback.shuffle && playback.inList
+            ? 'Loop all: Shuffle starts a new round once every episode has played.'
+            : playback.stream?.next != null || playback.stream?.first != null
             ? 'Loop all: the show starts again after its last episode.'
             : 'Loop all: the video plays again when it ends.',
       'one' => 'Loop one: this video plays again when it ends.',
@@ -632,7 +636,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                 _cycleLoop();
                 _showControls();
               },
-              shuffle: playback.canShuffle ? playback.shuffle : null,
+              // A film outside any queue has nothing to shuffle.
+              shuffle: playback.canShuffle && playback.inList ? playback.shuffle : null,
               onShuffle: _toggleShuffle,
               onUpNext: playback.link.features.contains('queues') ? () => _options(PlayerOptionsTab.upNext) : null,
             );

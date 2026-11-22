@@ -486,7 +486,7 @@ class PhonePlayback extends ChangeNotifier {
   }
 
   void _ensureShuffleList() {
-    if (!_shuffling) return;
+    if (!_shuffling || !inList) return;
     final wanted = _wantedShuffleList;
     if (wanted == null || wanted == _shuffleList?.scope || wanted == _shuffleLoading || wanted == _shuffleFailed) return;
     unawaited(_loadShuffleList(wanted));
@@ -918,10 +918,11 @@ class PhonePlayback extends ChangeNotifier {
   @visibleForTesting
   bool get resumesOnReturn => _resumeOnReturn;
 
-  /// Debug previews only: shows [player], already opening a video of its own, as this viewing's [stream].
-  void debugShow(Player player, StreamInfo stream) {
+  /// Debug previews and tests only: shows [player], already opening a video of its own (or none), as this viewing's
+  /// [stream].
+  void debugShow(Player? player, StreamInfo stream) {
     _player = player;
-    _listen(player);
+    if (player != null) _listen(player);
     _stream = stream;
     _phase = PhonePlaybackPhase.playing;
     notifyListeners();
