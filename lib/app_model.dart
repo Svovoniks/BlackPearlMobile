@@ -7,6 +7,7 @@ import 'connection/remote_connection.dart';
 import 'connection/remote_link.dart';
 import 'connection/transport.dart';
 import 'playback/phone_playback.dart';
+import 'playback/phone_sound.dart';
 import 'protocol/pair_link.dart';
 import 'storage/app_settings.dart';
 import 'storage/paired_pcs.dart';
@@ -20,7 +21,7 @@ typedef ConnectionFactory = RemoteConnection Function(
 /// The app's state: the paired PCs, which one the remote is using, its connection, the phone's own player, and the
 /// background service that keeps the connection while the app is closed.
 class AppModel extends ChangeNotifier {
-  AppModel({required this.store, required this.connect, AppSettings? settings, this.background, this.createPlayback})
+  AppModel({required this.store, required this.connect, AppSettings? settings, this.background, this.createPlayback, this.createSound})
     : settings = settings ?? AppSettings(MemorySettingsStore()) {
     this.settings.addListener(_settingsChanged);
     background?.listen(_backgroundAction);
@@ -38,6 +39,11 @@ class AppModel extends ChangeNotifier {
 
   PhonePlayback? _playback;
   PhonePlayback? get playback => _playback;
+
+  /// Makes Sound on the phone for a connection; null leaves the phone without it (tests).
+  final PhoneSound Function(RemoteConnection connection, AppSettings settings, BackgroundLink? background)? createSound;
+  PhoneSound? _sound;
+  PhoneSound? get sound => _sound;
   bool _foreground = true;
 
   List<PairedPc> _pcs = [];
@@ -139,6 +145,8 @@ class AppModel extends ChangeNotifier {
     final connection = connect(target, onPaired: _paired, onPcName: _renamed);
     _connection = connection;
     _playback = createPlayback?.call(connection)?..awayQuality = settings.awayQuality;
+    _playback?.addListener(_playbackChanged);
+    _sound = createSound?.call(connection, settings, background)?..addListener(_syncBackground);
     connection.addListener(_syncBackground);
     connection.start();
     _syncBackground();
@@ -146,6 +154,11 @@ class AppModel extends ChangeNotifier {
 
   void _disposeConnection() {
     _connection?.removeListener(_syncBackground);
+    // Before the connection goes: it tells the PC to play its sound again.
+    _sound?.removeListener(_syncBackground);
+    _sound?.dispose();
+    _sound = null;
+    _playback?.removeListener(_playbackChanged);
     _playback?.dispose();
     _playback = null;
     _connection?.dispose();
@@ -156,15 +169,27 @@ class AppModel extends ChangeNotifier {
   // ---- the background service ----
 
   /// A stopped connection (the notification's Disconnect, or the app closed without the service) needs no service; it
-  /// comes back with the connection when the app is opened again.
+  /// comes back with the connection when the app is opened again. While the phone plays the PC's sound the service runs
+  /// even with the setting off: without it the sound would stop soon after the screen turns off.
   bool get _keepsLink =>
-      background != null && settings.backgroundLink && _connection != null && _connection!.running && !_connection!.target.isPairing;
+      background != null &&
+      (settings.backgroundLink || (_sound?.on ?? false)) &&
+      _connection != null &&
+      _connection!.running &&
+      !_connection!.target.isPairing;
+
+  // Watching a video on the phone plays its own sound: the PC's goes back to the PC.
+  void _playbackChanged() {
+    if ((_playback?.active ?? false) && (_sound?.on ?? false)) {
+      unawaited(_sound!.turnOff(message: 'The sound went back to the PC while this phone plays a video.'));
+    }
+  }
 
   void _settingsChanged() {
     _playback?.awayQuality = settings.awayQuality;
     _syncBackground();
     // Turned off while the app isn't showing: let the link go, as it would have without the service.
-    if (!settings.backgroundLink && !_foreground) paused();
+    if (!settings.backgroundLink && !_foreground && !(_sound?.on ?? false)) paused();
     notifyListeners();
   }
 
@@ -184,7 +209,10 @@ class AppModel extends ChangeNotifier {
     final String text;
     bool? playing;
     if (status.isConnected) {
-      if (state != null && state.media) {
+      if (state != null && state.media && (_sound?.on ?? false)) {
+        text = '${state.title.isEmpty ? 'Video' : state.title} · sound on this phone';
+        if (state.canControl) playing = state.playing;
+      } else if (state != null && state.media) {
         text = '${state.title.isEmpty ? 'Video' : state.title} · ${state.playing ? 'playing' : 'paused'} on the PC';
         if (state.canControl) playing = state.playing;
       } else {

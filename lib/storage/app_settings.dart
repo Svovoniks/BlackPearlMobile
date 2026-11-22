@@ -45,6 +45,12 @@ class AppSettings extends ChangeNotifier {
   bool _askedNotifications = false;
   String _loopMode = 'off';
   bool _shuffle = false;
+  int _soundDelayMs = 0;
+
+  /// How much later than the PC's picture the phone plays the PC's sound, in milliseconds (negative: earlier), for
+  /// headphones and speakers that take their own time. Set on the Remote tab while the sound is on the phone.
+  int get soundDelayMs => _soundDelayMs;
+  static const soundDelayLimitMs = 1000;
 
   /// The player's Shuffle, as on the PC.
   bool get shuffle => _shuffle;
@@ -73,6 +79,7 @@ class AppSettings extends ChangeNotifier {
       final loop = await _store.readString('loopMode');
       _loopMode = loopModes.contains(loop) ? loop! : 'off';
       _shuffle = await _store.readBool('shuffle') ?? false;
+      _soundDelayMs = (int.tryParse(await _store.readString('soundDelayMs') ?? '') ?? 0).clamp(-soundDelayLimitMs, soundDelayLimitMs);
     } catch (_) {
       // Unreadable preferences leave the defaults.
     }
@@ -105,6 +112,14 @@ class AppSettings extends ChangeNotifier {
     _shuffle = value;
     notifyListeners();
     await _quietly(_store.writeBool('shuffle', value));
+  }
+
+  Future<void> setSoundDelayMs(int value) async {
+    value = value.clamp(-soundDelayLimitMs, soundDelayLimitMs);
+    if (value == _soundDelayMs) return;
+    _soundDelayMs = value;
+    notifyListeners();
+    await _quietly(_store.writeString('soundDelayMs', '$value'));
   }
 
   Future<void> markAskedNotifications() async {

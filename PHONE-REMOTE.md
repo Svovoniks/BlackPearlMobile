@@ -113,7 +113,7 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 ### Opening
 
 1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>"}`
-2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","shuffle"]}`.
+2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","shuffle","sound"]}`.
    `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"); a PC from
    before them sends none.
    If the PC can't speak the phone's protocol it sends `{"type":"error","code":"protocol","message":"…"}` saying which
@@ -143,7 +143,8 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
  "hasPrevious":true, "hasNext":true,
  "canControl":true,            // false in a room where only whoever plays the video may control it
  "room":null,                  // or {"name":"Movie club","people":3} while the PC is in a room
- "mediaId":"<library id>"}     // the library video the PC plays on its own, or null (nothing, music, or a room's video)
+ "mediaId":"<library id>",     // the library video the PC plays on its own, or null (nothing, music, or a room's video)
+ "phoneSound":false}           // PCs whose welcome lists `sound`: true while a phone plays the PC's sound (`muted` is then the PC's own mute)
 ```
 
 While playing, the phone advances the position itself from when the message arrived; the PC also sends a fresh
@@ -303,6 +304,37 @@ little-endian header:
 A read that can't be answered gets a text `{"type":"read-error","id":<u32>,"code":"busy|gone|invalid|failed","message":"…"}`.
 `busy` means not ready yet (a piece still converting): ask again shortly. The PC queues at most 64 reads per phone and
 answers `busy` past that.
+
+## Sound on the phone
+
+A PC whose welcome lists `sound` plays the sound of what it plays on the phone instead, while its picture stays on the
+PC: headphones on the couch. The PC goes quiet (as muted, without changing its own mute) while any phone has the sound,
+and its Mute button, M or a phone's `mute` command brings the sound back to the PC.
+
+Phone → PC: `{"type":"listen","request":<n>,"on":true}` (or `false` to give the sound back). The PC answers
+`{"type":"listen","request":<n>,"on":true}`, or an `error` with the `request`: `in-room` (not while the PC is in a room).
+It then sends, unasked, what to play whenever that changes (another video, another audio track, nothing playing):
+
+```json
+{"type":"sound","on":true,"stream":{"streamId":"<32 hex>","source":"<16 hex>","segments":708,"segmentMs":4000,"durationMs":2830000},"why":null}
+```
+
+`stream` is the sound of the PC's current video in its current audio track, as AAC in MPEG-TS pieces of `segmentMs`,
+read on `media-v1` as `stream/<streamId>/<piece>` like a conversion, and on the video's own clock (piece 0 starts at
+0:00). It is null while there is nothing to play, with `why` saying why when it isn't simply that nothing plays
+(`"The PC's audio is turned off for this video."`). `{"type":"sound","on":false,"why":"…"}` means the PC took the sound
+back (its Mute, or it couldn't convert the sound); the phone stops and says why.
+
+The phone follows the picture by asking where the player is, about once a second:
+`{"type":"clock","request":<n>}` → `{"type":"clock","request":<n>,"source":"<16 hex or null>","positionMs":1122340,"playing":true}`.
+The PC answers at once from the thread that received it, with the position of the picture on screen (libVLC's
+position less the 60 ms it runs ahead of its output), so the phone can take half the round trip as the answer's time on
+the way. `source` names the video, as `stream.source` does: an answer about another video means its sound is on the way.
+The phone plays a few percent faster or slower to close a small gap and seeks for one over 200 ms; its user can move
+the sound later or earlier for headphones that take their own time.
+
+A phone that stops asking for 10 seconds, or whose link stays down for 15, is taken to be gone, and the PC plays its
+sound again. A phone that comes back asks with `listen` again and keeps its stream.
 
 ## While BlackPearl is closed
 

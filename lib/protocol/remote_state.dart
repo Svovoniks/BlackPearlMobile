@@ -49,6 +49,7 @@ class RemoteState {
     this.mediaId,
     this.queue,
     this.shuffle,
+    this.phoneSound,
   });
 
   /// False when nothing is loaded in the player; the playback fields are then meaningless.
@@ -79,6 +80,10 @@ class RemoteState {
 
   /// The PC's Shuffle; null from a PC without it.
   final bool? shuffle;
+
+  /// True while a phone plays the PC's sound, which leaves the PC quiet ([muted] is then the PC's own mute from
+  /// before); null from PCs that can't send their sound.
+  final bool? phoneSound;
 
   static const RemoteState nothing = RemoteState(media: false);
 
@@ -121,6 +126,7 @@ class RemoteState {
       mediaId: media && json['mediaId'] is String && (json['mediaId'] as String).isNotEmpty ? json['mediaId'] as String : null,
       queue: media ? QueueRef.fromJson(json['queue']) : null,
       shuffle: json['shuffle'] is bool ? json['shuffle'] as bool : null,
+      phoneSound: json['phoneSound'] is bool ? json['phoneSound'] as bool : null,
     );
   }
 
@@ -150,6 +156,7 @@ class RemoteState {
     mediaId: mediaId,
     queue: queue,
     shuffle: shuffle,
+    phoneSound: phoneSound,
   );
 }
 

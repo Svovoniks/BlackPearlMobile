@@ -92,6 +92,10 @@ class RemoteConnection extends RemoteLink {
   RemoteState? _state;
   DateTime? _stateAt;
   final ValueNotifier<String?> _notice = ValueNotifier(null);
+  final StreamController<Map<String, dynamic>> _pushes = StreamController.broadcast(sync: true);
+
+  @override
+  Stream<Map<String, dynamic>> get pushes => _pushes.stream;
 
   // One "generation" per attempt; callbacks from an earlier attempt are ignored.
   int _generation = 0;
@@ -261,6 +265,7 @@ class RemoteConnection extends RemoteLink {
     _retryTimer?.cancel();
     unawaited(_teardown());
     _notice.dispose();
+    unawaited(_pushes.close());
     super.dispose();
   }
 
@@ -582,12 +587,14 @@ class RemoteConnection extends RemoteLink {
         _target = LinkTarget.paired(paired);
         onPaired?.call(paired);
         _connected();
-      case 'page' || 'stream' || 'done' || 'queues' when message['request'] is num:
+      case 'page' || 'stream' || 'done' || 'queues' || 'listen' || 'clock' when message['request'] is num:
         _requests.remove((message['request'] as num).toInt())?.complete(message);
       case 'error' when message['request'] is num && _requests.containsKey((message['request'] as num).toInt()):
         final code = message['code'] is String ? message['code'] as String : 'failed';
         final text = message['message'] is String && (message['message'] as String).isNotEmpty ? message['message'] as String : "The PC couldn't do that.";
         _requests.remove((message['request'] as num).toInt())?.completeError(RemoteRequestException(code, text));
+      case 'sound':
+        _pushes.add(message);
       case 'state':
         _state = RemoteState.fromJson(message);
         _stateAt = clock.now();

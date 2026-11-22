@@ -91,6 +91,9 @@ abstract class RemoteLink extends ChangeNotifier {
   /// Sends a message that needs no answer (`progress`, `stream-stop`).
   void tell(String type, Map<String, dynamic> fields) {}
 
+  /// Messages the PC sends on its own rather than as an answer: `sound`.
+  Stream<Map<String, dynamic>> get pushes => const Stream.empty();
+
   /// Completes once no request waits for its answer, or after [limit]. The PC's answers travel behind the video it
   /// sends, and wait there until the video already on its way has gone: the phone's player holds its next reads back
   /// meanwhile.

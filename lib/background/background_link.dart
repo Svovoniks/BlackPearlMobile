@@ -76,6 +76,17 @@ class BackgroundLink {
     }
   }
 
+  /// Keeps the processor and Wi-Fi awake while the phone plays the PC's sound with its screen off, or lets them sleep.
+  Future<void> keepAwake(bool hold) async {
+    try {
+      await _channel.invokeMethod<void>('keepAwake', hold);
+    } on PlatformException {
+      // Without the locks the sound may stutter with the screen off; it still plays.
+    } on MissingPluginException {
+      // Not on this platform.
+    }
+  }
+
   /// Asks for permission to show notifications (Android 13 and later), once.
   Future<void> askForNotifications() async {
     try {
