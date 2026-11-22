@@ -43,7 +43,8 @@ Future<void> main(List<String> args) async {
       return;
     }
     if (preview != null) {
-      runApp(PreviewApp(screen: preview));
+      final video = args.where((a) => a.startsWith('--video=')).map((a) => a.substring(8)).firstOrNull;
+      runApp(PreviewApp(screen: preview, video: video));
       return;
     }
   }

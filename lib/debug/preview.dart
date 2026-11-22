@@ -3,17 +3,21 @@ import 'dart:async';
 import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:media_kit/media_kit.dart';
 
 import '../app_model.dart';
 import '../connection/remote_connection.dart';
 import '../connection/remote_link.dart';
 import '../connection/transport.dart';
+import '../playback/phone_playback.dart';
+import '../protocol/library.dart';
 import '../protocol/pair_link.dart';
 import '../protocol/remote_state.dart';
 import '../ui/app_prompts.dart';
 import '../storage/paired_pcs.dart';
 import '../ui/pairing_screen.dart';
 import '../ui/pc_chooser.dart';
+import '../ui/player_screen.dart';
 import '../ui/remote_screen.dart';
 import '../ui/settings_screen.dart';
 import '../ui/theme.dart';
@@ -110,12 +114,16 @@ const RemoteState sampleState = RemoteState(
   loop: LoopMode.all,
   hasPrevious: true,
   hasNext: true,
+  shuffle: true,
 );
 
 /// Debug builds only, from `--preview=<screen>`: shows one screen with made-up data.
 class PreviewApp extends StatelessWidget {
-  const PreviewApp({super.key, required this.screen});
+  const PreviewApp({super.key, required this.screen, this.video});
   final String screen;
+
+  /// For `player` and `player-upnext`: a video file or address to play in the player, with its own tracks.
+  final String? video;
 
   static const _pc = 'Living room PC';
 
@@ -197,6 +205,7 @@ class PreviewApp extends StatelessWidget {
         ),
       ),
       'chooser' => const _ChooserPreview(),
+      'player' || 'player-upnext' || 'player-movie' => _PlayerPreview(video: video, screen: screen),
       'settings' => SettingsScreen(
         model: AppModel(store: PairedPcStore(MemorySecretStore()), connect: (_, {onPaired, onPcName}) => throw UnsupportedError('preview')),
         link: link(connected, sampleState),
@@ -320,4 +329,72 @@ class _ChooserPreviewState extends State<_ChooserPreview> {
     onChoosePc: () {},
     onPairAgain: () {},
   );
+}
+
+/// The phone's player on a video of the PC's own choosing (`--video=`), with made-up episodes around it and three
+/// qualities, so the dock, its chips and their menus show real tracks. `player-upnext` counts down to the next episode;
+/// `player-movie` is a film, outside any show.
+class _PlayerPreview extends StatefulWidget {
+  const _PlayerPreview({required this.video, required this.screen});
+  final String? video;
+  final String screen;
+
+  @override
+  State<_PlayerPreview> createState() => _PlayerPreviewState();
+}
+
+class _PlayerPreviewState extends State<_PlayerPreview> {
+  late final FakeRemoteLink _link = FakeRemoteLink(
+    pcName: PreviewApp._pc,
+    status: const LinkStatus(LinkPhase.connected, path: NetworkPath.home),
+    state: sampleState,
+  )..offered = const {'library', 'watch', 'queues'};
+  late final PhonePlayback _playback = PhonePlayback(link: _link);
+  final Player _player = Player();
+
+  @override
+  void initState() {
+    super.initState();
+    final movie = widget.screen == 'player-movie';
+    // The show's episodes, for Shuffle and Up next to list; opening another one is refused, as by a PC that can't.
+    _link.answer = (type, fields) async {
+      if (type != 'browse') throw const RemoteRequestException('gone', 'This preview has only the one video.');
+      return {
+        'type': 'page',
+        'total': 8,
+        'page': 0,
+        'pageSize': 40,
+        'location': 'The Lantern Coast',
+        'entries': [
+          for (var i = 1; i <= 8; i++)
+            {'id': 'e$i', 'title': 'Episode $i', 'caption': 'Season 2 · Episode $i', 'level': 'episode', 'season': 2, 'episode': i, 'playable': true, 'index': i - 1},
+        ],
+      };
+    };
+    const previous = EpisodeStep(id: 'e3', title: 'Breakwater', detail: 'Season 2 · Episode 3');
+    const next = EpisodeStep(id: 'e5', title: 'Rip Current', detail: 'Season 2 · Episode 5');
+    _playback.debugShow(
+      _player,
+      StreamInfo(
+        id: 'e4',
+        title: movie ? 'The Long Coast' : 'Low Tide',
+        detail: movie ? '2019' : 'The Lantern Coast · S2 E4',
+        hls: false,
+        quality: 'original',
+        qualities: const ['original', '1080p', '720p', '480p'],
+        previous: movie ? null : previous,
+        next: movie ? null : next,
+      ),
+    );
+    final video = widget.video;
+    if (video != null) unawaited(_player.open(Media(video)));
+    if (widget.screen == 'player-upnext') {
+      Future<void>.delayed(const Duration(seconds: 2), () {
+        if (mounted) _playback.upNext.value = UpNextOffer(step: next, deadline: DateTime.now().add(PhonePlayback.upNextLength), length: PhonePlayback.upNextLength);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PlayerScreen(playback: _playback, pcName: PreviewApp._pc);
 }

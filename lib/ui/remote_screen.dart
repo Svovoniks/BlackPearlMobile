@@ -264,6 +264,14 @@ class _RemoteScreenState extends State<RemoteScreen> {
     final duration = state.durationMs;
     final position = _position;
     final fraction = duration > 0 ? (position / duration).clamp(0.0, 1.0) : 0.0;
+    final loop = _Pill(
+      label: 'Loop',
+      value: state.loop.label,
+      icon: state.loop == LoopMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+      active: state.loop != LoopMode.off,
+      enabled: _canPlay,
+      onTap: () => link.command('loop'),
+    );
     return [
       Expanded(
         child: ConstrainedBox(
@@ -392,22 +400,32 @@ class _RemoteScreenState extends State<RemoteScreen> {
         ],
       ),
       const SizedBox(height: 14),
+      // A PC with Shuffle gets a row for the order of play, Shuffle beside Loop; Stop and Fullscreen go under it.
+      if (state.shuffle != null) ...[
+        Row(
+          children: [
+            Expanded(
+              child: _Pill(
+                label: 'Shuffle',
+                value: state.shuffle! ? 'On' : 'Off',
+                icon: Icons.shuffle_rounded,
+                active: state.shuffle!,
+                enabled: _canPlay,
+                onTap: () => link.command('shuffle'),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(child: loop),
+          ],
+        ),
+        const SizedBox(height: 8),
+      ],
       Row(
         children: [
           Expanded(
             child: _Pill(label: 'Stop', icon: Icons.stop_rounded, enabled: _canPlay, onTap: () => link.command('stop')),
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _Pill(
-              label: 'Loop',
-              value: state.loop.label,
-              icon: state.loop == LoopMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
-              active: state.loop != LoopMode.off,
-              enabled: _canPlay,
-              onTap: () => link.command('loop'),
-            ),
-          ),
+          if (state.shuffle == null) ...[const SizedBox(width: 8), Expanded(child: loop)],
           const SizedBox(width: 8),
           Expanded(
             child: _Pill(
