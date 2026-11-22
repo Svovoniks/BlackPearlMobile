@@ -627,6 +627,8 @@ class PhonePlayback extends ChangeNotifier {
       return;
     }
     final back = previousEpisode!;
+    // Already on its way: a second press waits for it, and leaves its step back marked.
+    if (pending.value?.episode?.id == back.id) return;
     // Back with Shuffle retraces what played.
     if (_shuffleReady) _shuffleOrder.goingBack(back.id);
     // Refused: a later pick of that video by hand is a new step, not this one back.

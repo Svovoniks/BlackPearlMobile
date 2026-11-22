@@ -1,14 +1,33 @@
+import 'dart:io';
+
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/playback/phone_playback.dart';
 import 'package:blackpearl_mobile/protocol/library.dart';
 import 'package:blackpearl_mobile/ui/player_dock.dart';
-import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 void main() {
-  Widget dock({required bool portrait, required double width}) => MaterialApp(
+  // The real fonts: the test font draws every letter 1 em wide, which hides how chips of different labels share a row.
+  setUpAll(() async {
+    var dir = File(Platform.resolvedExecutable).parent;
+    while (!Directory('${dir.path}/material_fonts').existsSync() && dir.parent.path != dir.path) {
+      dir = dir.parent;
+    }
+    final fonts = '${dir.path}/material_fonts';
+    Future<ByteData> font(String name) async => ByteData.sublistView(await File('$fonts/$name').readAsBytes());
+    await (FontLoader('Roboto')
+          ..addFont(font('roboto-regular.ttf'))
+          ..addFont(font('roboto-medium.ttf')))
+        .load();
+    await (FontLoader('MaterialIcons')..addFont(font('materialicons-regular.otf'))).load();
+  });
+
+  Widget dock({required bool portrait, required double width, required (String, String, String) labels}) => MaterialApp(
+    theme: ThemeData(fontFamily: 'Roboto'),
     home: Scaffold(
       body: Align(
         alignment: Alignment.bottomCenter,
@@ -23,9 +42,9 @@ void main() {
             onForward10: () {},
             onPrevious: () {},
             onNext: () {},
-            audio: const DockChipValue('Japanese'),
-            subtitles: const DockChipValue('English SDH'),
-            quality: const DockChipValue('720p'),
+            audio: DockChipValue(labels.$1),
+            subtitles: DockChipValue(labels.$2, off: labels.$2 == 'Off'),
+            quality: DockChipValue(labels.$3),
             onChip: (_) {},
             loop: 'all',
             onLoop: () {},
@@ -38,51 +57,88 @@ void main() {
     ),
   );
 
+  const labelSets = [
+    ('Japanese', 'English SDH', '720p'),
+    ('Japanese', 'Off', 'Original'),
+    ('Audio', 'Spanish (Latin America)', '1080p'),
+    ('Portuguese (Brazil) commentary', 'Off', 'Original'),
+    ('English', 'English Signs and songs', 'Original'),
+  ];
+
+  Future<void> expectChipsFit(WidgetTester tester, String where) async {
+    expect(tester.takeException(), isNull, reason: 'no overflow $where');
+    final chips = tester.widgetList<DockChip>(find.byType(DockChip)).toList();
+    bool cut(DockChip chip) =>
+        tester.renderObject<RenderParagraph>(find.descendant(of: find.byWidget(chip), matching: find.byType(RichText)).last).didExceedMaxLines;
+    // The room left in a chip's row.
+    double free(DockChip chip) {
+      final row = tester.getRect(find.ancestor(of: find.byWidget(chip), matching: find.byType(Row)).first);
+      final mates = chips.where((other) => (tester.getRect(find.byWidget(other)).center.dy - row.center.dy).abs() < 2);
+      return row.width - mates.fold(0.0, (sum, other) => sum + tester.getSize(find.byWidget(other)).width) - 6 * (mates.length - 1);
+    }
+
+    bool hasIcon(DockChip chip) => find.descendant(of: find.byWidget(chip), matching: find.byIcon(chip.icon)).evaluate().isNotEmpty;
+    for (final chip in chips) {
+      expect(tester.getSize(find.byWidget(chip)).width, greaterThanOrEqualTo(64), reason: '${chip.name} "${chip.value.label}" big enough to tap $where');
+      // A short label is never cut, and keeps its icon unless the row needs that room for a longer label.
+      if (chip.value.label.length <= 5) {
+        expect(cut(chip), isFalse, reason: '${chip.name} "${chip.value.label}" keeps its label $where');
+        if (!hasIcon(chip)) expect(free(chip), lessThan(DockChip.iconWidth), reason: '${chip.name} "${chip.value.label}" lost its icon with room $where');
+      }
+    }
+    // A label is cut only when its row is full.
+    for (final chip in chips.where(cut)) {
+      expect(free(chip), lessThan(2), reason: '${chip.name} "${chip.value.label}" cut with ${free(chip)} dp free $where');
+    }
+  }
+
   // Landscape docks are the screen less the camera cutout, a side navigation bar and the dock's margins: from a wide
   // tablet down to a 640 dp phone with a cutout and a navigation bar.
   for (final width in [1100.0, 900.0, 800.0, 740.0, 700.0, 640.0, 596.0, 540.0, 470.0]) {
-    testWidgets('a landscape dock $width dp wide fits, and every chip stays big enough to tap', (tester) async {
+    testWidgets('a landscape dock $width dp wide fits, and its chips keep what they need', (tester) async {
       tester.view.physicalSize = const Size(1200, 600);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
-      await tester.pumpWidget(dock(portrait: false, width: width));
-      expect(tester.takeException(), isNull, reason: 'no overflow');
-      for (final chip in tester.widgetList<DockChip>(find.byType(DockChip))) {
-        expect(tester.getSize(find.byWidget(chip)).width, greaterThanOrEqualTo(64), reason: '${chip.name} at $width dp');
+      for (final labels in labelSets) {
+        await tester.pumpWidget(dock(portrait: false, width: width, labels: labels));
+        await expectChipsFit(tester, 'at $width dp with $labels');
+        // Playback stays in the middle of the dock.
+        expect((tester.getCenter(find.byIcon(Icons.pause_rounded)).dx - 600).abs(), lessThan(1));
       }
-      // A chip shortens its label only when the row has no room left for it: no empty gap beside a cut label.
-      final cut = tester
-          .widgetList<DockChip>(find.byType(DockChip))
-          .where(
-            (chip) => tester.renderObject<RenderParagraph>(find.descendant(of: find.byWidget(chip), matching: find.byType(RichText)).last).didExceedMaxLines,
-          );
-      if (cut.isNotEmpty) {
-        final chipsEnd = tester
-            .widgetList<DockChip>(find.byType(DockChip))
-            .map((chip) => tester.getRect(find.byWidget(chip)).right)
-            .reduce((a, b) => a > b ? a : b);
-        final modesStart = tester.getRect(find.byIcon(Icons.shuffle_rounded)).left;
-        final playTop = tester.getRect(find.byIcon(Icons.pause_rounded)).top;
-        // In the two-row dock the chips share a row with playback, which they can't reach into.
-        if (tester.getRect(find.byWidget(cut.first)).top > playTop + 30) {
-          expect(modesStart - chipsEnd, lessThan(20), reason: '${cut.map((c) => c.name)} cut at $width dp with room beside them');
-        }
-      }
-      // Playback stays in the middle of the dock.
-      final play = tester.getCenter(find.byIcon(Icons.pause_rounded));
-      expect((play.dx - 600).abs(), lessThan(1));
     });
   }
 
   for (final width in [411.0, 360.0, 320.0]) {
-    testWidgets('a portrait dock $width dp wide fits', (tester) async {
+    testWidgets('a portrait dock $width dp wide fits, and its chips keep what they need', (tester) async {
       tester.view.physicalSize = const Size(420, 900);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
-      await tester.pumpWidget(dock(portrait: true, width: width - 28));
-      expect(tester.takeException(), isNull);
+      for (final labels in labelSets) {
+        await tester.pumpWidget(dock(portrait: true, width: width - 28, labels: labels));
+        await expectChipsFit(tester, 'at $width dp portrait with $labels');
+        // The labelled buttons under the chips keep their words on common phones.
+        if (width >= 360) {
+          for (final word in ['Shuffle', 'Loop all', 'Up next']) {
+            expect(tester.renderObject<RenderParagraph>(find.text(word)).didExceedMaxLines, isFalse, reason: '"$word" at $width dp portrait');
+          }
+        }
+      }
     });
   }
+
+  test('chips share a full row: the narrow keep their width, the widest give way equally', () {
+    expect(fitChipWidths([70, 120, 80], 300), [70, 120, 80]);
+    // Dropping the wide one's icon (22 dp) isn't enough, and the narrow ones' would take them under 64 dp: they keep
+    // their whole width and the wide one gets the rest.
+    expect(fitChipWidths([70, 200, 80], 300), [70, 150, 80]);
+    // Without its icon the wide one fits whole, and the others keep theirs.
+    expect(fitChipWidths([70, 160, 80], 290), [70, 138, 80]);
+    expect(fitChipWidths([70, 200, 180], 300), [70, 115, 115]);
+    // Without icons all three fit whole.
+    expect(fitChipWidths([100, 100, 100], 240), [78, 78, 78]);
+    // Too little room even then: equal shares.
+    expect(fitChipWidths([100, 100, 100], 210), [70, 70, 70]);
+  });
 
   group('the shuffle list', () {
     EpisodeStep step(String id) => EpisodeStep(id: id, title: id, detail: 'Season 1 · Episode $id');

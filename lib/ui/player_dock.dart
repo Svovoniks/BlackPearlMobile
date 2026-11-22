@@ -109,7 +109,7 @@ class PlayerDock extends StatelessWidget {
         if (showSteps) DockButton(icon: Icons.skip_next_rounded, label: 'Next', onTap: onNext),
       ]),
     );
-    Widget chip(DockMenu menu, IconData icon, DockChipValue value, String name) => DockChip(
+    DockChip chip(DockMenu menu, IconData icon, DockChipValue value, String name) => DockChip(
       key: chipKeys[menu],
       icon: icon,
       value: value,
@@ -135,18 +135,11 @@ class PlayerDock extends StatelessWidget {
           const SizedBox(height: 10),
           faded(transport),
           const SizedBox(height: 16),
-          Row(
-            children: _spaced(6, [
-              // The quality is short and keeps its width; the track names share the rest.
-              Flexible(flex: _share(audio), child: audioChip),
-              Flexible(flex: _share(subtitles), child: subtitleChip),
-              ?qualityChip,
-            ]),
-          ),
+          _ChipRow(chips: [audioChip, subtitleChip, ?qualityChip]),
           const SizedBox(height: 10),
           faded(
             Row(
-              children: _spaced(8, [
+              children: _spaced(6, [
                 if (shuffle != null)
                   Expanded(
                     child: DockButton(icon: Icons.shuffle_rounded, label: 'Shuffle', on: shuffle!, onTap: onShuffle, text: 'Shuffle'),
@@ -184,13 +177,8 @@ class PlayerDock extends StatelessWidget {
                 const SizedBox(height: 10),
                 Row(
                   children: _spaced(6, [
-                    // The chips take all the room the mode buttons leave. The quality is short and keeps its width;
-                    // the track names share the rest, so one only shortens when the row is full.
-                    Expanded(
-                      child: Row(
-                        children: _spaced(6, [Flexible(flex: _share(audio), child: audioChip), Flexible(flex: _share(subtitles), child: subtitleChip), ?qualityChip]),
-                      ),
-                    ),
+                    // The chips take all the room the mode buttons leave.
+                    Expanded(child: _ChipRow(chips: [audioChip, subtitleChip, ?qualityChip])),
                     ...modes,
                   ]),
                 ),
@@ -210,9 +198,9 @@ class PlayerDock extends StatelessWidget {
   Widget _wideLandscape(
     Widget timeline,
     Widget transport,
-    Widget audioChip,
-    Widget subtitleChip,
-    Widget? qualityChip,
+    DockChip audioChip,
+    DockChip subtitleChip,
+    DockChip? qualityChip,
     List<Widget> modes,
     Widget Function(Widget) faded,
   ) => Column(
@@ -224,11 +212,7 @@ class PlayerDock extends StatelessWidget {
       Row(
         children: [
           // The sides take equal shares, so playback stays in the middle.
-          Expanded(
-            child: Row(
-              children: _spaced(6, [Flexible(flex: _share(audio), child: audioChip), Flexible(flex: _share(subtitles), child: subtitleChip)]),
-            ),
-          ),
+          Expanded(child: _ChipRow(chips: [audioChip, subtitleChip])),
           const SizedBox(width: 10),
           faded(transport),
           const SizedBox(width: 10),
@@ -244,9 +228,56 @@ class PlayerDock extends StatelessWidget {
   );
 }
 
-// Chips side by side share the room in proportion to what their labels need, so a short one doesn't hold back room a
-// long one could use: Flutter gives each loose Flexible its share and passes on none of what it leaves.
-int _share(DockChipValue value) => value.label.length + 6;
+/// Chips side by side, each as wide as its label needs while the row has room. When it hasn't, the widest give way
+/// first, down to an equal share, so a short chip ("Off", "720p") keeps its label and its icon.
+class _ChipRow extends StatelessWidget {
+  const _ChipRow({required this.chips});
+  final List<DockChip> chips;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final widths = fitChipWidths([for (final chip in chips) DockChip.naturalWidth(context, chip.value)], constraints.maxWidth - 6 * (chips.length - 1));
+      return Row(
+        children: _spaced(6, [for (var i = 0; i < chips.length; i++) SizedBox(width: widths[i], child: chips[i])]),
+      );
+    },
+  );
+}
+
+/// Widths for chips that need [natural] (with their icon) in a row with [room] for them. All they need when it fits.
+/// Otherwise chips drop their icons ([DockChip.iconWidth]), widest first and never below [minimum], if that lets every
+/// label show whole. When a label must shorten anyway, the narrow chips keep their whole width while the others can
+/// still have [minimum], and the widest share what is left (a chip given less than its whole width drops its icon).
+@visibleForTesting
+List<double> fitChipWidths(List<double> natural, double room, {double minimum = 64}) {
+  double sum(List<double> values) => values.fold(0.0, (a, b) => a + b);
+  if (sum(natural) <= room) return [...natural];
+  final needs = [...natural];
+  final widestFirst = List.generate(natural.length, (i) => i)..sort((a, b) => natural[b].compareTo(natural[a]));
+  for (final i in widestFirst) {
+    if (natural[i] - DockChip.iconWidth < minimum) continue;
+    needs[i] = natural[i] - DockChip.iconWidth;
+    if (sum(needs) <= room) return needs;
+  }
+  final widths = List.filled(natural.length, 0.0);
+  var left = room < 0 ? 0.0 : room;
+  final narrowFirst = widestFirst.reversed.toList();
+  for (var k = 0; k < narrowFirst.length; k++) {
+    final i = narrowFirst[k];
+    if (natural[i] + minimum * (narrowFirst.length - k - 1) <= left) {
+      widths[i] = natural[i];
+      left -= natural[i];
+    } else {
+      final share = left / (narrowFirst.length - k);
+      for (final j in narrowFirst.skip(k)) {
+        widths[j] = share;
+      }
+      break;
+    }
+  }
+  return widths;
+}
 
 List<Widget> _spaced(double gap, List<Widget> children) => [
   for (var i = 0; i < children.length; i++) ...[if (i > 0 && gap > 0) SizedBox(width: gap), children[i]],
@@ -283,7 +314,7 @@ class DockButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final iconWidget = Icon(icon, size: text == null ? 22 : 19, color: on ? Palette.accent : null);
+    final iconWidget = Icon(icon, size: text == null ? 22 : 18, color: on ? Palette.accent : null);
     return Tooltip(
       message: label,
       child: Pebble(
@@ -292,14 +323,14 @@ class DockButton extends StatelessWidget {
         onTap: onTap,
         enabled: onTap != null,
         semanticLabel: label,
-        padding: text == null ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 10),
+        padding: text == null ? EdgeInsets.zero : const EdgeInsets.symmetric(horizontal: 8),
         child: text == null
             ? iconWidget
             : Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   iconWidget,
-                  const SizedBox(width: 7),
+                  const SizedBox(width: 6),
                   Flexible(
                     child: Text(
                       text!,
@@ -331,6 +362,24 @@ class DockChip extends StatelessWidget {
   /// Another chip's menu is open.
   final bool dimmed;
 
+  static const _labelStyle = TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500);
+
+  /// What the icon adds to a chip: the icon, its gap, and the wider padding beside it.
+  static const iconWidth = 18 + 7 - 3.0;
+
+  /// How wide a chip showing [value] is with its icon and its whole label.
+  static double naturalWidth(BuildContext context, DockChipValue value) {
+    final painter = TextPainter(
+      text: TextSpan(text: value.label, style: DefaultTextStyle.of(context).style.merge(_labelStyle)),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+    final width = painter.width.ceilToDouble();
+    painter.dispose();
+    return 11 + 18 + 7 + width + 14 + 1;
+  }
+
   @override
   Widget build(BuildContext context) => AnimatedOpacity(
     opacity: dimmed ? 0.45 : 1,
@@ -345,12 +394,13 @@ class DockChip extends StatelessWidget {
         onTap: onTap,
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final withIcon = constraints.maxWidth >= 92;
+            // Without room for its whole width, the icon goes first and the label keeps that room.
+            final withIcon = !constraints.hasBoundedWidth || constraints.maxWidth >= naturalWidth(context, value) - 0.5;
             final label = Text(
               value.label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500, color: value.off ? Palette.muted : Palette.ink),
+              style: _labelStyle.copyWith(color: value.off ? Palette.muted : Palette.ink),
             );
             return Container(
               height: 38,
@@ -463,11 +513,11 @@ class _DockTimelineState extends State<DockTimeline> {
             onHorizontalDragUpdate: length > 0 ? (d) => setState(() => _drag = _fraction(d.localPosition.dx, width)) : null,
             onHorizontalDragEnd: (_) => _end(),
             onHorizontalDragCancel: _end,
-            // The thumb follows the finger at once. A tap seeks where it lands; a hold that becomes a drag is the
-            // drag's, which seeks once, where it lets go.
+            // The thumb follows the finger at once. A tap seeks where it lands; a hold that becomes a sideways drag
+            // is the drag's, which seeks once, where it lets go.
             onTapDown: length > 0 ? (d) => _start(_fraction(d.localPosition.dx, width)) : null,
-            onTapUp: (_) => _end(),
-            onTapCancel: _cancel,
+            onTapUp: length > 0 ? (_) => _end() : null,
+            onTapCancel: length > 0 ? _cancel : null,
             child: SizedBox(
               height: 28,
               child: CustomPaint(painter: _TimelinePainter(shown, buffered, dragging: _drag != null)),
