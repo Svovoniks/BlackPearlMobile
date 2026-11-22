@@ -66,6 +66,51 @@ void main() {
     expect(state.room, const RemoteRoom(name: 'Room', people: 2));
   });
 
+  test("the PC's track menus, as PHONE-REMOTE.md writes them", () {
+    final state = RemoteState.fromJson(
+      jsonDecode('''
+      {"type":"state","media":true,"title":"Night Signal","playing":true,"positionMs":0,"durationMs":1000,
+       "audioTracks":[{"id":1,"name":"Japanese","detail":"Stereo"},{"id":2,"name":"English","detail":null}],"audioTrack":1,
+       "subtitleTracks":[{"id":-1,"name":"Off","detail":null},{"id":3,"name":"English","detail":"Full"}],"subtitleTrack":3,
+       "canChangeTracks":false}''') as Map<String, dynamic>,
+    );
+    expect(state.hasTracks, isTrue);
+    expect(state.audioTracks, const [
+      RemoteTrack(id: 1, name: 'Japanese', detail: 'Stereo'),
+      RemoteTrack(id: 2, name: 'English'),
+    ]);
+    expect(state.audioTrack, 1);
+    expect(state.subtitleTracks!.first, const RemoteTrack(id: RemoteTrack.off, name: 'Off'));
+    expect(state.subtitleTrack, 3);
+    expect(state.canChangeTracks, isFalse);
+    // Picking one keeps the lists.
+    final picked = state.copyWith(subtitleTrack: -1);
+    expect(picked.subtitleTrack, RemoteTrack.off);
+    expect(picked.audioTracks, state.audioTracks);
+  });
+
+  test('a PC from before tracks on the remote sends none, and bad entries are skipped', () {
+    final old = RemoteState.fromJson({'type': 'state', 'media': true, 'title': 'X'});
+    expect(old.hasTracks, isFalse);
+    expect(old.canChangeTracks, isTrue);
+    final odd = RemoteState.fromJson({
+      'media': true,
+      'audioTracks': [
+        {'id': 'one', 'name': 'Bad'},
+        {'id': 4, 'name': '  '},
+        'junk',
+      ],
+      'audioTrack': null,
+      'subtitleTracks': [],
+    });
+    expect(odd.audioTracks, const [RemoteTrack(id: 4, name: 'Track')]);
+    expect(odd.audioTrack, isNull);
+    expect(odd.subtitleTracks, isEmpty);
+    expect(odd.hasTracks, isTrue);
+    // Nothing loaded: the menus don't apply.
+    expect(RemoteState.fromJson({'media': false, 'audioTracks': [], 'subtitleTracks': []}).hasTracks, isFalse);
+  });
+
   test('loop modes', () {
     expect(LoopMode.parse('off'), LoopMode.off);
     expect(LoopMode.parse('all'), LoopMode.all);

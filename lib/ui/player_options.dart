@@ -148,7 +148,7 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
                       for (final each in tabs)
                         Padding(
                           padding: const EdgeInsets.only(right: 4),
-                          child: _TabPill(
+                          child: OptionTab(
                             label: switch (each) {
                               PlayerOptionsTab.upNext => 'Up next',
                               PlayerOptionsTab.audio => 'Audio',
@@ -197,11 +197,11 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
 
   Widget _audioPage(Tracks tracks) {
     final audio = PhonePlayback.audioChoices(tracks);
-    if (audio.isEmpty) return _list([const _Note('The audio tracks show once the video has opened.')]);
+    if (audio.isEmpty) return _list([const OptionNote('The audio tracks show once the video has opened.')]);
     final labels = audioLabels(audio);
     return _list([
       for (var i = 0; i < audio.length; i++)
-        _OptionRow(
+        OptionRow(
           label: labels[i],
           selected: audio[i].id == _audio || audio.length == 1,
           onTap: () => unawaited(playback.chooseAudio(audio[i])),
@@ -213,25 +213,25 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
     final subtitles = PhonePlayback.subtitleChoices(tracks);
     final labels = subtitleLabels(subtitles);
     return _list([
-      _OptionRow(
+      OptionRow(
         label: const TrackLabel('Off', null),
         selected: _subtitle == null,
         onTap: () => unawaited(playback.chooseSubtitle(null)),
       ),
       for (var i = 0; i < subtitles.length; i++)
-        _OptionRow(
+        OptionRow(
           label: labels[i],
           selected: subtitles[i].id == _subtitle,
           onTap: () => unawaited(playback.chooseSubtitle(subtitles[i])),
         ),
       if (subtitles.isEmpty && stream != null)
         stream.hls
-            ? _Note(
+            ? OptionNote(
                 'A converted stream carries no subtitles. The original file has them.',
                 action: stream.qualities.contains('original') ? 'Play the original file' : null,
                 onAction: () => unawaited(playback.changeQuality('original')),
               )
-            : const _Note('This video has no subtitles.'),
+            : const OptionNote('This video has no subtitles.'),
     ]);
   }
 
@@ -239,7 +239,7 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
     final pending = playback.pending.value?.quality;
     return _list([
       for (final quality in stream.qualities)
-        _OptionRow(
+        OptionRow(
           label: TrackLabel(
             qualityLabel(quality),
             pending == quality
@@ -252,13 +252,14 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
           busy: pending == quality,
           onTap: () => unawaited(playback.changeQuality(quality)),
         ),
-      const _Note('A lower quality plays smoother on a slow connection. Away from home the player starts at the quality in Settings.'),
+      const OptionNote('A lower quality plays smoother on a slow connection. Away from home the player starts at the quality in Settings.'),
     ]);
   }
 }
 
-class _TabPill extends StatelessWidget {
-  const _TabPill({required this.label, required this.selected, required this.onTap});
+/// A page's pill at the top of an options panel; the phone player's and the Remote tab's tracks.
+class OptionTab extends StatelessWidget {
+  const OptionTab({super.key, required this.label, required this.selected, required this.onTap});
   final String label;
   final bool selected;
   final VoidCallback onTap;
@@ -286,11 +287,15 @@ class _TabPill extends StatelessWidget {
   );
 }
 
-class _OptionRow extends StatelessWidget {
-  const _OptionRow({required this.label, required this.selected, required this.onTap, this.busy = false});
+/// One choice with a tick: a track or a quality.
+class OptionRow extends StatelessWidget {
+  const OptionRow({super.key, required this.label, required this.selected, required this.onTap, this.busy = false, this.enabled = true});
   final TrackLabel label;
   final bool selected;
   final bool busy;
+
+  /// False shows the row dimmed, and taps do nothing.
+  final bool enabled;
   final VoidCallback onTap;
 
   @override
@@ -299,50 +304,57 @@ class _OptionRow extends StatelessWidget {
     child: Semantics(
       selected: selected,
       button: true,
-      child: Material(
-        color: selected ? Palette.accentSoft : Colors.transparent,
-        borderRadius: BorderRadius.circular(14),
-        child: InkWell(
+      enabled: enabled,
+      child: Opacity(
+        opacity: enabled ? 1 : 0.5,
+        child: Material(
+          color: selected ? Palette.accentSoft : Colors.transparent,
           borderRadius: BorderRadius.circular(14),
-          onTap: onTap,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 52),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: busy
-                        ? const Padding(padding: EdgeInsets.all(2), child: CircularProgressIndicator(strokeWidth: 2.2, color: Palette.accent))
-                        : selected
-                        ? const Icon(Icons.check_circle_rounded, color: Palette.accent, size: 22)
-                        : const Icon(Icons.circle_outlined, color: Color(0x669BA89F), size: 22),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          label.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(fontSize: 15, fontWeight: selected ? FontWeight.w600 : FontWeight.w500, color: Palette.ink),
-                        ),
-                        if (label.detail != null)
+          child: InkWell(
+            borderRadius: BorderRadius.circular(14),
+            onTap: enabled ? onTap : null,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 52),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: busy
+                          ? const Padding(
+                              padding: EdgeInsets.all(2),
+                              child: CircularProgressIndicator(strokeWidth: 2.2, color: Palette.accent),
+                            )
+                          : selected
+                          ? const Icon(Icons.check_circle_rounded, color: Palette.accent, size: 22)
+                          : const Icon(Icons.circle_outlined, color: Color(0x669BA89F), size: 22),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
                           Text(
-                            label.detail!,
+                            label.name,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 12.5, color: Palette.muted),
+                            style: TextStyle(fontSize: 15, fontWeight: selected ? FontWeight.w600 : FontWeight.w500, color: Palette.ink),
                           ),
-                      ],
+                          if (label.detail != null)
+                            Text(
+                              label.detail!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 12.5, color: Palette.muted),
+                            ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -352,8 +364,9 @@ class _OptionRow extends StatelessWidget {
   );
 }
 
-class _Note extends StatelessWidget {
-  const _Note(this.text, {this.action, this.onAction});
+/// A muted line under an options page's choices, with an optional action.
+class OptionNote extends StatelessWidget {
+  const OptionNote(this.text, {super.key, this.action, this.onAction});
   final String text;
   final String? action;
   final VoidCallback? onAction;

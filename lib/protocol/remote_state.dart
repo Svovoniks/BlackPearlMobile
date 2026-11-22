@@ -30,6 +30,35 @@ class RemoteRoom {
   int get hashCode => Object.hash(name, people);
 }
 
+/// A choice in the PC player's Audio or Subtitles menu, as the menu shows it (PHONE-REMOTE.md, "Tracks"). Off is -1.
+class RemoteTrack {
+  const RemoteTrack({required this.id, required this.name, this.detail});
+  final int id;
+  final String name;
+  final String? detail;
+
+  static const int off = -1;
+
+  /// The tracks of a `state` list, or null when the PC sent none (one from before tracks on the remote).
+  static List<RemoteTrack>? listFromJson(Object? value) {
+    if (value is! List) return null;
+    return [
+      for (final item in value)
+        if (item is Map && item['id'] is num && (item['id'] as num).isFinite)
+          RemoteTrack(
+            id: (item['id'] as num).round(),
+            name: item['name'] is String && (item['name'] as String).trim().isNotEmpty ? (item['name'] as String).trim() : 'Track',
+            detail: item['detail'] is String && (item['detail'] as String).trim().isNotEmpty ? (item['detail'] as String).trim() : null,
+          ),
+    ];
+  }
+
+  @override
+  bool operator ==(Object other) => other is RemoteTrack && other.id == id && other.name == name && other.detail == detail;
+  @override
+  int get hashCode => Object.hash(id, name, detail);
+}
+
 class RemoteState {
   const RemoteState({
     required this.media,
@@ -50,6 +79,11 @@ class RemoteState {
     this.queue,
     this.shuffle,
     this.phoneSound,
+    this.audioTracks,
+    this.audioTrack,
+    this.subtitleTracks,
+    this.subtitleTrack,
+    this.canChangeTracks = true,
   });
 
   /// False when nothing is loaded in the player; the playback fields are then meaningless.
@@ -84,6 +118,21 @@ class RemoteState {
   /// True while a phone plays the PC's sound, which leaves the PC quiet ([muted] is then the PC's own mute from
   /// before); null from PCs that can't send their sound.
   final bool? phoneSound;
+
+  /// The PC player's Audio and Subtitles menus; null from a PC without tracks on the remote, empty until the video has
+  /// opened. Subtitles start with Off.
+  final List<RemoteTrack>? audioTracks;
+  final List<RemoteTrack>? subtitleTracks;
+
+  /// The ticked choices' ids, or null when the menu has none ticked.
+  final int? audioTrack;
+  final int? subtitleTrack;
+
+  /// False where the PC's menus are greyed out: in a room where only whoever plays the video picks tracks.
+  final bool canChangeTracks;
+
+  /// Whether the PC puts its track menus in the state.
+  bool get hasTracks => audioTracks != null && subtitleTracks != null;
 
   static const RemoteState nothing = RemoteState(media: false);
 
@@ -127,6 +176,11 @@ class RemoteState {
       queue: media ? QueueRef.fromJson(json['queue']) : null,
       shuffle: json['shuffle'] is bool ? json['shuffle'] as bool : null,
       phoneSound: json['phoneSound'] is bool ? json['phoneSound'] as bool : null,
+      audioTracks: media ? RemoteTrack.listFromJson(json['audioTracks']) : null,
+      audioTrack: media ? number('audioTrack') : null,
+      subtitleTracks: media ? RemoteTrack.listFromJson(json['subtitleTracks']) : null,
+      subtitleTrack: media ? number('subtitleTrack') : null,
+      canChangeTracks: flag('canChangeTracks', true),
     );
   }
 
@@ -138,7 +192,7 @@ class RemoteState {
     return position;
   }
 
-  RemoteState copyWith({int? positionMs, int? volume, bool? muted, bool? playing}) => RemoteState(
+  RemoteState copyWith({int? positionMs, int? volume, bool? muted, bool? playing, int? audioTrack, int? subtitleTrack}) => RemoteState(
     media: media,
     title: title,
     detail: detail,
@@ -156,6 +210,40 @@ class RemoteState {
     mediaId: mediaId,
     queue: queue,
     shuffle: shuffle,
+    phoneSound: phoneSound,
+    audioTracks: audioTracks,
+    audioTrack: audioTrack ?? this.audioTrack,
+    subtitleTracks: subtitleTracks,
+    subtitleTrack: subtitleTrack ?? this.subtitleTrack,
+    canChangeTracks: canChangeTracks,
+  );
+}
+
+extension RemoteStateTracks on RemoteState {
+  /// This state with other track menus, a room, or the menus greyed out; for previews and tests.
+  RemoteState withTracks({List<RemoteTrack>? audio, List<RemoteTrack>? subtitles, bool? canChange, RemoteRoom? room}) => RemoteState(
+    media: media,
+    title: title,
+    detail: detail,
+    playing: playing,
+    positionMs: positionMs,
+    durationMs: durationMs,
+    volume: volume,
+    muted: muted,
+    loop: loop,
+    fullscreen: fullscreen,
+    hasPrevious: hasPrevious,
+    hasNext: hasNext,
+    canControl: canControl,
+    room: room ?? this.room,
+    mediaId: mediaId,
+    queue: queue,
+    shuffle: shuffle,
+    audioTracks: audio ?? audioTracks,
+    audioTrack: audio != null && audio.isEmpty ? null : audioTrack,
+    subtitleTracks: subtitles ?? subtitleTracks,
+    subtitleTrack: subtitles != null && subtitles.isEmpty ? null : subtitleTrack,
+    canChangeTracks: canChange ?? canChangeTracks,
     phoneSound: phoneSound,
   );
 }
