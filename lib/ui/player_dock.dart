@@ -138,8 +138,8 @@ class PlayerDock extends StatelessWidget {
           Row(
             children: _spaced(6, [
               // The quality is short and keeps its width; the track names share the rest.
-              Flexible(child: audioChip),
-              Flexible(child: subtitleChip),
+              Flexible(flex: _share(audio), child: audioChip),
+              Flexible(flex: _share(subtitles), child: subtitleChip),
               ?qualityChip,
             ]),
           ),
@@ -184,10 +184,13 @@ class PlayerDock extends StatelessWidget {
                 const SizedBox(height: 10),
                 Row(
                   children: _spaced(6, [
-                    Flexible(child: audioChip),
-                    Flexible(child: subtitleChip),
-                    ?(qualityChip == null ? null : Flexible(child: qualityChip)),
-                    const Spacer(),
+                    // The chips take all the room the mode buttons leave. The quality is short and keeps its width;
+                    // the track names share the rest, so one only shortens when the row is full.
+                    Expanded(
+                      child: Row(
+                        children: _spaced(6, [Flexible(flex: _share(audio), child: audioChip), Flexible(flex: _share(subtitles), child: subtitleChip), ?qualityChip]),
+                      ),
+                    ),
                     ...modes,
                   ]),
                 ),
@@ -221,7 +224,11 @@ class PlayerDock extends StatelessWidget {
       Row(
         children: [
           // The sides take equal shares, so playback stays in the middle.
-          Expanded(child: Row(children: _spaced(6, [Flexible(child: audioChip), Flexible(child: subtitleChip)]))),
+          Expanded(
+            child: Row(
+              children: _spaced(6, [Flexible(flex: _share(audio), child: audioChip), Flexible(flex: _share(subtitles), child: subtitleChip)]),
+            ),
+          ),
           const SizedBox(width: 10),
           faded(transport),
           const SizedBox(width: 10),
@@ -236,6 +243,10 @@ class PlayerDock extends StatelessWidget {
     ],
   );
 }
+
+// Chips side by side share the room in proportion to what their labels need, so a short one doesn't hold back room a
+// long one could use: Flutter gives each loose Flexible its share and passes on none of what it leaves.
+int _share(DockChipValue value) => value.label.length + 6;
 
 List<Widget> _spaced(double gap, List<Widget> children) => [
   for (var i = 0; i < children.length; i++) ...[if (i > 0 && gap > 0) SizedBox(width: gap), children[i]],
@@ -415,6 +426,13 @@ class _DockTimelineState extends State<DockTimeline> {
     widget.onDragging?.call(true);
   }
 
+  // A finger that came down and went elsewhere (a drag takes over, or the page scrolls): no seek.
+  void _cancel() {
+    if (_drag == null) return;
+    setState(() => _drag = null);
+    widget.onDragging?.call(false);
+  }
+
   void _end() {
     final drag = _drag;
     if (drag == null) return;
@@ -445,13 +463,11 @@ class _DockTimelineState extends State<DockTimeline> {
             onHorizontalDragUpdate: length > 0 ? (d) => setState(() => _drag = _fraction(d.localPosition.dx, width)) : null,
             onHorizontalDragEnd: (_) => _end(),
             onHorizontalDragCancel: _end,
-            // A tap seeks where it lands. A hold that becomes a drag is the drag's: it seeks once, where it lets go.
-            onTapUp: length > 0
-                ? (d) {
-                    _start(_fraction(d.localPosition.dx, width));
-                    _end();
-                  }
-                : null,
+            // The thumb follows the finger at once. A tap seeks where it lands; a hold that becomes a drag is the
+            // drag's, which seeks once, where it lets go.
+            onTapDown: length > 0 ? (d) => _start(_fraction(d.localPosition.dx, width)) : null,
+            onTapUp: (_) => _end(),
+            onTapCancel: _cancel,
             child: SizedBox(
               height: 28,
               child: CustomPaint(painter: _TimelinePainter(shown, buffered, dragging: _drag != null)),

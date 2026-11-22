@@ -109,8 +109,8 @@ class ShuffleOrder {
     return null;
   }
 
-  /// The player is about to play [id], which [previous] offered: it plays as a step back.
-  void goingBack(String id) => _goingBack = id;
+  /// The player is about to play [id], which [previous] offered: it plays as a step back. Null: it didn't, after all.
+  void goingBack(String? id) => _goingBack = id;
 
   String? _pick(List<String> candidates, bool Function(String id) canPlay) {
     // Shuffled in full, then checked in that order.

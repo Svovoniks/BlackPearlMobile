@@ -4,6 +4,7 @@ import 'package:blackpearl_mobile/playback/phone_playback.dart';
 import 'package:blackpearl_mobile/protocol/library.dart';
 import 'package:blackpearl_mobile/ui/player_dock.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter/rendering.dart';
 import 'package:material_ui/material_ui.dart';
 
 void main() {
@@ -49,6 +50,24 @@ void main() {
       for (final chip in tester.widgetList<DockChip>(find.byType(DockChip))) {
         expect(tester.getSize(find.byWidget(chip)).width, greaterThanOrEqualTo(64), reason: '${chip.name} at $width dp');
       }
+      // A chip shortens its label only when the row has no room left for it: no empty gap beside a cut label.
+      final cut = tester
+          .widgetList<DockChip>(find.byType(DockChip))
+          .where(
+            (chip) => tester.renderObject<RenderParagraph>(find.descendant(of: find.byWidget(chip), matching: find.byType(RichText)).last).didExceedMaxLines,
+          );
+      if (cut.isNotEmpty) {
+        final chipsEnd = tester
+            .widgetList<DockChip>(find.byType(DockChip))
+            .map((chip) => tester.getRect(find.byWidget(chip)).right)
+            .reduce((a, b) => a > b ? a : b);
+        final modesStart = tester.getRect(find.byIcon(Icons.shuffle_rounded)).left;
+        final playTop = tester.getRect(find.byIcon(Icons.pause_rounded)).top;
+        // In the two-row dock the chips share a row with playback, which they can't reach into.
+        if (tester.getRect(find.byWidget(cut.first)).top > playTop + 30) {
+          expect(modesStart - chipsEnd, lessThan(20), reason: '${cut.map((c) => c.name)} cut at $width dp with room beside them');
+        }
+      }
       // Playback stays in the middle of the dock.
       final play = tester.getCenter(find.byIcon(Icons.pause_rounded));
       expect((play.dx - 600).abs(), lessThan(1));
@@ -79,8 +98,9 @@ void main() {
       ],
     };
 
-    PhonePlayback playing(FakeRemoteLink link) => PhonePlayback(link: link, createPlayer: () => throw StateError('no player'))
-      ..debugShow(null, StreamInfo(id: 'e0', title: 'Episode 0', hls: false, next: step('e1')));
+    PhonePlayback playing(FakeRemoteLink link) =>
+        PhonePlayback(link: link, createPlayer: () => throw StateError('no player'))
+          ..debugShow(null, StreamInfo(id: 'e0', title: 'Episode 0', hls: false, next: step('e1')));
 
     test("loads every page of the show, and Next picks from all of it", () async {
       final link = FakeRemoteLink(pcName: 'PC', status: const LinkStatus(LinkPhase.connected))..offered = const {'watch', 'queues'};
