@@ -189,14 +189,16 @@ A PC whose welcome lists `tracks` puts its player's Audio and Subtitles menus in
 `subtitleTracks` list the menus' choices in their order, each with the `name` the menu leads with (usually the
 language) and the muted `detail` under it, or null. Off is the choice with id -1, first in `subtitleTracks` (and
 in `audioTracks` when the player offers no audio as a choice). `audioTrack` and
-`subtitleTrack` are the ticked ids, or null when the menu has none ticked. The lists are empty until the video has
-opened. Ids are the player's own and last only for the loaded video.
+`subtitleTrack` are the ticked ids, or null when the menu has none ticked. The lists are the player's menus as they
+are: empty before the first video has opened, and still the previous video's for a moment while the next one opens.
+Ids are the player's own and last only for the loaded video.
 
 `audio-track` and `subtitle-track` choose as a click in the menu does: an audio track also switches the subtitles to
 the PC's rule for its language, and in a room the choice is the room's, for everyone. `canChangeTracks` is false where
-the menus are greyed out: in a room, for everyone but whoever plays the video unless controls are shared, and while
-the player loads or stops. A track command is then refused with `not-allowed`. An id the menu doesn't have is ignored. The PC sends a fresh
-`state` after each track command.
+the menus are greyed out: while the player stops a video, and in a room also for everyone but whoever plays the video
+unless controls are shared, while the room's video loads or the room reconnects, and for a guest watching a converted
+stream. A track command is then refused with `not-allowed`, whose message says which. An id the menu doesn't have is
+ignored. The PC sends a fresh `state` after every track command, also one that changed nothing.
 
 Unknown message types and actions are ignored, so either side can add new ones within version 1. Changing the
 meaning of an existing message needs version 2.

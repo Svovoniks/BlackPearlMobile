@@ -45,6 +45,7 @@ class _RemoteTracksPanelState extends State<RemoteTracksPanel> {
   @override
   void initState() {
     super.initState();
+    _videoShown = _video(link.state);
     link.addListener(_changed);
   }
 
@@ -67,9 +68,19 @@ class _RemoteTracksPanelState extends State<RemoteTracksPanel> {
   void _changed() {
     final pending = _pending;
     final state = link.state;
+    // Ids last only for one video: a choice still waiting when the PC moves on means nothing in the next one.
+    final video = _video(state);
+    if (video != _videoShown) {
+      _videoShown = video;
+      _pending = null;
+    }
     if (pending != null && state != null && _selected(state, pending.tab) == pending.id) _pending = null;
     if (mounted) setState(() {});
   }
+
+  String? _videoShown;
+  static String? _video(RemoteState? state) =>
+      state == null || !state.media ? null : '${state.mediaId}|${state.title}|${state.detail}|${state.durationMs}';
 
   static int? _selected(RemoteState state, RemoteTracksTab tab) => tab == RemoteTracksTab.audio ? state.audioTrack : state.subtitleTrack;
 
@@ -151,7 +162,9 @@ class _RemoteTracksPanelState extends State<RemoteTracksPanel> {
                     enabled: canChange,
                     onTap: () => _choose(_tab, tracks[i]),
                   ),
-                if (tracks.isEmpty)
+                if (state == null || !state.media)
+                  const OptionNote('Nothing is playing on the PC.')
+                else if (tracks.isEmpty)
                   OptionNote(
                     _tab == RemoteTracksTab.audio
                         ? 'The audio tracks show once the video has opened on the PC.'
@@ -159,7 +172,7 @@ class _RemoteTracksPanelState extends State<RemoteTracksPanel> {
                   )
                 else if (_tab == RemoteTracksTab.subtitles && tracks.every((t) => t.id == RemoteTrack.off))
                   const OptionNote('This video has no subtitles. Subtitles from a file can be loaded on the PC.')
-                else if (_tab == RemoteTracksTab.audio)
+                else if (_tab == RemoteTracksTab.audio && canChange)
                   const OptionNote('Subtitles you haven\'t picked follow the PC\'s rule for the audio\'s language.'),
               ],
             ),
@@ -194,7 +207,7 @@ class _Locked extends StatelessWidget {
         Expanded(
           child: Text(
             room != null
-                ? 'In ${room!.name}, only whoever plays the video picks the audio and subtitles.'
+                ? "In ${room!.name}, the audio and subtitles can't be changed from this PC right now. Usually only whoever plays the video picks them."
                 : "The PC can't change tracks right now. Try again in a moment.",
             style: const TextStyle(fontSize: 13, height: 1.35, color: Palette.ink),
           ),

@@ -945,6 +945,9 @@ class _TrackPill extends StatelessWidget {
         ? (tracks.isEmpty ? 'Not yet' : 'None')
         : choice.id == RemoteTrack.off
         ? 'Off'
+        // Two tracks in one language are told apart by their detail, as in the sheet.
+        : choice.detail != null && tracks.where((t) => t.name == choice.name).length > 1
+        ? '${choice.name} · ${choice.detail}'
         : choice.name;
     final active = choice != null && choice.id != RemoteTrack.off;
     return Pebble(

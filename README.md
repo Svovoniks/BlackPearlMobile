@@ -15,9 +15,9 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   app reconnects by itself when the link drops, when it comes back to the foreground and when the network changes.
 - **Remote.** Play and pause, ±10 s, previous and next, stop, loop (off, all, one), the timeline, the PC's volume and
   mute, fullscreen, and the PC player's Audio and Subtitles: their sheet lists the PC's tracks as its menus show them,
-  and picking one there is a click in the PC's menu. In a room where only whoever plays the video picks
-  tracks, the sheet shows them without changing them. The artwork area is a touch pad: tap to play or pause, swipe sideways to skip 10 s, slide up
-  and down for volume.
+  and picking one there is a click in the PC's menu. In a room where only whoever plays the video picks tracks, the
+  sheet shows them without changing them. The artwork area is a touch pad: tap to play or pause, swipe sideways to skip
+  10 s, slide up and down for volume.
   When the PC plays a video of its own library, **Watch here** moves it to the phone: the PC stops and the phone carries
   on from the same moment.
 - **Library.** The PC's Home (Continue watching, suggestions for each kind, a random pick), films, shows and anime as
