@@ -242,11 +242,19 @@ class StreamInfo {
     this.first,
     this.tracks = TrackPreferences.none,
     this.queue,
+    this.sourceAudio,
+    this.audioTrack,
   });
 
   final String id;
   final String title;
   final String? detail;
+
+  /// A conversion's choice of sound: the file's audio tracks, of which it carries the one at [audioTrack] (null: none).
+  /// Null from PCs before 0.3.143, whose conversions had no sound, and for the file itself, whose tracks the player
+  /// lists.
+  final List<SourceAudio>? sourceAudio;
+  final int? audioTrack;
 
   /// Where to start.
   final int positionMs;
@@ -303,6 +311,8 @@ class StreamInfo {
       first: EpisodeStep.fromJson(json['first']),
       tracks: TrackPreferences.fromJson(json['tracks']),
       queue: QueueRef.fromJson(json['queue']),
+      sourceAudio: hls ? SourceAudio.listFromJson(json['audioTracks']) : null,
+      audioTrack: hls && json['audioTrack'] is int ? json['audioTrack'] as int : null,
     );
   }
 
@@ -321,6 +331,24 @@ class StreamInfo {
     }
     buffer.write('#EXT-X-ENDLIST\n');
     return buffer.toString();
+  }
+}
+
+/// One of a file's audio tracks, as the PC lists them for a conversion: its place among the file's audio tracks, and
+/// the language tag, title, codec and channel layout the file gives it.
+class SourceAudio {
+  const SourceAudio({required this.index, this.language, this.title, this.codec, this.layout});
+  final int index;
+  final String? language, title, codec, layout;
+
+  static List<SourceAudio>? listFromJson(Object? json) {
+    if (json is! List) return null;
+    String? text(Map<String, dynamic> map, String name) => map[name] is String && (map[name] as String).isNotEmpty ? map[name] as String : null;
+    return [
+      for (final each in json)
+        if (each is Map<String, dynamic> && each['index'] is int && (each['index'] as int) >= 0)
+          SourceAudio(index: each['index'] as int, language: text(each, 'language'), title: text(each, 'title'), codec: text(each, 'codec'), layout: text(each, 'layout')),
+    ];
   }
 }
 

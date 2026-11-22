@@ -178,7 +178,7 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
               key: ValueKey(tab),
               child: switch (tab) {
                 PlayerOptionsTab.upNext => _UpNextPage(playback: playback),
-                PlayerOptionsTab.audio => _audioPage(tracks),
+                PlayerOptionsTab.audio => _audioPage(),
                 PlayerOptionsTab.subtitles => _subtitlePage(tracks, stream),
                 PlayerOptionsTab.quality => _qualityPage(stream!),
               },
@@ -195,15 +195,17 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
     children: children,
   );
 
-  Widget _audioPage(Tracks tracks) {
-    final audio = PhonePlayback.audioChoices(tracks);
+  Widget _audioPage() {
+    final audio = playback.audioTracks;
     if (audio.isEmpty) return _list([const OptionNote('The audio tracks show once the video has opened.')]);
     final labels = audioLabels(audio);
+    // Another track of a conversion shows as picked while the PC converts with it.
+    final ticked = playback.pending.value?.audio ?? _audio;
     return _list([
       for (var i = 0; i < audio.length; i++)
         OptionRow(
           label: labels[i],
-          selected: audio[i].id == _audio || audio.length == 1,
+          selected: audio[i].id == ticked || audio.length == 1,
           onTap: () => unawaited(playback.chooseAudio(audio[i])),
         ),
     ]);

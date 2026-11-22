@@ -148,6 +148,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         unawaited(_readTracks());
       }
       _syncPip();
+    } else {
+      // Another conversion of the same video, as after another audio track was picked, plays on the same player.
+      unawaited(_readTracks());
     }
     final note = playback.stream?.note;
     if (note != null && note != _noteShown) {
@@ -375,9 +378,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   // ---- What the chips show and their menus offer ----
 
   ({List<AudioTrack> tracks, List<TrackLabel> labels}) get _audio {
-    final tracks = PhonePlayback.audioChoices(_player?.state.tracks ?? const Tracks());
+    final tracks = playback.audioTracks;
     return (tracks: tracks, labels: audioLabels(tracks));
   }
+
+  // The audio track to tick: one a conversion is switching to, or the one playing.
+  String? get _tickedAudio => playback.pending.value?.audio ?? _audioId;
 
   ({List<SubtitleTrack> tracks, List<TrackLabel> labels}) get _subtitles {
     final tracks = PhonePlayback.subtitleChoices(_player?.state.tracks ?? const Tracks());
@@ -402,8 +408,10 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   DockChipValue get _audioChip {
     final audio = _audio;
     if (audio.tracks.isEmpty) return const DockChipValue('Audio', off: true);
-    final at = audio.tracks.length == 1 ? 0 : audio.tracks.indexWhere((t) => t.id == _audioId);
-    return at < 0 ? const DockChipValue('Audio', off: true) : DockChipValue(_chipName(audio.labels[at], audio.labels));
+    final at = audio.tracks.length == 1 ? 0 : audio.tracks.indexWhere((t) => t.id == _tickedAudio);
+    return at < 0
+        ? const DockChipValue('Audio', off: true)
+        : DockChipValue(_chipName(audio.labels[at], audio.labels), busy: playback.pending.value?.audio != null);
   }
 
   DockChipValue get _subtitleChip {
@@ -441,7 +449,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
               ChipMenuOption(
                 name: audio.labels[i].name,
                 detail: audio.labels[i].detail,
-                selected: audio.tracks[i].id == _audioId || audio.tracks.length == 1,
+                selected: audio.tracks[i].id == _tickedAudio || audio.tracks.length == 1,
                 onTap: () => pick(() => playback.chooseAudio(audio.tracks[i])),
               ),
           ],

@@ -74,6 +74,155 @@ void main() {
     playback.dispose();
   });
 
+  group("a conversion's audio", () {
+    Map<String, dynamic> converted(String quality, int? audio) => {
+      'type': 'stream', 'id': 'film', 'kind': 'hls', 'streamId': 'a' * 32, 'segments': 10, 'segmentMs': 4000, 'durationMs': 40000,
+      'quality': quality, 'qualities': ['original', '720p', '480p'],
+      'audioTracks': [
+        {'index': 0, 'language': 'jpn', 'title': null, 'codec': 'eac3', 'layout': '5.1(side)'},
+        {'index': 1, 'language': 'eng', 'title': 'Commentary', 'codec': 'aac', 'layout': 'stereo'},
+      ],
+      'audioTrack': audio,
+    };
+
+    test('lists the file\'s tracks, and another one is converted again from where the video is, at the same quality', () async {
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => converted('480p', 0);
+      await playback.watch('film', quality: '480p');
+      expect(pc.asked.single.$2.containsKey('audio'), isFalse, reason: "the PC's preferences pick the first track");
+      expect(playback.audioTracks.map((t) => (t.id, t.language, t.title)), [('1', 'jpn', null), ('2', 'eng', 'Commentary')]);
+      expect((await playback.selectedTracks()).audio, '1');
+
+      player.positionMs = 61000;
+      player.positions.add(const Duration(milliseconds: 61000));
+      await pumpEventQueue();
+      final answer = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => answer.future;
+      final switching = playback.chooseAudio(playback.audioTracks[1]);
+      await pumpEventQueue();
+      expect(pc.asked.last.$2, containsPair('audio', 1));
+      expect(pc.asked.last.$2, containsPair('quality', '480p'));
+      expect(playback.pending.value?.audio, '2', reason: 'the menus tick the track on its way');
+      expect(playback.pending.value?.label, 'Switching to English audio…');
+      // Picking it again while it's on its way asks nothing more.
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(pc.asked, hasLength(2));
+      answer.complete(converted('480p', 1));
+      await switching;
+      expect(player.opened.last.start, const Duration(milliseconds: 61000));
+      expect(playback.pending.value, isNull);
+      expect((await playback.selectedTracks()).audio, '2');
+
+      // Another quality, or a recovery, keeps the track picked.
+      pc.answer = (type, fields) async => converted('720p', 1);
+      await playback.changeQuality('720p');
+      expect(pc.asked.last.$2, containsPair('audio', 1));
+      // Picking the track playing asks nothing.
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(pc.asked, hasLength(3));
+      playback.dispose();
+    });
+
+    test('a refused switch keeps the track playing, and one switch waits for the other', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => converted('480p', 0);
+      await playback.watch('film', quality: '480p');
+      pc.answer = (type, fields) => Future.error(const RemoteRequestException('busy', 'The PC is busy.'));
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(playback.pending.value, isNull);
+      expect(playback.notice.value, 'The PC is busy.');
+      expect((await playback.selectedTracks()).audio, '1', reason: 'the refused track was never played');
+      pc.answer = (type, fields) async => converted('720p', 0);
+      await playback.changeQuality('720p');
+      expect(pc.asked.last.$2, containsPair('audio', 0));
+
+      // While another quality is on its way, an audio pick says to wait, and the other way round.
+      final quality = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => quality.future;
+      final toQuality = playback.changeQuality('480p');
+      await pumpEventQueue();
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(playback.notice.value, 'Wait for the switch to 480p to finish, then pick the audio.');
+      quality.complete(converted('480p', 0));
+      await toQuality;
+      final audio = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => audio.future;
+      final toAudio = playback.chooseAudio(playback.audioTracks[1]);
+      await pumpEventQueue();
+      final asked = pc.asked.length;
+      await playback.changeQuality('720p');
+      expect(pc.asked, hasLength(asked));
+      expect(playback.notice.value, 'Wait for the switch to English audio to finish, then pick the quality.');
+      audio.complete(converted('480p', 1));
+      await toAudio;
+      expect((await playback.selectedTracks()).audio, '2');
+      playback.dispose();
+    });
+
+    test('the original file opens on the track the conversion played, by its place, and not on one the PC refused', () async {
+      Map<String, dynamic> file() => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 10, 'qualities': ['original', '480p']};
+      // libmpv lists the file's tracks untagged where the PC identified one; the PC lists the second as Russian.
+      const mpv = [AudioTrack('1', null, 'jpn'), AudioTrack('2', null, null)];
+      final listing = converted('480p', 0)
+        ..['audioTracks'] = [
+          {'index': 0, 'language': 'jpn'},
+          {'index': 1, 'language': 'ru'},
+        ];
+      Future<(_FakePlayer, PhonePlayback, FakeRemoteLink)> converting() async {
+        final pc = link();
+        final player = _FakePlayer();
+        final playback = PhonePlayback(link: pc, createPlayer: () => player);
+        pc.answer = (type, fields) async => listing;
+        await playback.watch('film', quality: '480p');
+        return (player, playback, pc);
+      }
+
+      // Refused: the file opens as libmpv would, on its first track, though it could tell the refused one by language.
+      var (player, playback, pc) = await converting();
+      pc.answer = (type, fields) => Future.error(const RemoteRequestException('busy', 'The PC is busy.'));
+      await playback.chooseAudio(playback.audioTracks[1]);
+      pc.answer = (type, fields) async => file();
+      await playback.changeQuality('original');
+      await player.lists(const [AudioTrack('1', null, 'jpn'), AudioTrack('2', null, 'ru')]);
+      expect(player.audioSet, isNot(contains('2')));
+      playback.dispose();
+
+      // Accepted: the file opens on the second track, although libmpv gives it no language.
+      (player, playback, pc) = await converting();
+      pc.answer = (type, fields) async => {...listing, 'audioTrack': 1};
+      await playback.chooseAudio(playback.audioTracks[1]);
+      pc.answer = (type, fields) async => file();
+      await playback.changeQuality('original');
+      await player.lists(mpv);
+      expect(player.audioSet.last, '2');
+      playback.dispose();
+    });
+
+    test('a new video starts with the PC\'s preferences again', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => converted('480p', 1);
+      await playback.watch('film', quality: '480p');
+      pc.answer = (type, fields) async => {...converted('480p', 0), 'id': 'next'};
+      await playback.watch('next', quality: '480p');
+      expect(pc.asked.last.$2.containsKey('audio'), isFalse);
+      playback.dispose();
+    });
+
+    test('from an older PC, the player lists what it plays', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => {...converted('480p', null)}..remove('audioTracks')..remove('audioTrack');
+      await playback.watch('film', quality: '480p');
+      expect(playback.stream?.sourceAudio, isNull);
+      expect(playback.audioTracks, isEmpty);
+      playback.dispose();
+    });
+  });
+
   test('a refused watch says why', () async {
     final pc = link();
     pc.answer = (type, fields) => Future.error(const RemoteRequestException('gone', 'Its drive may be disconnected.'));
@@ -83,4 +232,55 @@ void main() {
     expect(playback.error, 'Its drive may be disconnected.');
     playback.dispose();
   });
+}
+
+// A player that opens nothing: it remembers what it was asked to open, and says it is wherever the test puts it.
+class _FakePlayer extends Fake implements Player {
+  final List<Media> opened = [];
+  int positionMs = 0;
+  final StreamController<Duration> positions = StreamController<Duration>.broadcast();
+  // The audio tracks libmpv lists for what is open, and the ones set, by id.
+  List<AudioTrack> audio = const [];
+  final StreamController<Tracks> listed = StreamController<Tracks>.broadcast();
+  final List<String> audioSet = [];
+
+  @override
+  PlayerState get state => PlayerState(position: Duration(milliseconds: positionMs), tracks: Tracks(audio: audio));
+
+  @override
+  late final PlayerStream stream = PlayerStream(
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), positions.stream, const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), listed.stream,
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
+  );
+
+  /// libmpv lists [tracks] for what it opened.
+  Future<void> lists(List<AudioTrack> tracks) async {
+    audio = tracks;
+    listed.add(Tracks(audio: tracks));
+    await pumpEventQueue();
+  }
+
+  @override
+  PlatformPlayer? get platform => null;
+
+  @override
+  Future<void> open(Playable playable, {bool play = true}) async => opened.add(playable as Media);
+
+  @override
+  Future<void> pause() async {}
+
+  @override
+  Future<void> play() async {}
+
+  @override
+  Future<void> setAudioTrack(AudioTrack track) async => audioSet.add(track.id);
+
+  @override
+  Future<void> setSubtitleTrack(SubtitleTrack track) async {}
+
+  @override
+  Future<void> dispose() async {}
 }
