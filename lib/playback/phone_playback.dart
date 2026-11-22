@@ -626,7 +626,10 @@ class PhonePlayback extends ChangeNotifier {
       await player.play();
       return;
     }
-    await playEpisode(previousEpisode!);
+    final back = previousEpisode!;
+    // Back with Shuffle retraces what played.
+    if (_shuffleReady) _shuffleOrder.goingBack(back.id);
+    await playEpisode(back);
   }
 
   /// Next: the episode after this one.

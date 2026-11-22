@@ -18,8 +18,9 @@ class ShuffleOrder {
   String? _upcoming;
   // The pick starts a new round (Loop all after every video played).
   bool _upcomingStartsRound = false;
-  // What Previous offered: playing it is a step back, not a new pick of a video that already played.
-  String? _behindOffered;
+  // The video the player is going back to with Previous: playing it is a step back, not a new pick of a video that
+  // already played. Only [goingBack] sets it; asking [previous], as the player does to enable its button, doesn't.
+  String? _goingBack;
 
   /// The list the order belongs to: a show or a queue.
   String? get scope => _scope;
@@ -31,7 +32,7 @@ class ShuffleOrder {
     _scope = null;
     _upcoming = null;
     _upcomingStartsRound = false;
-    _behindOffered = null;
+    _goingBack = null;
   }
 
   /// Records that [id] plays now, in the list [scope]. Another list starts a new order.
@@ -41,8 +42,8 @@ class ShuffleOrder {
       _scope = scope;
     }
     if (_position >= 0 && _history[_position] == id) return;
-    final back = _behindOffered == id && _position > 0 && _history[_position - 1] == id;
-    _behindOffered = null;
+    final back = _goingBack == id && _position > 0 && _history[_position - 1] == id;
+    _goingBack = null;
     if (back) {
       _position--;
     } else if (_position + 1 < _history.length && _history[_position + 1] == id) {
@@ -100,13 +101,16 @@ class ShuffleOrder {
     // Videos that can't play now leave the path, so the one returned is the step back that [played] recognises.
     while (_position > 0) {
       final behind = _history[_position - 1];
-      if (members.contains(behind) && can(behind)) return _behindOffered = behind;
+      if (members.contains(behind) && can(behind)) return behind;
       _history.removeAt(_position - 1);
       _position--;
       if (_roundStart > _position) _roundStart = _position;
     }
     return null;
   }
+
+  /// The player is about to play [id], which [previous] offered: it plays as a step back.
+  void goingBack(String id) => _goingBack = id;
 
   String? _pick(List<String> candidates, bool Function(String id) canPlay) {
     // Shuffled in full, then checked in that order.

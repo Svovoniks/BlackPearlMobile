@@ -39,9 +39,11 @@ void main() {
       }
       var back = order.previous('show', path[3], pool);
       expect(back, path[2]);
-      back = order.previous('show', back!, pool);
+      order.goingBack(back!);
+      back = order.previous('show', back, pool);
       expect(back, path[1]);
-      expect(order.next('show', back!, pool, loop: false), path[2]);
+      order.goingBack(back!);
+      expect(order.next('show', back, pool, loop: false), path[2]);
     });
 
     test('with Loop all each round plays every episode once and never repeats the one that just ended', () {
@@ -55,6 +57,24 @@ void main() {
       }
       for (var i = 1; i < played.length; i++) {
         expect(played[i], isNot(played[i - 1]));
+      }
+    });
+
+    test('asking Previous before each Next, as the player does for its button, never makes Loop all repeat', () {
+      for (var seed = 0; seed < 200; seed++) {
+        final order = ShuffleOrder(Random(seed));
+        final played = ['e1'];
+        while (played.length < pool.length * 4) {
+          order.previous('show', played.last, pool);
+          played.add(order.next('show', played.last, pool, loop: true)!);
+          order.previous('show', played.last, pool);
+        }
+        for (var round = 0; round < 4; round++) {
+          expect(played.sublist(round * pool.length, (round + 1) * pool.length).toSet(), pool.toSet(), reason: 'seed $seed: $played');
+        }
+        for (var i = 1; i < played.length; i++) {
+          expect(played[i], isNot(played[i - 1]), reason: 'seed $seed: $played');
+        }
       }
     });
 
