@@ -97,6 +97,7 @@ class _HomeShellState extends State<HomeShell> {
     final tabs = [
       RemoteScreen(
         link: link,
+        sound: widget.model.sound,
         onChoosePc: widget.onChoosePc,
         onPairAgain: widget.onPairAgain,
         onWatchHere: playback == null ? null : (id) => _openPlayer((playback) => playback.watch(id, takeOver: true)),

@@ -7,8 +7,10 @@
     <!-- Scanning the pairing code. -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
-    <!-- flutter_webrtc asks for Bluetooth (for call audio); the remote plays no sound, so don't require the hardware. -->
+    <!-- flutter_webrtc asks for Bluetooth (for call audio); the app makes no calls, so don't require the hardware. -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
+    <!-- Sound on the phone: keeps the processor awake with the screen off (SoundLocks). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- Staying connected to the PC with the app closed (BackgroundLinkService), with its notification. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>

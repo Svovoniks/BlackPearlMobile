@@ -78,6 +78,7 @@ class RemoteState {
     this.mediaId,
     this.queue,
     this.shuffle,
+    this.phoneSound,
     this.audioTracks,
     this.audioTrack,
     this.subtitleTracks,
@@ -113,6 +114,10 @@ class RemoteState {
 
   /// The PC's Shuffle; null from a PC without it.
   final bool? shuffle;
+
+  /// True while a phone plays the PC's sound, which leaves the PC quiet ([muted] is then the PC's own mute from
+  /// before); null from PCs that can't send their sound.
+  final bool? phoneSound;
 
   /// The PC player's Audio and Subtitles menus; null from a PC without tracks on the remote, empty until the video has
   /// opened. Subtitles start with Off.
@@ -170,6 +175,7 @@ class RemoteState {
       mediaId: media && json['mediaId'] is String && (json['mediaId'] as String).isNotEmpty ? json['mediaId'] as String : null,
       queue: media ? QueueRef.fromJson(json['queue']) : null,
       shuffle: json['shuffle'] is bool ? json['shuffle'] as bool : null,
+      phoneSound: json['phoneSound'] is bool ? json['phoneSound'] as bool : null,
       audioTracks: media ? RemoteTrack.listFromJson(json['audioTracks']) : null,
       audioTrack: media ? number('audioTrack') : null,
       subtitleTracks: media ? RemoteTrack.listFromJson(json['subtitleTracks']) : null,
@@ -204,6 +210,7 @@ class RemoteState {
     mediaId: mediaId,
     queue: queue,
     shuffle: shuffle,
+    phoneSound: phoneSound,
     audioTracks: audioTracks,
     audioTrack: audioTrack ?? this.audioTrack,
     subtitleTracks: subtitleTracks,
@@ -237,6 +244,7 @@ extension RemoteStateTracks on RemoteState {
     subtitleTracks: subtitles ?? subtitleTracks,
     subtitleTrack: subtitles != null && subtitles.isEmpty ? null : subtitleTrack,
     canChangeTracks: canChange ?? canChangeTracks,
+    phoneSound: phoneSound,
   );
 }
 

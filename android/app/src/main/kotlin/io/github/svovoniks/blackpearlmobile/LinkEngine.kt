@@ -30,6 +30,7 @@ object LinkEngine {
                         "start" -> result.success(BackgroundLinkService.start(app, notice(call.arguments)))
                         "update" -> result.success(BackgroundLinkService.update(app, notice(call.arguments)))
                         "stop" -> { BackgroundLinkService.stop(app); result.success(null) }
+                        "keepAwake" -> { SoundLocks.set(app, call.arguments == true); result.success(null) }
                         else -> result.notImplemented()
                     }
                 } catch (e: Exception) {

@@ -17,6 +17,7 @@ import 'connection/webrtc_peer.dart';
 import 'debug/loopback.dart';
 import 'debug/preview.dart';
 import 'playback/phone_playback.dart';
+import 'playback/phone_sound.dart';
 import 'playback/picture_in_picture.dart';
 import 'protocol/pair_link.dart';
 import 'storage/app_settings.dart';
@@ -59,12 +60,18 @@ Future<void> main(List<String> args) async {
     String decode(String value) => value.startsWith('{') ? value : utf8.decode(base64.decode(value));
     final paired = args.where((a) => a.startsWith('--paired-pc=')).map((a) => PairedPc.fromJson(jsonDecode(decode(a.substring(12))))).firstOrNull;
     if (paired != null) await store.save([paired]);
+    PhoneSound.debugSoundDevice = args.where((a) => a.startsWith('--sound-device=')).map((a) => a.substring(15)).firstOrNull;
+    final soundLog = args.where((a) => a.startsWith('--sound-log=')).map((a) => a.substring(12)).firstOrNull;
+    if (soundLog != null) {
+      PhoneSound.debugLog = (line) => File(soundLog).writeAsStringSync('${DateTime.now().toIso8601String()} $line\n', mode: FileMode.append);
+    }
   }
   final model = AppModel(
     store: store,
     settings: settings,
     background: BackgroundLink.supported ? BackgroundLink() : null,
     createPlayback: (connection) => PhonePlayback(link: connection),
+    createSound: (connection, settings, background) => PhoneSound(link: connection, settings: settings, keepAwake: background?.keepAwake),
     connect: (target, {onPaired, onPcName}) => RemoteConnection(
       target: target,
       identity: identity,
@@ -81,6 +88,16 @@ Future<void> main(List<String> args) async {
       : null;
   runApp(BlackPearlApp(model: model, updater: updater));
   unawaited(model.load());
+  // Debug builds only: `--sound-on` turns Sound on the phone on once the PC offers it, for measuring it on a PC, whose
+  // Windows build can't be clicked from a script.
+  if (kDebugMode && args.contains('--sound-on')) {
+    Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      final sound = model.sound;
+      if (sound == null || !sound.available || !(model.connection?.status.isConnected ?? false)) return;
+      timer.cancel();
+      unawaited(sound.turnOn());
+    });
+  }
   if (updater != null) unawaited(updater.start());
 }
 

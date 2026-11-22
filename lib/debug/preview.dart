@@ -107,6 +107,13 @@ class FakeRemoteLink extends RemoteLink {
 
   @override
   void tell(String type, Map<String, dynamic> fields) => told.add((type, fields));
+
+  final StreamController<Map<String, dynamic>> _pushes = StreamController.broadcast(sync: true);
+  @override
+  Stream<Map<String, dynamic>> get pushes => _pushes.stream;
+
+  /// A message the stand-in PC sends on its own (`sound`).
+  void push(Map<String, dynamic> message) => _pushes.add(message);
 }
 
 const RemoteState sampleState = RemoteState(

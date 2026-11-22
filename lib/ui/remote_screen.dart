@@ -6,7 +6,9 @@ import 'package:flutter/services.dart';
 
 import '../connection/remote_link.dart';
 import '../connection/transport.dart';
+import '../playback/phone_sound.dart';
 import '../protocol/remote_state.dart';
+import '../storage/app_settings.dart';
 import 'pebbles.dart';
 import 'queue_widgets.dart';
 import 'remote_tracks.dart';
@@ -14,9 +16,12 @@ import 'theme.dart';
 
 /// The Remote tab: what's playing on the PC and everything the player's bars do.
 class RemoteScreen extends StatefulWidget {
-  const RemoteScreen({super.key, required this.link, required this.onChoosePc, required this.onPairAgain, this.onWatchHere});
+  const RemoteScreen({super.key, required this.link, required this.onChoosePc, required this.onPairAgain, this.onWatchHere, this.sound});
 
   final RemoteLink link;
+
+  /// Sound on the phone, for a PC that can send its sound; null leaves the option out.
+  final PhoneSound? sound;
 
   /// Moves the PC's video to the phone: the PC stops and the phone continues it.
   final void Function(String mediaId)? onWatchHere;
@@ -44,13 +49,23 @@ class _RemoteScreenState extends State<RemoteScreen> {
   Timer? _feedbackTimer;
 
   RemoteLink get link => widget.link;
+  PhoneSound? get _sound => widget.sound;
+
+  /// Whether the volume row and the touch pad's slide are the phone's, while it plays the PC's sound.
+  bool get _phoneVolume => _sound?.on ?? false;
 
   @override
   void initState() {
     super.initState();
     link.addListener(_changed);
     link.notice.addListener(_showNotice);
+    _sound?.addListener(_soundChanged);
+    _sound?.notice.addListener(_showSoundNotice);
     _syncTicker();
+  }
+
+  void _soundChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -64,12 +79,20 @@ class _RemoteScreenState extends State<RemoteScreen> {
       _volumeOverride = null;
       _seekTarget = null;
     }
+    if (oldWidget.sound != widget.sound) {
+      oldWidget.sound?.removeListener(_soundChanged);
+      oldWidget.sound?.notice.removeListener(_showSoundNotice);
+      widget.sound?.addListener(_soundChanged);
+      widget.sound?.notice.addListener(_showSoundNotice);
+    }
   }
 
   @override
   void dispose() {
     link.removeListener(_changed);
     link.notice.removeListener(_showNotice);
+    _sound?.removeListener(_soundChanged);
+    _sound?.notice.removeListener(_showSoundNotice);
     _ticker?.cancel();
     _volumeTimer?.cancel();
     _feedbackTimer?.cancel();
@@ -100,6 +123,14 @@ class _RemoteScreenState extends State<RemoteScreen> {
       _ticker?.cancel();
       _ticker = null;
     }
+  }
+
+  void _showSoundNotice() {
+    final text = _sound?.notice.value;
+    if (text == null || !mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(text), duration: const Duration(seconds: 3)));
   }
 
   void _showNotice() {
@@ -136,7 +167,19 @@ class _RemoteScreenState extends State<RemoteScreen> {
     return link.currentPositionMs();
   }
 
-  int get _volume => _volumeOverride ?? _state?.volume ?? 0;
+  int get _volume => _phoneVolume ? _sound!.volume : _volumeOverride ?? _state?.volume ?? 0;
+  bool get _muted => _phoneVolume ? _sound!.muted : _state?.muted ?? false;
+
+  void _toggleMute() {
+    if (_phoneVolume) {
+      unawaited(_sound!.toggleMute());
+    } else {
+      link.command('mute');
+    }
+  }
+
+  /// A PC that can send its sound gets the Sound pill.
+  bool get _soundOffered => _sound != null && link.features.contains('sound');
 
   void _seekBy(int ms) {
     if (!_canPlay) return;
@@ -168,6 +211,10 @@ class _RemoteScreenState extends State<RemoteScreen> {
   void _setVolume(int value, {bool done = false}) {
     if (!_canAdjust) return;
     final clamped = value.clamp(0, 100);
+    if (_phoneVolume) {
+      unawaited(_sound!.setVolume(clamped));
+      return;
+    }
     setState(() {
       _volumeOverride = clamped;
       _volumeChangedAt = DateTime.now();
@@ -286,7 +333,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
             volume: () => _volume,
             onVolume: (value, done) {
               _setVolume(value, done: done);
-              _flash('Volume $value%');
+              _flash(_phoneVolume ? 'Phone volume $value%' : 'Volume $value%');
             },
           ),
         ),
@@ -438,8 +485,24 @@ class _RemoteScreenState extends State<RemoteScreen> {
               onTap: () => link.command('fullscreen'),
             ),
           ),
+          // Where the sound plays: the PC, or this phone (headphones on the couch).
         ],
       ),
+      // Where the sound plays: the PC, or this phone (headphones on the couch). A row of its own, so the pills beside
+      // Stop keep their size on narrow phones.
+      if (_soundOffered) ...[
+        const SizedBox(height: 8),
+        _SoundRow(
+          sound: _sound!,
+          elsewhere: state.phoneSound == true,
+          enabled: _connected,
+          onToggle: () {
+            final here = _sound!.on;
+            unawaited(_sound!.toggle());
+            _flash(here ? 'Sound on the PC' : 'Sound on this phone');
+          },
+        ),
+      ],
       // The PC player's Audio and Subtitles menus, from a PC that sends them.
       if (state.hasTracks) ...[
         const SizedBox(height: 8),
@@ -504,19 +567,20 @@ class _RemoteScreenState extends State<RemoteScreen> {
             width: 44,
             height: 44,
             enabled: _canAdjust,
-            onTap: () => link.command('mute'),
-            semanticLabel: state.muted ? 'Unmute' : 'Mute',
+            onTap: _toggleMute,
+            semanticLabel: _phoneVolume ? (_muted ? 'Unmute the phone' : 'Mute the phone') : (_muted ? 'Unmute' : 'Mute'),
             child: Icon(
-              state.muted ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+              _phoneVolume ? (_muted ? Icons.headset_off_rounded : Icons.headphones_rounded) : (_muted ? Icons.volume_off_rounded : Icons.volume_up_rounded),
               size: 21,
-              color: state.muted ? Palette.danger : null,
+              color: _muted ? Palette.danger : null,
             ),
           ),
           const SizedBox(width: 14),
           Expanded(
             child: _VolumeTrack(
               value: _volume,
-              muted: state.muted,
+              muted: _muted,
+              label: _phoneVolume ? 'Phone volume' : 'PC volume',
               enabled: _canAdjust,
               onChanged: (value) => _setVolume(value),
               onChangeEnd: (value) => _setVolume(value, done: true),
@@ -526,7 +590,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
           SizedBox(
             width: 42,
             child: Text(
-              state.muted ? 'Muted' : '$_volume%',
+              _muted ? 'Muted' : '$_volume%',
               textAlign: TextAlign.right,
               style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
             ),
@@ -920,6 +984,122 @@ class _Pill extends StatelessWidget {
   );
 }
 
+/// Where the PC's sound plays. Off, a wide button that plays it on this phone. On, how it is going and the delay that
+/// lines it up with the picture, for headphones and speakers that take their own time (each step 50 ms, kept for next
+/// time), beside a lit button that gives the sound back to the PC.
+class _SoundRow extends StatelessWidget {
+  const _SoundRow({required this.sound, required this.elsewhere, required this.enabled, required this.onToggle});
+  final PhoneSound sound;
+
+  /// Another phone has the sound now.
+  final bool elsewhere;
+  final bool enabled;
+  final VoidCallback onToggle;
+
+  static String _delay(int ms) {
+    if (ms == 0) return 'Sound delay: none';
+    final seconds = (ms.abs() / 1000).toStringAsFixed(2);
+    return ms > 0 ? 'Sound $seconds s later' : 'Sound $seconds s earlier';
+  }
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: Listenable.merge([sound, sound.settings]),
+    builder: (context, _) {
+      if (!sound.on) {
+        final where = elsewhere ? 'On a phone' : 'On the PC';
+        return Pebble(
+          height: 54,
+          radius: 18,
+          enabled: enabled,
+          onTap: onToggle,
+          semanticLabel: 'Sound, $where. Play it on this phone',
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              const Icon(Icons.speaker_rounded, size: 20),
+              const SizedBox(width: 10),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Sound', style: TextStyle(fontSize: 13, height: 1.15)),
+                  Text(where, style: const TextStyle(fontSize: 11.5, height: 1.2, fontWeight: FontWeight.w500, color: Palette.muted)),
+                ],
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Play on this phone',
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: Palette.muted),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.headphones_rounded, size: 18, color: Palette.muted),
+            ],
+          ),
+        );
+      }
+      final delay = sound.settings.soundDelayMs;
+      final limit = AppSettings.soundDelayLimitMs;
+      return Slab(
+        padding: const EdgeInsets.all(6),
+        radius: 18,
+        child: Row(
+          children: [
+            Pebble(
+              width: 42,
+              height: 42,
+              lit: true,
+              enabled: enabled,
+              onTap: onToggle,
+              semanticLabel: 'Sound, On this phone. Play it on the PC',
+              child: const Icon(Icons.headphones_rounded, size: 21),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(sound.statusText, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, height: 1.2)),
+                  Text(
+                    _delay(delay),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11.5, height: 1.25, color: Palette.muted, fontFeatures: [FontFeature.tabularFigures()]),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 6),
+            Pebble(
+              width: 40,
+              height: 40,
+              enabled: delay > -limit,
+              onTap: () => unawaited(sound.adjustDelay(-50)),
+              semanticLabel: 'Sound earlier',
+              child: const Icon(Icons.remove_rounded, size: 20),
+            ),
+            const SizedBox(width: 6),
+            Pebble(
+              width: 40,
+              height: 40,
+              enabled: delay < limit,
+              onTap: () => unawaited(sound.adjustDelay(50)),
+              semanticLabel: 'Sound later',
+              child: const Icon(Icons.add_rounded, size: 20),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
 /// Audio or Subtitles with the PC's choice under it, opening the tracks sheet. The choice is cut short rather than
 /// shrunk: a language can be long.
 class _TrackPill extends StatelessWidget {
@@ -1029,9 +1209,17 @@ class _Timeline extends StatelessWidget {
 }
 
 class _VolumeTrack extends StatelessWidget {
-  const _VolumeTrack({required this.value, required this.muted, required this.enabled, required this.onChanged, required this.onChangeEnd});
+  const _VolumeTrack({
+    required this.value,
+    required this.muted,
+    this.label = 'PC volume',
+    required this.enabled,
+    required this.onChanged,
+    required this.onChangeEnd,
+  });
   final int value;
   final bool muted;
+  final String label;
   final bool enabled;
   final ValueChanged<int> onChanged;
   final ValueChanged<int> onChangeEnd;
@@ -1042,7 +1230,7 @@ class _VolumeTrack extends StatelessWidget {
     return Semantics(
       slider: true,
       enabled: enabled,
-      label: 'PC volume',
+      label: label,
       value: '$value%',
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
