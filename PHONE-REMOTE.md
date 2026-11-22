@@ -348,7 +348,7 @@ It then sends, unasked, what to play whenever that changes (another video, anoth
 `stream` is the sound of the PC's current video in its current audio track, as AAC in MPEG-TS pieces of `segmentMs`,
 read on `media-v1` as `stream/<streamId>/<piece>` like a conversion, and on the video's own clock (piece 0 starts at
 0:00). It is null while there is nothing to play, with `why` saying why when it isn't simply that nothing plays
-(`"The PC's audio is turned off for this video."`). `{"type":"sound","on":false,"why":"…"}` means the PC took the sound
+(`"The PC's audio is turned off for this video."`, `"This video has no sound."`). `{"type":"sound","on":false,"why":"…"}` means the PC took the sound
 back (its Mute, or it couldn't convert the sound); the phone stops and says why.
 
 The phone follows the picture by asking where the player is, about once a second:
@@ -359,8 +359,9 @@ the way. `source` names the video, as `stream.source` does: an answer about anot
 The phone plays a few percent faster or slower to close a small gap and seeks for one over 200 ms; its user can move
 the sound later or earlier for headphones that take their own time.
 
-A phone that stops asking for 10 seconds, or whose link stays down for 15, is taken to be gone, and the PC plays its
-sound again. A phone that comes back asks with `listen` again and keeps its stream.
+A phone that stops asking for 10 seconds (its link dropped included) is taken to be gone, and the PC plays its sound
+again. A phone that comes back asks with `listen` again. Joining or hosting a room gives the sound back to the PC
+(`{"type":"sound","on":false,"why":"Sound on the phone isn't available in a room."}`).
 
 ## While BlackPearl is closed
 

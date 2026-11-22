@@ -12,6 +12,7 @@ import android.os.PowerManager
 object SoundLocks {
     private var wake: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
+    private var lowLatency: WifiManager.WifiLock? = null
 
     @Suppress("DEPRECATION")
     fun set(context: Context, hold: Boolean) {
@@ -20,15 +21,22 @@ object SoundLocks {
                 val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
                 wake = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BlackPearl:sound").apply { setReferenceCounted(false); acquire() }
             }
+            val manager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            // High performance keeps Wi-Fi out of power saving with the screen off; it is deprecated from Android 14,
+            // whose low latency mode applies only while the app shows. Both are held: each covers what the other doesn't.
             if (wifi == null) {
-                val manager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
                 wifi = manager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "BlackPearl:sound").apply { setReferenceCounted(false); acquire() }
+            }
+            if (lowLatency == null && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                lowLatency = manager.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "BlackPearl:sound-low-latency").apply { setReferenceCounted(false); acquire() }
             }
         } else {
             wake?.let { if (it.isHeld) it.release() }
             wake = null
             wifi?.let { if (it.isHeld) it.release() }
             wifi = null
+            lowLatency?.let { if (it.isHeld) it.release() }
+            lowLatency = null
         }
     }
 }

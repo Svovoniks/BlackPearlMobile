@@ -106,6 +106,23 @@ void main() {
       sound.dispose();
     });
 
+    test('a link that stops turns the sound off and lets go of the locks; one that is retrying keeps it', () async {
+      final link = pc();
+      link.answer = (type, fields) async => {'type': type};
+      final held = <bool>[];
+      final sound = PhoneSound(link: link, settings: AppSettings(MemorySettingsStore()), keepAwake: held.add);
+      await sound.turnOn();
+      link.status = LinkStatus(LinkPhase.failed, retryAt: DateTime.now().add(const Duration(seconds: 5)));
+      await pumpEventQueue();
+      expect(sound.on, isTrue, reason: 'a dropped link that is coming back keeps the sound');
+      link.status = const LinkStatus(LinkPhase.idle);
+      await pumpEventQueue();
+      expect(sound.on, isFalse);
+      expect(held, [true, false]);
+      expect(sound.notice.value, contains('link to the PC stopped'));
+      sound.dispose();
+    });
+
     test("a PC that refuses says why, and nothing stays on", () async {
       final link = pc();
       link.answer = (type, fields) =>
@@ -119,8 +136,8 @@ void main() {
   });
 
   group('on the Remote tab', () {
-    Future<(FakeRemoteLink, PhoneSound)> pump(WidgetTester tester, {Set<String> offered = const {'sound'}}) async {
-      tester.view.physicalSize = const Size(1080, 2340);
+    Future<(FakeRemoteLink, PhoneSound)> pump(WidgetTester tester, {Set<String> offered = const {'sound'}, double width = 1080}) async {
+      tester.view.physicalSize = Size(width, 2340);
       tester.view.devicePixelRatio = 2.75;
       addTearDown(tester.view.reset);
       final link = FakeRemoteLink(
@@ -179,6 +196,23 @@ void main() {
       await tester.pump(const Duration(milliseconds: 950));
       expect(sound.on, isFalse);
       expect(find.bySemanticsLabel('PC volume'), findsOneWidget);
+    });
+
+    testWidgets('on a 320 dp phone the Sound row leaves Stop and Fullscreen as large as without it', (tester) async {
+      double height(String text) => tester.getRect(find.text(text)).height;
+      await pump(tester, offered: const {}, width: 320 * 2.75);
+      final fullscreen = height('Fullscreen'), stop = height('Stop');
+      final (_, sound) = await pump(tester, width: 320 * 2.75);
+      expect(height('Fullscreen'), fullscreen, reason: 'the Sound option takes none of their room');
+      expect(height('Stop'), stop);
+      await tester.tap(find.bySemanticsLabel(RegExp('^Sound, On the PC')));
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(sound.on, isTrue);
+      expect(tester.takeException(), isNull);
+      expect(height('Fullscreen'), fullscreen);
+      await tester.tap(find.bySemanticsLabel(RegExp('^Sound, On this phone')));
+      await tester.pump(const Duration(milliseconds: 950));
+      expect(sound.on, isFalse);
     });
 
     testWidgets("another phone's sound shows, and this one can take it", (tester) async {

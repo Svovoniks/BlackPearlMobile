@@ -18,11 +18,12 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   and picking one there is a click in the PC's menu. In a room where only whoever plays the video picks tracks, the
   sheet shows them without changing them. The artwork area is a touch pad: tap to play or pause, swipe sideways to skip
   10 s, slide up and down for volume.
-  **Sound** (On the PC / On this phone) plays the PC's sound on the phone while the picture stays on the PC, for
+  **Sound**, a row of its own under Stop and Fullscreen, plays the PC's sound on the phone while the picture stays on the PC, for
   headphones on the couch: the PC goes quiet, the phone keeps itself in step with the picture (a little faster or
   slower, or a seek for a larger gap), the volume row and touch pad set the phone's volume, and − and + move the
   sound 50 ms earlier or later for headphones that lag. It keeps playing with the screen off (the background service
-  runs while it plays, even with Stay connected in the background off). The PC's Mute takes it back. Not in rooms.
+  runs while it plays, even with Stay connected in the background off; Disconnect stops it). The PC's Mute, or joining a
+  room, takes it back.
   When the PC plays a video of its own library, **Watch here** moves it to the phone: the PC stops and the phone carries
   on from the same moment.
 - **Library.** The PC's Home (Continue watching, suggestions for each kind, a random pick), films, shows and anime as

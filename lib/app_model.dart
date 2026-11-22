@@ -146,7 +146,7 @@ class AppModel extends ChangeNotifier {
     _connection = connection;
     _playback = createPlayback?.call(connection)?..awayQuality = settings.awayQuality;
     _playback?.addListener(_playbackChanged);
-    _sound = createSound?.call(connection, settings, background)?..addListener(_syncBackground);
+    _sound = createSound?.call(connection, settings, background)?..addListener(_soundChanged);
     connection.addListener(_syncBackground);
     connection.start();
     _syncBackground();
@@ -155,7 +155,7 @@ class AppModel extends ChangeNotifier {
   void _disposeConnection() {
     _connection?.removeListener(_syncBackground);
     // Before the connection goes: it tells the PC to play its sound again.
-    _sound?.removeListener(_syncBackground);
+    _sound?.removeListener(_soundChanged);
     _sound?.dispose();
     _sound = null;
     _playback?.removeListener(_playbackChanged);
@@ -177,6 +177,12 @@ class AppModel extends ChangeNotifier {
       _connection != null &&
       _connection!.running &&
       !_connection!.target.isPairing;
+
+  void _soundChanged() {
+    _syncBackground();
+    // The sound kept the link up in the background with the setting off; once it stops, the link goes as it would have.
+    if (!_foreground && !settings.backgroundLink && !(_sound?.on ?? false) && _backgroundTimer == null) paused();
+  }
 
   // Watching a video on the phone plays its own sound: the PC's goes back to the PC.
   void _playbackChanged() {

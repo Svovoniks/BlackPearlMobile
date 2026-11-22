@@ -181,24 +181,6 @@ class _RemoteScreenState extends State<RemoteScreen> {
   /// A PC that can send its sound gets the Sound pill.
   bool get _soundOffered => _sound != null && link.features.contains('sound');
 
-  Widget _soundPill(RemoteState state) {
-    final sound = _sound!;
-    final here = sound.on;
-    // Another phone has it: this one can take it.
-    final elsewhere = !here && state.phoneSound == true;
-    return _Pill(
-      label: 'Sound',
-      value: here ? 'On this phone' : (elsewhere ? 'On a phone' : 'On the PC'),
-      icon: here ? Icons.headphones_rounded : Icons.speaker_rounded,
-      active: here,
-      enabled: _connected,
-      onTap: () {
-        unawaited(sound.toggle());
-        _flash(here ? 'Sound on the PC' : 'Sound on this phone');
-      },
-    );
-  }
-
   void _seekBy(int ms) {
     if (!_canPlay) return;
     // The guess is made before sending: a state that answers the command must replace it, not add to it.
@@ -504,10 +486,23 @@ class _RemoteScreenState extends State<RemoteScreen> {
             ),
           ),
           // Where the sound plays: the PC, or this phone (headphones on the couch).
-          if (_soundOffered) ...[const SizedBox(width: 8), Expanded(child: _soundPill(state))],
         ],
       ),
-      if (_soundOffered && _sound!.on) ...[const SizedBox(height: 8), _SoundBar(sound: _sound!)],
+      // Where the sound plays: the PC, or this phone (headphones on the couch). A row of its own, so the pills beside
+      // Stop keep their size on narrow phones.
+      if (_soundOffered) ...[
+        const SizedBox(height: 8),
+        _SoundRow(
+          sound: _sound!,
+          elsewhere: state.phoneSound == true,
+          enabled: _connected,
+          onToggle: () {
+            final here = _sound!.on;
+            unawaited(_sound!.toggle());
+            _flash(here ? 'Sound on the PC' : 'Sound on this phone');
+          },
+        ),
+      ],
       // The PC player's Audio and Subtitles menus, from a PC that sends them.
       if (state.hasTracks) ...[
         const SizedBox(height: 8),
@@ -989,11 +984,17 @@ class _Pill extends StatelessWidget {
   );
 }
 
-/// While the phone plays the PC's sound: how it is going, and the delay that lines it up with the picture, for headphones
-/// and speakers that take their own time. Each step is 50 ms; the delay is kept for next time.
-class _SoundBar extends StatelessWidget {
-  const _SoundBar({required this.sound});
+/// Where the PC's sound plays. Off, a wide button that plays it on this phone. On, how it is going and the delay that
+/// lines it up with the picture, for headphones and speakers that take their own time (each step 50 ms, kept for next
+/// time), beside a lit button that gives the sound back to the PC.
+class _SoundRow extends StatelessWidget {
+  const _SoundRow({required this.sound, required this.elsewhere, required this.enabled, required this.onToggle});
   final PhoneSound sound;
+
+  /// Another phone has the sound now.
+  final bool elsewhere;
+  final bool enabled;
+  final VoidCallback onToggle;
 
   static String _delay(int ms) {
     if (ms == 0) return 'Sound delay: none';
@@ -1005,15 +1006,59 @@ class _SoundBar extends StatelessWidget {
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: Listenable.merge([sound, sound.settings]),
     builder: (context, _) {
+      if (!sound.on) {
+        final where = elsewhere ? 'On a phone' : 'On the PC';
+        return Pebble(
+          height: 54,
+          radius: 18,
+          enabled: enabled,
+          onTap: onToggle,
+          semanticLabel: 'Sound, $where. Play it on this phone',
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              const Icon(Icons.speaker_rounded, size: 20),
+              const SizedBox(width: 10),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Sound', style: TextStyle(fontSize: 13, height: 1.15)),
+                  Text(where, style: const TextStyle(fontSize: 11.5, height: 1.2, fontWeight: FontWeight.w500, color: Palette.muted)),
+                ],
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Text(
+                  'Play on this phone',
+                  textAlign: TextAlign.right,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 13, color: Palette.muted),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(Icons.headphones_rounded, size: 18, color: Palette.muted),
+            ],
+          ),
+        );
+      }
       final delay = sound.settings.soundDelayMs;
       final limit = AppSettings.soundDelayLimitMs;
-      final waiting = sound.phase != SoundPhase.playing;
       return Slab(
-        padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+        padding: const EdgeInsets.all(6),
         radius: 18,
         child: Row(
           children: [
-            Icon(Icons.headphones_rounded, size: 18, color: waiting ? Palette.muted : Palette.accent),
+            Pebble(
+              width: 42,
+              height: 42,
+              lit: true,
+              enabled: enabled,
+              onTap: onToggle,
+              semanticLabel: 'Sound, On this phone. Play it on the PC',
+              child: const Icon(Icons.headphones_rounded, size: 21),
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -1024,6 +1069,7 @@ class _SoundBar extends StatelessWidget {
                   Text(
                     _delay(delay),
                     maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontSize: 11.5, height: 1.25, color: Palette.muted, fontFeatures: [FontFeature.tabularFigures()]),
                   ),
                 ],

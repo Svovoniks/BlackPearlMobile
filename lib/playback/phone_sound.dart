@@ -236,6 +236,10 @@ class PhoneSound extends ChangeNotifier {
   Future<void> turnOff({String? message, bool tell = true}) async {
     final was = _wanted;
     _wanted = false;
+    // Told first, before anything here waits: the connection may be disposed right after (another PC chosen).
+    if (was && tell && link.status.isConnected) {
+      unawaited(link.ask('listen', {'on': false}, timeout: const Duration(seconds: 5)).then((_) {}, onError: (Object _) {}));
+    }
     _ticker?.cancel();
     _ticker = null;
     _clockTimer?.cancel();
@@ -247,12 +251,9 @@ class PhoneSound extends ChangeNotifier {
       notice.value = null;
       notice.value = message;
     }
-    await _closeStream();
     if (was) keepAwake?.call(false);
+    await _closeStream();
     _setPhase(SoundPhase.off);
-    if (was && tell && link.status.isConnected) {
-      unawaited(link.ask('listen', {'on': false}, timeout: const Duration(seconds: 5)).then((_) {}, onError: (Object _) {}));
-    }
   }
 
   Future<void> toggle() => _wanted ? turnOff() : turnOn();
@@ -312,7 +313,15 @@ class PhoneSound extends ChangeNotifier {
   }
 
   void _linkChanged() {
-    final connected = link.status.isConnected;
+    final status = link.status;
+    // The link stopped (Disconnect, or the app closed without the background service) or gave up on a failure only
+    // the user can fix: the sound stops here, and the phone lets go of its locks. A link that is retrying keeps it.
+    if (_wanted && (status.phase == LinkPhase.idle || status.phase == LinkPhase.failed && status.retryAt == null)) {
+      unawaited(turnOff(message: 'The link to the PC stopped, so the sound is back on the PC.', tell: false));
+      _wasConnected = false;
+      return;
+    }
+    final connected = status.isConnected;
     if (connected && !_wasConnected && _wanted) {
       // Back after a drop: the PC kept the sound for this phone a while; asking again keeps it, or starts it again.
       unawaited(_listen());
@@ -370,6 +379,10 @@ class PhoneSound extends ChangeNotifier {
     _message = null;
     _setPhase(SoundPhase.loading);
     final address = await proxy.open(stream);
+    if (opening != _opening || !_wanted || _stream != stream) {
+      proxy.close(address);
+      return;
+    }
     _address = address;
     // A fresh look at where the PC is, to start there: the first answers about a new video can still be about the last.
     for (var tries = 0; tries < 4 && _clock.source != stream.id; tries++) {
@@ -455,6 +468,8 @@ class PhoneSound extends ChangeNotifier {
       }
       // Just opened or seeked: it settles first.
       if (now < _holdUntil) return;
+      // The sound ended before the PC's video did (credits without sound, or a shorter track): nothing to catch up to.
+      if (player.state.completed && target >= stream.durationMs - 1000) return;
       if (!player.state.playing) {
         // Playing again with the PC: straight to where the picture is, rather than catching up from where it paused.
         await _seek(player, target + _seekLeadMs);
