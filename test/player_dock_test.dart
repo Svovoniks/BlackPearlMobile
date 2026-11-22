@@ -17,8 +17,16 @@ void main() {
     while (!Directory('${dir.path}/material_fonts').existsSync() && dir.parent.path != dir.path) {
       dir = dir.parent;
     }
-    final fonts = '${dir.path}/material_fonts';
-    Future<ByteData> font(String name) async => ByteData.sublistView(await File('$fonts/$name').readAsBytes());
+    // Names differ in case between platforms' SDK downloads (Roboto-Regular.ttf, roboto-regular.ttf).
+    final fonts = Directory('${dir.path}/material_fonts').listSync().whereType<File>().toList();
+    Future<ByteData> font(String name) async {
+      final file = fonts.firstWhere(
+        (f) => f.uri.pathSegments.last.toLowerCase() == name,
+        orElse: () => throw StateError('No $name among ${fonts.map((f) => f.uri.pathSegments.last).join(', ')}'),
+      );
+      return ByteData.sublistView(await file.readAsBytes());
+    }
+
     await (FontLoader('Roboto')
           ..addFont(font('roboto-regular.ttf'))
           ..addFont(font('roboto-medium.ttf')))
