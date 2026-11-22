@@ -44,6 +44,10 @@ class AppSettings extends ChangeNotifier {
   String _awayQuality = 'auto';
   bool _askedNotifications = false;
   String _loopMode = 'off';
+  bool _shuffle = false;
+
+  /// The player's Shuffle, as on the PC.
+  bool get shuffle => _shuffle;
 
   static const loopModes = ['off', 'all', 'one'];
 
@@ -68,6 +72,7 @@ class AppSettings extends ChangeNotifier {
       _askedNotifications = await _store.readBool('askedNotifications') ?? false;
       final loop = await _store.readString('loopMode');
       _loopMode = loopModes.contains(loop) ? loop! : 'off';
+      _shuffle = await _store.readBool('shuffle') ?? false;
     } catch (_) {
       // Unreadable preferences leave the defaults.
     }
@@ -93,6 +98,13 @@ class AppSettings extends ChangeNotifier {
     _loopMode = value;
     notifyListeners();
     await _quietly(_store.writeString('loopMode', value));
+  }
+
+  Future<void> setShuffle(bool value) async {
+    if (value == _shuffle) return;
+    _shuffle = value;
+    notifyListeners();
+    await _quietly(_store.writeBool('shuffle', value));
   }
 
   Future<void> markAskedNotifications() async {

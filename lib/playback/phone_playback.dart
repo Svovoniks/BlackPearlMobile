@@ -7,6 +7,7 @@ import '../connection/remote_link.dart';
 import '../connection/transport.dart';
 import '../protocol/library.dart';
 import 'media_proxy.dart';
+import 'shuffle_order.dart';
 import 'track_languages.dart';
 
 /// What the phone's player does: what it opened, and how it's going.
@@ -192,6 +193,7 @@ class PhonePlayback extends ChangeNotifier {
       _listSteps = null;
       _followed = info.queue;
     }
+    _ensureShuffleList();
     _ended = false;
     _lastReported = -1;
     final start = startAt ?? info.positionMs;
@@ -430,9 +432,126 @@ class PhonePlayback extends ChangeNotifier {
 
   // ---- Episodes, Loop and up next ----
 
-  EpisodeStep? get previousEpisode => _listSteps != null ? _listSteps!.previous : _stream?.previous;
-  EpisodeStep? get nextEpisode => _listSteps != null ? _listSteps!.next : _stream?.next;
-  EpisodeStep? get _firstEpisode => _listSteps != null ? _listSteps!.first : _stream?.first;
+  EpisodeStep? get previousEpisode => _shuffleReady ? _shuffledStep(forward: false) : _listSteps != null ? _listSteps!.previous : _stream?.previous;
+  EpisodeStep? get nextEpisode => _shuffleReady ? _shuffledStep(forward: true) : _listSteps != null ? _listSteps!.next : _stream?.next;
+  // Shuffle starts a new round with Loop all instead of going back to the first.
+  EpisodeStep? get _firstEpisode => _shuffleReady ? null : _listSteps != null ? _listSteps!.first : _stream?.first;
+
+  // ---- Shuffle ----
+
+  bool _shuffle = false;
+
+  /// Shuffle, as on the PC: Next, Previous and up next follow a random order of the show's regular episodes, or of the
+  /// queue's videos, each once; Loop all then starts a new round. Needs a PC that lists its shows and queues.
+  bool get shuffle => _shuffle;
+  set shuffle(bool value) {
+    if (value == _shuffle) return;
+    _shuffle = value;
+    _shuffleOrder.reset();
+    // Turned on again, it asks for a list the PC couldn't give before.
+    _shuffleFailed = null;
+    _ensureShuffleList();
+    notifyListeners();
+  }
+
+  /// Whether the PC can list what shuffle picks from (BrowseRequest.episodesOf and queue).
+  bool get canShuffle => link.features.contains('queues');
+  bool get _shuffling => _shuffle && canShuffle;
+
+  // Shuffle steps once it has its list, or while it waits for one; a list the PC couldn't give leaves the usual order.
+  bool get _shuffleReady => _shuffling && _shuffleFailed != _wantedShuffleList;
+  String? _shuffleFailed;
+
+  /// Whether the video is part of a show or a queue, so Previous and Next have somewhere to go.
+  bool get inList => _followed != null || _stream?.previous != null || _stream?.next != null || _stream?.first != null;
+
+  final ShuffleOrder _shuffleOrder = ShuffleOrder();
+  // The list shuffle picks from: a queue's videos, or a show's episodes, and which one it is.
+  ({String scope, String? queueId, List<LibraryEntry> entries})? _shuffleList;
+  String? _shuffleLoading;
+
+  /// Whether shuffle still waits for the list it picks from.
+  bool get shuffleLoading => _shuffling && _shuffleLoading != null;
+
+  // The list the playing video shuffles in: the queue it plays from, or its show's episodes.
+  String? get _wantedShuffleList {
+    final stream = _stream;
+    if (stream == null) return null;
+    final followed = _followed;
+    if (followed != null) return 'queue:${followed.id}';
+    final list = _shuffleList;
+    // Another episode of the show already listed keeps the list, and the order.
+    if (list != null && list.queueId == null && list.entries.any((e) => e.id == stream.id)) return list.scope;
+    return 'episodes:${stream.id}';
+  }
+
+  void _ensureShuffleList() {
+    if (!_shuffling || !inList) return;
+    final wanted = _wantedShuffleList;
+    if (wanted == null || wanted == _shuffleList?.scope || wanted == _shuffleLoading || wanted == _shuffleFailed) return;
+    unawaited(_loadShuffleList(wanted));
+  }
+
+  Future<void> _loadShuffleList(String wanted) async {
+    final stream = _stream;
+    if (stream == null) return;
+    _shuffleLoading = wanted;
+    final queueId = _followed?.id;
+    var request = queueId != null ? BrowseRequest(queue: queueId) : BrowseRequest(episodesOf: stream.id);
+    final entries = <LibraryEntry>[];
+    try {
+      // Every page: a long show is listed 40 episodes at a time.
+      for (var pages = 0; pages < 200; pages++) {
+        final page = LibraryPage.fromJson(await link.ask('browse', request.toJson()));
+        entries.addAll(page.entries);
+        if (!page.hasMore) break;
+        request = request.nextPage();
+      }
+    } catch (_) {
+      // Without the list, Next follows the usual order.
+      if (_shuffleLoading == wanted) {
+        _shuffleLoading = null;
+        _shuffleFailed = wanted;
+      }
+      notifyListeners();
+      return;
+    }
+    if (_shuffleLoading != wanted) return;
+    _shuffleLoading = null;
+    // A show's list is named by its first episode, so every episode of it shares one order.
+    final scope = queueId != null ? wanted : 'show:${entries.isEmpty ? stream.id : entries.first.id}';
+    _shuffleList = (scope: scope, queueId: queueId, entries: entries);
+    notifyListeners();
+  }
+
+  // The step shuffle takes from the playing video: a random one this round hasn't played, or back to the one before.
+  EpisodeStep? _shuffledStep({required bool forward}) {
+    final stream = _stream;
+    final list = _shuffleList;
+    if (stream == null || list == null || _shuffleLoading != null) return null;
+    if ((list.queueId != null) != (_followed != null)) return null;
+    return shuffledStep(_shuffleOrder, scope: list.scope, entries: list.entries, inQueue: list.queueId != null, current: stream.id,
+        place: stream.queue?.index, loop: loopMode == 'all', forward: forward);
+  }
+
+  /// Shuffle's step from [current] in [entries], a queue's videos or a show's episodes: forward, a random one this round
+  /// hasn't played; back, the one that played before. A show shuffles its regular episodes; specials only when there is
+  /// nothing else.
+  @visibleForTesting
+  static EpisodeStep? shuffledStep(ShuffleOrder order, {required String scope, required List<LibraryEntry> entries, required bool inQueue,
+      required String current, int? place, required bool loop, required bool forward}) {
+    var pool = entries.where((e) => e.playable || e.id == current).toList();
+    if (!inQueue) {
+      final regular = pool.where((e) => e.season != 0 || e.id == current).toList();
+      if (regular.any((e) => e.id != current)) pool = regular;
+    }
+    final ids = [for (final e in pool) e.id];
+    final id = forward ? order.next(scope, current, ids, loop: loop) : order.previous(scope, current, ids);
+    if (id == null) return null;
+    // A video queued twice plays from a place other than the current one.
+    final entry = pool.firstWhere((e) => e.id == id && e.index != place, orElse: () => pool.firstWhere((e) => e.id == id));
+    return EpisodeStep.ofEntry(entry, inQueue: inQueue);
+  }
 
   // What Previous, Next and up next follow: the queue played from (null: the show's episodes), and, after the player
   // switched lists, the steps worked out from that list here.
@@ -450,6 +569,7 @@ class PhonePlayback extends ChangeNotifier {
     if (stream == null) return;
     _followed = queue;
     _listSteps = stepsIn(entries, stream.id, queue == null ? null : (queue.id == stream.queue?.id ? stream.queue?.index : null), inQueue: queue != null);
+    _ensureShuffleList();
     notifyListeners();
   }
 
@@ -506,7 +626,13 @@ class PhonePlayback extends ChangeNotifier {
       await player.play();
       return;
     }
-    await playEpisode(previousEpisode!);
+    final back = previousEpisode!;
+    // Already on its way: a second press waits for it, and leaves its step back marked.
+    if (pending.value?.episode?.id == back.id) return;
+    // Back with Shuffle retraces what played.
+    if (_shuffleReady) _shuffleOrder.goingBack(back.id);
+    // Refused: a later pick of that video by hand is a new step, not this one back.
+    if (!await playEpisode(back)) _shuffleOrder.goingBack(null);
   }
 
   /// Next: the episode after this one.
@@ -794,6 +920,16 @@ class PhonePlayback extends ChangeNotifier {
 
   @visibleForTesting
   bool get resumesOnReturn => _resumeOnReturn;
+
+  /// Debug previews and tests only: shows [player], already opening a video of its own (or none), as this viewing's
+  /// [stream].
+  void debugShow(Player? player, StreamInfo stream) {
+    _player = player;
+    if (player != null) _listen(player);
+    _stream = stream;
+    _phase = PhonePlaybackPhase.playing;
+    notifyListeners();
+  }
   @visibleForTesting
   bool get inBackground => _inBackground;
 

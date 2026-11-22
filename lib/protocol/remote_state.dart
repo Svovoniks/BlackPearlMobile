@@ -48,6 +48,7 @@ class RemoteState {
     this.room,
     this.mediaId,
     this.queue,
+    this.shuffle,
   });
 
   /// False when nothing is loaded in the player; the playback fields are then meaningless.
@@ -75,6 +76,9 @@ class RemoteState {
 
   /// The saved queue the PC plays from and the video's place in it, or null.
   final QueueRef? queue;
+
+  /// The PC's Shuffle; null from a PC without it.
+  final bool? shuffle;
 
   static const RemoteState nothing = RemoteState(media: false);
 
@@ -116,6 +120,7 @@ class RemoteState {
       room: room,
       mediaId: media && json['mediaId'] is String && (json['mediaId'] as String).isNotEmpty ? json['mediaId'] as String : null,
       queue: media ? QueueRef.fromJson(json['queue']) : null,
+      shuffle: json['shuffle'] is bool ? json['shuffle'] as bool : null,
     );
   }
 
@@ -144,6 +149,7 @@ class RemoteState {
     room: room,
     mediaId: mediaId,
     queue: queue,
+    shuffle: shuffle,
   );
 }
 

@@ -113,7 +113,7 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 ### Opening
 
 1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>"}`
-2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues"]}`.
+2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","shuffle"]}`.
    `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"); a PC from
    before them sends none.
    If the PC can't speak the phone's protocol it sends `{"type":"error","code":"protocol","message":"…"}` saying which
@@ -138,6 +138,7 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
  "positionMs":1122000, "durationMs":2830000,
  "volume":64, "muted":false,
  "loop":"off|all|one",
+ "shuffle":false,             // PCs whose welcome lists `shuffle`; absent from older ones
  "fullscreen":false,
  "hasPrevious":true, "hasNext":true,
  "canControl":true,            // false in a room where only whoever plays the video may control it
@@ -168,6 +169,7 @@ paired link) and `protocol`.
 | `volume` | 0–100 | the volume slider |
 | `mute` | | M |
 | `loop` | | L (off → all → one) |
+| `shuffle` | | R (Shuffle on or off; PCs whose welcome lists `shuffle`) |
 | `fullscreen` | | F |
 
 Commands go through the same code as the PC's keys and buttons, so a room's shared-controls rule applies to them
