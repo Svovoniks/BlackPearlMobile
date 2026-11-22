@@ -125,6 +125,43 @@ void main() {
       playback.dispose();
     });
 
+    test('a refused switch keeps the track playing, and one switch waits for the other', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => converted('480p', 0);
+      await playback.watch('film', quality: '480p');
+      pc.answer = (type, fields) => Future.error(const RemoteRequestException('busy', 'The PC is busy.'));
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(playback.pending.value, isNull);
+      expect(playback.notice.value, 'The PC is busy.');
+      expect((await playback.selectedTracks()).audio, '1', reason: 'the refused track was never played');
+      pc.answer = (type, fields) async => converted('720p', 0);
+      await playback.changeQuality('720p');
+      expect(pc.asked.last.$2, containsPair('audio', 0));
+
+      // While another quality is on its way, an audio pick says to wait, and the other way round.
+      final quality = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => quality.future;
+      final toQuality = playback.changeQuality('480p');
+      await pumpEventQueue();
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(playback.notice.value, 'Wait for the switch to 480p to finish, then pick the audio.');
+      quality.complete(converted('480p', 0));
+      await toQuality;
+      final audio = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => audio.future;
+      final toAudio = playback.chooseAudio(playback.audioTracks[1]);
+      await pumpEventQueue();
+      final asked = pc.asked.length;
+      await playback.changeQuality('720p');
+      expect(pc.asked, hasLength(asked));
+      expect(playback.notice.value, 'Wait for the switch to English audio to finish, then pick the quality.');
+      audio.complete(converted('480p', 1));
+      await toAudio;
+      expect((await playback.selectedTracks()).audio, '2');
+      playback.dispose();
+    });
+
     test('a new video starts with the PC\'s preferences again', () async {
       final pc = link();
       final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());

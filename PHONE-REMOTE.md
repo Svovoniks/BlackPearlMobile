@@ -257,7 +257,8 @@ or for a conversion (H.264 and AAC in MPEG-TS pieces of `segmentMs`, the last on
 ```
 
 A conversion carries one of the file's audio tracks. `audioTracks` lists them all in the file's order, with the
-language tag and title the file gives them (null when it gives none), and `audioTrack` is the `index` of the one the
+language tag and title the file gives them (null when it gives none). A track whose file names no language (Matroska
+players call it English) has the language the PC identified while it played, as a two-letter code, or null. `audioTrack` is the `index` of the one the
 conversion carries, or null for a video with no sound. `watch` takes `"audio":<index>` to convert with that track, as
 the phone asks when its Audio menu changes the track of a conversion, or keeps it for another quality. Without one,
 or with an index the file doesn't have, the PC starts with the track its own player would: the first language of

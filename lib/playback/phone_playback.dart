@@ -271,8 +271,12 @@ class PhonePlayback extends ChangeNotifier {
   /// Opens the same video again at another quality, from where it is now.
   Future<void> changeQuality(String quality) async {
     final current = _stream;
+    if (current == null || pending.value?.quality == quality || pending.value?.episode != null) return;
     // Another audio track on its way finishes first: it is converted at the quality playing now.
-    if (current == null || pending.value?.quality == quality || pending.value?.episode != null || pending.value?.audio != null) return;
+    if (pending.value?.audio != null) {
+      _say('Wait for the switch to ${pending.value!.audioName} to finish, then pick the quality.');
+      return;
+    }
     if (pending.value == null && quality == current.quality) return;
     final player = _player;
     // Where it stopped while stalled; the opening position until the player has said where it is.
@@ -788,14 +792,22 @@ class PhonePlayback extends ChangeNotifier {
     if (_convertedAudio != null && stream != null) {
       final index = int.tryParse(track.id);
       final pendingAudio = pending.value?.audio;
-      if (index == null || pending.value?.episode != null || pending.value?.quality != null) return;
+      if (index == null || pending.value?.episode != null) return;
+      if (pending.value?.quality case final quality?) {
+        _say('Wait for the switch to ${qualityLabel(quality)} to finish, then pick the audio.');
+        return;
+      }
       if (pendingAudio == track.id || pendingAudio == null && index - 1 == stream.audioTrack) return;
-      _chosenAudio = (language: TrackLanguages.languageOf(track.language, track.title), title: track.title);
       final labels = audioLabels(audioTracks);
       final at = audioTracks.indexWhere((t) => t.id == track.id);
       _setPending(PendingSwitch.audio(track.id, at < 0 ? 'another audio track' : '${labels[at].name} audio'));
       final position = _stalledAt ?? _positionOf(player);
-      if (!await watch(stream.id, quality: stream.quality, startAt: position, audio: index - 1) && pending.value?.audio == track.id) _setPending(null);
+      if (await watch(stream.id, quality: stream.quality, startAt: position, audio: index - 1)) {
+        // Kept for the file itself, should the user switch to it; a refused switch leaves the track playing as it was.
+        _chosenAudio = (language: TrackLanguages.languageOf(track.language, track.title), title: track.title);
+      } else if (pending.value?.audio == track.id) {
+        _setPending(null);
+      }
       return;
     }
     _chosenAudio = (language: TrackLanguages.languageOf(track.language, track.title), title: track.title);
@@ -823,6 +835,8 @@ class PhonePlayback extends ChangeNotifier {
     final audio = audioChoices(player.state.tracks);
     if (audio.isEmpty) return;
     _tracksApplied = true;
+    // A conversion carries the one track the PC converted with, and no subtitles: there is nothing to pick here.
+    if (_convertedAudio != null) return;
     final selected = await selectedTracks();
     _defaultSubtitle = selected.subtitle;
     String? language(AudioTrack t) => TrackLanguages.languageOf(t.language, t.title);
