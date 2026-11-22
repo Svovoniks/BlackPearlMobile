@@ -274,7 +274,7 @@ class PhonePlayback extends ChangeNotifier {
     if (current == null || pending.value?.quality == quality || pending.value?.episode != null) return;
     // Another audio track on its way finishes first: it is converted at the quality playing now.
     if (pending.value?.audio != null) {
-      _say('Wait for the switch to ${pending.value!.audioName} to finish, then pick the quality.');
+      if (quality != current.quality) _say('Wait for the switch to ${pending.value!.audioName} to finish, then pick the quality.');
       return;
     }
     if (pending.value == null && quality == current.quality) return;
@@ -727,7 +727,8 @@ class PhonePlayback extends ChangeNotifier {
 
   // What the user chose for this video, kept across another quality or a recovery of it: a language and title for
   // audio, and for subtitles also "off".
-  ({String? language, String? title})? _chosenAudio;
+  // [index]: the track's place among the file's audio tracks, from 0, as the PC and libmpv both order them.
+  ({String? language, String? title, int? index})? _chosenAudio;
   ({bool off, String? language, String? title})? _chosenSubtitle;
   bool _tracksApplied = false;
   String? _defaultSubtitle;
@@ -789,28 +790,33 @@ class PhonePlayback extends ChangeNotifier {
     final player = _player;
     if (player == null) return;
     final stream = _stream;
+    if (pending.value?.episode != null) return;
+    // Another quality on its way carries the track playing when it was asked for: a pick now would be lost.
+    void waitForQuality(String quality) => _say('Wait for the switch to ${qualityLabel(quality)} to finish, then pick the audio.');
     if (_convertedAudio != null && stream != null) {
       final index = int.tryParse(track.id);
       final pendingAudio = pending.value?.audio;
-      if (index == null || pending.value?.episode != null) return;
-      if (pending.value?.quality case final quality?) {
-        _say('Wait for the switch to ${qualityLabel(quality)} to finish, then pick the audio.');
-        return;
-      }
+      if (index == null) return;
       if (pendingAudio == track.id || pendingAudio == null && index - 1 == stream.audioTrack) return;
+      if (pending.value?.quality case final quality?) return waitForQuality(quality);
       final labels = audioLabels(audioTracks);
       final at = audioTracks.indexWhere((t) => t.id == track.id);
       _setPending(PendingSwitch.audio(track.id, at < 0 ? 'another audio track' : '${labels[at].name} audio'));
       final position = _stalledAt ?? _positionOf(player);
       if (await watch(stream.id, quality: stream.quality, startAt: position, audio: index - 1)) {
         // Kept for the file itself, should the user switch to it; a refused switch leaves the track playing as it was.
-        _chosenAudio = (language: TrackLanguages.languageOf(track.language, track.title), title: track.title);
+        _chosenAudio = (language: TrackLanguages.languageOf(track.language, track.title), title: track.title, index: index - 1);
       } else if (pending.value?.audio == track.id) {
         _setPending(null);
       }
       return;
     }
-    _chosenAudio = (language: TrackLanguages.languageOf(track.language, track.title), title: track.title);
+    if (pending.value?.quality case final quality?) {
+      if (track.id != (await selectedTracks()).audio) waitForQuality(quality);
+      return;
+    }
+    final at = audioChoices(player.state.tracks).indexWhere((t) => t.id == track.id);
+    _chosenAudio = (language: TrackLanguages.languageOf(track.language, track.title), title: track.title, index: at < 0 ? null : at);
     await player.setAudioTrack(track);
     if (_chosenSubtitle == null) await _applySubtitlePreference(TrackLanguages.languageOf(track.language, track.title), restoreDefault: true);
     notifyListeners();
@@ -843,7 +849,11 @@ class PhonePlayback extends ChangeNotifier {
     AudioTrack? pick;
     final chosen = _chosenAudio;
     if (chosen != null) {
-      pick = audio.where((t) => language(t) == chosen.language && t.title == chosen.title).firstOrNull ??
+      // A choice belongs to this video, whose file lists its tracks in the same order every time: the place picked is
+      // the track, whatever language libmpv gives it (one the PC identified is untagged to libmpv).
+      final place = chosen.index;
+      pick = (place != null && place < audio.length ? audio[place] : null) ??
+          audio.where((t) => language(t) == chosen.language && t.title == chosen.title).firstOrNull ??
           audio.where((t) => language(t) == chosen.language).firstOrNull;
     } else {
       pick = TrackLanguages.select(audio, stream.tracks.audio, language);

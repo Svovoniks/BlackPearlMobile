@@ -262,7 +262,7 @@ players call it English) has the language the PC identified while it played, as 
 conversion carries, or null for a video with no sound. `watch` takes `"audio":<index>` to convert with that track, as
 the phone asks when its Audio menu changes the track of a conversion, or keeps it for another quality. Without one,
 or with an index the file doesn't have, the PC starts with the track its own player would: the first language of
-Settings › Playback that a track has, else the track the file marks as default, else the first. Before 0.3.142 a
+Settings › Playback that a track has, else the track the file marks as default, else the first. Before 0.3.143 a
 conversion had no sound, and the answer listed no tracks.
 
 Both also carry, for an episode, the episodes the PC's own Previous and Next would play and the show's first episode,

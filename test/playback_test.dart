@@ -162,6 +162,45 @@ void main() {
       playback.dispose();
     });
 
+    test('the original file opens on the track the conversion played, by its place, and not on one the PC refused', () async {
+      Map<String, dynamic> file() => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 10, 'qualities': ['original', '480p']};
+      // libmpv lists the file's tracks untagged where the PC identified one; the PC lists the second as Russian.
+      const mpv = [AudioTrack('1', null, 'jpn'), AudioTrack('2', null, null)];
+      final listing = converted('480p', 0)
+        ..['audioTracks'] = [
+          {'index': 0, 'language': 'jpn'},
+          {'index': 1, 'language': 'ru'},
+        ];
+      Future<(_FakePlayer, PhonePlayback, FakeRemoteLink)> converting() async {
+        final pc = link();
+        final player = _FakePlayer();
+        final playback = PhonePlayback(link: pc, createPlayer: () => player);
+        pc.answer = (type, fields) async => listing;
+        await playback.watch('film', quality: '480p');
+        return (player, playback, pc);
+      }
+
+      // Refused: the file opens as libmpv would, on its first track, though it could tell the refused one by language.
+      var (player, playback, pc) = await converting();
+      pc.answer = (type, fields) => Future.error(const RemoteRequestException('busy', 'The PC is busy.'));
+      await playback.chooseAudio(playback.audioTracks[1]);
+      pc.answer = (type, fields) async => file();
+      await playback.changeQuality('original');
+      await player.lists(const [AudioTrack('1', null, 'jpn'), AudioTrack('2', null, 'ru')]);
+      expect(player.audioSet, isNot(contains('2')));
+      playback.dispose();
+
+      // Accepted: the file opens on the second track, although libmpv gives it no language.
+      (player, playback, pc) = await converting();
+      pc.answer = (type, fields) async => {...listing, 'audioTrack': 1};
+      await playback.chooseAudio(playback.audioTracks[1]);
+      pc.answer = (type, fields) async => file();
+      await playback.changeQuality('original');
+      await player.lists(mpv);
+      expect(player.audioSet.last, '2');
+      playback.dispose();
+    });
+
     test('a new video starts with the PC\'s preferences again', () async {
       final pc = link();
       final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
@@ -200,18 +239,29 @@ class _FakePlayer extends Fake implements Player {
   final List<Media> opened = [];
   int positionMs = 0;
   final StreamController<Duration> positions = StreamController<Duration>.broadcast();
+  // The audio tracks libmpv lists for what is open, and the ones set, by id.
+  List<AudioTrack> audio = const [];
+  final StreamController<Tracks> listed = StreamController<Tracks>.broadcast();
+  final List<String> audioSet = [];
 
   @override
-  PlayerState get state => PlayerState(position: Duration(milliseconds: positionMs));
+  PlayerState get state => PlayerState(position: Duration(milliseconds: positionMs), tracks: Tracks(audio: audio));
 
   @override
   late final PlayerStream stream = PlayerStream(
     const Stream.empty(), const Stream.empty(), const Stream.empty(), positions.stream, const Stream.empty(),
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
-    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), listed.stream,
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
   );
+
+  /// libmpv lists [tracks] for what it opened.
+  Future<void> lists(List<AudioTrack> tracks) async {
+    audio = tracks;
+    listed.add(Tracks(audio: tracks));
+    await pumpEventQueue();
+  }
 
   @override
   PlatformPlayer? get platform => null;
@@ -226,7 +276,7 @@ class _FakePlayer extends Fake implements Player {
   Future<void> play() async {}
 
   @override
-  Future<void> setAudioTrack(AudioTrack track) async {}
+  Future<void> setAudioTrack(AudioTrack track) async => audioSet.add(track.id);
 
   @override
   Future<void> setSubtitleTrack(SubtitleTrack track) async {}

@@ -251,7 +251,7 @@ class StreamInfo {
   final String? detail;
 
   /// A conversion's choice of sound: the file's audio tracks, of which it carries the one at [audioTrack] (null: none).
-  /// Null from PCs before 0.3.142, whose conversions had no sound, and for the file itself, whose tracks the player
+  /// Null from PCs before 0.3.143, whose conversions had no sound, and for the file itself, whose tracks the player
   /// lists.
   final List<SourceAudio>? sourceAudio;
   final int? audioTrack;
