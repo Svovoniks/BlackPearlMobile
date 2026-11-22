@@ -74,6 +74,79 @@ void main() {
     playback.dispose();
   });
 
+  group("a conversion's audio", () {
+    Map<String, dynamic> converted(String quality, int? audio) => {
+      'type': 'stream', 'id': 'film', 'kind': 'hls', 'streamId': 'a' * 32, 'segments': 10, 'segmentMs': 4000, 'durationMs': 40000,
+      'quality': quality, 'qualities': ['original', '720p', '480p'],
+      'audioTracks': [
+        {'index': 0, 'language': 'jpn', 'title': null, 'codec': 'eac3', 'layout': '5.1(side)'},
+        {'index': 1, 'language': 'eng', 'title': 'Commentary', 'codec': 'aac', 'layout': 'stereo'},
+      ],
+      'audioTrack': audio,
+    };
+
+    test('lists the file\'s tracks, and another one is converted again from where the video is, at the same quality', () async {
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => converted('480p', 0);
+      await playback.watch('film', quality: '480p');
+      expect(pc.asked.single.$2.containsKey('audio'), isFalse, reason: "the PC's preferences pick the first track");
+      expect(playback.audioTracks.map((t) => (t.id, t.language, t.title)), [('1', 'jpn', null), ('2', 'eng', 'Commentary')]);
+      expect((await playback.selectedTracks()).audio, '1');
+
+      player.positionMs = 61000;
+      player.positions.add(const Duration(milliseconds: 61000));
+      await pumpEventQueue();
+      final answer = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => answer.future;
+      final switching = playback.chooseAudio(playback.audioTracks[1]);
+      await pumpEventQueue();
+      expect(pc.asked.last.$2, containsPair('audio', 1));
+      expect(pc.asked.last.$2, containsPair('quality', '480p'));
+      expect(playback.pending.value?.audio, '2', reason: 'the menus tick the track on its way');
+      expect(playback.pending.value?.label, 'Switching to English audio…');
+      // Picking it again while it's on its way asks nothing more.
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(pc.asked, hasLength(2));
+      answer.complete(converted('480p', 1));
+      await switching;
+      expect(player.opened.last.start, const Duration(milliseconds: 61000));
+      expect(playback.pending.value, isNull);
+      expect((await playback.selectedTracks()).audio, '2');
+
+      // Another quality, or a recovery, keeps the track picked.
+      pc.answer = (type, fields) async => converted('720p', 1);
+      await playback.changeQuality('720p');
+      expect(pc.asked.last.$2, containsPair('audio', 1));
+      // Picking the track playing asks nothing.
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(pc.asked, hasLength(3));
+      playback.dispose();
+    });
+
+    test('a new video starts with the PC\'s preferences again', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => converted('480p', 1);
+      await playback.watch('film', quality: '480p');
+      pc.answer = (type, fields) async => {...converted('480p', 0), 'id': 'next'};
+      await playback.watch('next', quality: '480p');
+      expect(pc.asked.last.$2.containsKey('audio'), isFalse);
+      playback.dispose();
+    });
+
+    test('from an older PC, the player lists what it plays', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => {...converted('480p', null)}..remove('audioTracks')..remove('audioTrack');
+      await playback.watch('film', quality: '480p');
+      expect(playback.stream?.sourceAudio, isNull);
+      expect(playback.audioTracks, isEmpty);
+      playback.dispose();
+    });
+  });
+
   test('a refused watch says why', () async {
     final pc = link();
     pc.answer = (type, fields) => Future.error(const RemoteRequestException('gone', 'Its drive may be disconnected.'));
@@ -83,4 +156,44 @@ void main() {
     expect(playback.error, 'Its drive may be disconnected.');
     playback.dispose();
   });
+}
+
+// A player that opens nothing: it remembers what it was asked to open, and says it is wherever the test puts it.
+class _FakePlayer extends Fake implements Player {
+  final List<Media> opened = [];
+  int positionMs = 0;
+  final StreamController<Duration> positions = StreamController<Duration>.broadcast();
+
+  @override
+  PlayerState get state => PlayerState(position: Duration(milliseconds: positionMs));
+
+  @override
+  late final PlayerStream stream = PlayerStream(
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), positions.stream, const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
+  );
+
+  @override
+  PlatformPlayer? get platform => null;
+
+  @override
+  Future<void> open(Playable playable, {bool play = true}) async => opened.add(playable as Media);
+
+  @override
+  Future<void> pause() async {}
+
+  @override
+  Future<void> play() async {}
+
+  @override
+  Future<void> setAudioTrack(AudioTrack track) async {}
+
+  @override
+  Future<void> setSubtitleTrack(SubtitleTrack track) async {}
+
+  @override
+  Future<void> dispose() async {}
 }

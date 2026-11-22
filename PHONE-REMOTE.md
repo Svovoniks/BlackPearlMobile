@@ -233,7 +233,7 @@ resume point and watched mark. A failure is an `error` with code `browse` and th
 
 ### Watching on the phone
 
-Phone → PC: `{"type":"watch","request":<n>,"id":"<entry id>","quality":"auto|original|1080p|720p|480p","network":"home|away|relayed","takeOver":false}`.
+Phone → PC: `{"type":"watch","request":<n>,"id":"<entry id>","quality":"auto|original|1080p|720p|480p","network":"home|away|relayed","takeOver":false,"audio":null}`.
 `auto` plays the file itself on the home network and a 720p conversion elsewhere. `takeOver` true, for the video in
 the PC's `mediaId`, makes the PC save where it is and close its player, so the phone continues it. Nothing is left
 loaded on the PC for its Play, a media key or the remote's `play` to start again; the PC's empty player says the video
@@ -251,8 +251,18 @@ or for a conversion (H.264 and AAC in MPEG-TS pieces of `segmentMs`, the last on
 
 ```json
 {"type":"stream","request":3,"id":"…","title":"…","detail":null,"positionMs":0,"durationMs":2830000,"kind":"hls",
- "streamId":"<32 hex>","segments":708,"segmentMs":4000,"quality":"720p","qualities":["original","720p","480p"],"note":null}
+ "streamId":"<32 hex>","segments":708,"segmentMs":4000,"quality":"720p","qualities":["original","720p","480p"],"note":null,
+ "audioTracks":[{"index":0,"language":"jpn","title":null,"codec":"eac3","layout":"5.1(side)"},
+                {"index":1,"language":"eng","title":"Commentary","codec":"aac","layout":"stereo"}],"audioTrack":0}
 ```
+
+A conversion carries one of the file's audio tracks. `audioTracks` lists them all in the file's order, with the
+language tag and title the file gives them (null when it gives none), and `audioTrack` is the `index` of the one the
+conversion carries, or null for a video with no sound. `watch` takes `"audio":<index>` to convert with that track, as
+the phone asks when its Audio menu changes the track of a conversion, or keeps it for another quality. Without one,
+or with an index the file doesn't have, the PC starts with the track its own player would: the first language of
+Settings › Playback that a track has, else the track the file marks as default, else the first. Before 0.3.142 a
+conversion had no sound, and the answer listed no tracks.
 
 Both also carry, for an episode, the episodes the PC's own Previous and Next would play and the show's first episode,
 which Loop all starts again from after the last one, each as `{"id":"…","title":"…","detail":"Season 2 · Episode 4"}`
