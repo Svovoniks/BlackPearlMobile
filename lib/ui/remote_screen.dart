@@ -9,6 +9,7 @@ import '../connection/transport.dart';
 import '../protocol/remote_state.dart';
 import 'pebbles.dart';
 import 'queue_widgets.dart';
+import 'remote_tracks.dart';
 import 'theme.dart';
 
 /// The Remote tab: what's playing on the PC and everything the player's bars do.
@@ -439,6 +440,35 @@ class _RemoteScreenState extends State<RemoteScreen> {
           ),
         ],
       ),
+      // The PC player's Audio and Subtitles menus, from a PC that sends them.
+      if (state.hasTracks) ...[
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _TrackPill(
+                label: 'Audio',
+                icon: Icons.graphic_eq_rounded,
+                tracks: state.audioTracks!,
+                selected: state.audioTrack,
+                enabled: _canAdjust,
+                onTap: () => unawaited(showRemoteTracks(context, link: link, tab: RemoteTracksTab.audio)),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _TrackPill(
+                label: 'Subtitles',
+                icon: Icons.subtitles_outlined,
+                tracks: state.subtitleTracks!,
+                selected: state.subtitleTrack,
+                enabled: _canAdjust,
+                onTap: () => unawaited(showRemoteTracks(context, link: link, tab: RemoteTracksTab.subtitles)),
+              ),
+            ),
+          ],
+        ),
+      ],
       // What the PC plays through, to pick another video from: its queue, or the playing show's episodes.
       if (link.features.contains('queues') && (state.queue != null || state.mediaId != null)) ...[
         const SizedBox(height: 12),
@@ -888,6 +918,76 @@ class _Pill extends StatelessWidget {
       ],
     ),
   );
+}
+
+/// Audio or Subtitles with the PC's choice under it, opening the tracks sheet. The choice is cut short rather than
+/// shrunk: a language can be long.
+class _TrackPill extends StatelessWidget {
+  const _TrackPill({
+    required this.label,
+    required this.icon,
+    required this.tracks,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+  });
+  final String label;
+  final IconData icon;
+  final List<RemoteTrack> tracks;
+  final int? selected;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final choice = tracks.where((t) => t.id == selected).firstOrNull;
+    final value = choice == null
+        ? (tracks.isEmpty ? 'Not yet' : 'None')
+        : choice.id == RemoteTrack.off
+        ? 'Off'
+        // Two tracks in one language are told apart by their detail, as in the sheet.
+        : choice.detail != null && tracks.where((t) => t.name == choice.name).length > 1
+        ? '${choice.name} · ${choice.detail}'
+        : choice.name;
+    final active = choice != null && choice.id != RemoteTrack.off;
+    return Pebble(
+      height: 54,
+      radius: 18,
+      enabled: enabled,
+      onTap: onTap,
+      semanticLabel: '$label, $value',
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 20, color: active ? Palette.accent : null),
+          const SizedBox(width: 7),
+          Flexible(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, height: 1.15)),
+                Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.2,
+                    fontWeight: FontWeight.w500,
+                    color: active ? Palette.accent : Palette.muted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 2),
+          const Icon(Icons.expand_more_rounded, size: 18, color: Palette.muted),
+        ],
+      ),
+    );
+  }
 }
 
 /// The timeline: a well with an accent fill and a knob. Tap or drag; the seek is sent on release.

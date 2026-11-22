@@ -2,7 +2,9 @@ import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/connection/transport.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/protocol/remote_state.dart';
+import 'package:blackpearl_mobile/ui/player_options.dart';
 import 'package:blackpearl_mobile/ui/remote_screen.dart';
+import 'package:blackpearl_mobile/ui/remote_tracks.dart';
 import 'package:blackpearl_mobile/ui/theme.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -178,5 +180,139 @@ void main() {
     final volumes = link.sent.where((c) => c.$1 == 'volume').map((c) => c.$2 as int).toList();
     expect(volumes, isNotEmpty);
     expect(volumes.last, greaterThan(64));
+  });
+
+  Finder inSheet(String text) => find.descendant(of: find.byType(RemoteTracksPanel), matching: find.text(text));
+
+  bool picked(WidgetTester tester, String name) =>
+      tester.widget<OptionRow>(find.ancestor(of: inSheet(name), matching: find.byType(OptionRow)).first).selected;
+
+  testWidgets("the PC's audio and subtitles show beside each other and open its menus", (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    expect(find.bySemanticsLabel(RegExp('^Audio, Japanese')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('^Subtitles, English')), findsOneWidget);
+    await tester.ensureVisible(find.bySemanticsLabel(RegExp('^Subtitles, English')));
+    await tester.tap(find.bySemanticsLabel(RegExp('^Subtitles, English')));
+    await tester.pumpAndSettle();
+    // The subtitles page, with the PC's tick on its full English track; the two English tracks tell themselves apart.
+    expect(inSheet('Signs & songs'), findsOneWidget);
+    expect(inSheet('Portuguese (Brazil)'), findsOneWidget);
+    expect(picked(tester, 'Full subtitles'), isTrue);
+    expect(picked(tester, 'Signs & songs'), isFalse);
+    await tester.tap(inSheet('Signs & songs'));
+    await tester.pump();
+    expect(link.sent.last, ('subtitle-track', 4));
+    expect(picked(tester, 'Signs & songs'), isTrue);
+    // The PC answered at once, so nothing is left waiting.
+    expect(tester.widget<OptionRow>(find.ancestor(of: inSheet('Signs & songs'), matching: find.byType(OptionRow))).busy, isFalse);
+    await tester.tap(inSheet('Off'));
+    await tester.pump();
+    expect(link.sent.last, ('subtitle-track', -1));
+    // The audio page.
+    await tester.tap(inSheet('Audio'));
+    await tester.pumpAndSettle();
+    await tester.tap(inSheet('English'));
+    await tester.pump();
+    expect(link.sent.last, ('audio-track', 2));
+    await tester.pumpAndSettle();
+    Navigator.of(tester.element(find.byType(RemoteTracksPanel))).pop();
+    await tester.pumpAndSettle();
+    expect(find.bySemanticsLabel(RegExp('^Audio, English')), findsOneWidget);
+    expect(find.bySemanticsLabel(RegExp('^Subtitles, Off')), findsOneWidget);
+  });
+
+  testWidgets('a choice the PC never confirms stops showing as picked', (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    link.ignoreCommands = true;
+    await tester.ensureVisible(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.tap(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.pumpAndSettle();
+    await tester.tap(inSheet('English'));
+    await tester.pump();
+    expect(picked(tester, 'English'), isTrue);
+    await tester.pump(const Duration(seconds: 4));
+    expect(picked(tester, 'English'), isFalse);
+    expect(picked(tester, 'Japanese'), isTrue);
+  });
+
+  testWidgets("in a room where only whoever plays the video picks tracks, the menus show but can't be changed", (tester) async {
+    final link = await pump(
+      tester,
+      state: sampleState.withTracks(canChange: false, room: const RemoteRoom(name: 'Movie club', people: 3)),
+    );
+    await tester.ensureVisible(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.tap(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Usually only whoever plays the video picks them'), findsOneWidget);
+    // The rule note is about picking, which can't be done here.
+    expect(find.textContaining("Subtitles you haven't picked"), findsNothing);
+    await tester.tap(inSheet('English'), warnIfMissed: false);
+    await tester.pump();
+    expect(link.sent, isEmpty);
+  });
+
+  testWidgets('two subtitle tracks in one language are told apart on the pill', (tester) async {
+    await pump(tester, state: sampleState.copyWith(playing: false, subtitleTrack: 4));
+    expect(find.bySemanticsLabel(RegExp('^Subtitles, English · Signs & songs')), findsOneWidget);
+    // A language only one track has stays short.
+    expect(find.bySemanticsLabel(RegExp(r'^Audio, Japanese(?! ·)')), findsOneWidget);
+  });
+
+  testWidgets('a choice still waiting is dropped when the PC moves to another video', (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    link.ignoreCommands = true;
+    await tester.ensureVisible(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.tap(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.pumpAndSettle();
+    await tester.tap(inSheet('English'));
+    await tester.pump();
+    expect(picked(tester, 'English'), isTrue);
+    // The next episode, whose tracks reuse the ids.
+    link.setState(
+      const RemoteState(
+        media: true,
+        title: 'Night Signal',
+        detail: 'Season 2 · Episode 4 · High Water',
+        playing: false,
+        durationMs: 2700000,
+        volume: 64,
+        audioTracks: sampleAudioTracks,
+        audioTrack: 1,
+        subtitleTracks: sampleSubtitleTracks,
+        subtitleTrack: 3,
+      ),
+    );
+    await tester.pump();
+    expect(picked(tester, 'English'), isFalse);
+    expect(picked(tester, 'Japanese'), isTrue);
+  });
+
+  testWidgets('a sheet left open when the PC stops says nothing is playing', (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    await tester.ensureVisible(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.tap(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.pumpAndSettle();
+    link.setState(RemoteState.nothing);
+    await tester.pump();
+    expect(inSheet('Nothing is playing on the PC.'), findsOneWidget);
+    expect(inSheet('The audio tracks show once the video has opened on the PC.'), findsNothing);
+  });
+
+  testWidgets('a video still opening on the PC says its tracks come once it has', (tester) async {
+    await pump(tester, state: sampleState.withTracks(audio: const [], subtitles: const []));
+    expect(find.bySemanticsLabel(RegExp('^Audio, Not yet')), findsOneWidget);
+    await tester.ensureVisible(find.bySemanticsLabel(RegExp('^Subtitles, Not yet')));
+    await tester.tap(find.bySemanticsLabel(RegExp('^Subtitles, Not yet')));
+    await tester.pumpAndSettle();
+    expect(inSheet('The subtitles show once the video has opened on the PC.'), findsOneWidget);
+  });
+
+  testWidgets('a PC from before tracks on the remote shows no track pills', (tester) async {
+    await pump(
+      tester,
+      state: const RemoteState(media: true, title: 'X', playing: false, positionMs: 0, durationMs: 1000, volume: 30),
+    );
+    expect(find.bySemanticsLabel(RegExp('^Audio, ')), findsNothing);
+    expect(find.bySemanticsLabel(RegExp('^Subtitles, ')), findsNothing);
   });
 }

@@ -19,6 +19,7 @@ import '../ui/pairing_screen.dart';
 import '../ui/pc_chooser.dart';
 import '../ui/player_screen.dart';
 import '../ui/remote_screen.dart';
+import '../ui/remote_tracks.dart';
 import '../ui/settings_screen.dart';
 import '../ui/theme.dart';
 import '../ui/update_banner.dart';
@@ -67,7 +68,7 @@ class FakeRemoteLink extends RemoteLink {
   void command(String action, [Object? value]) {
     sent.add((action, value));
     final current = _state;
-    if (current == null) return;
+    if (current == null || ignoreCommands) return;
     final position = currentPositionMs();
     final next = switch (action) {
       'toggle' => current.copyWith(playing: !current.playing, positionMs: position),
@@ -75,6 +76,8 @@ class FakeRemoteLink extends RemoteLink {
       'seek-to' => current.copyWith(positionMs: value as int),
       'volume' => current.copyWith(volume: value as int, positionMs: position),
       'mute' => current.copyWith(muted: !current.muted, positionMs: position),
+      'audio-track' when current.canChangeTracks => current.copyWith(audioTrack: value as int, positionMs: position),
+      'subtitle-track' when current.canChangeTracks => current.copyWith(subtitleTrack: value as int, positionMs: position),
       _ => null,
     };
     if (next != null) setState(next);
@@ -82,6 +85,9 @@ class FakeRemoteLink extends RemoteLink {
 
   @override
   void retryNow() {}
+
+  /// Leaves the state as it is, as a PC that doesn't answer commands.
+  bool ignoreCommands = false;
 
   /// What the stand-in PC offers; none by default, as a PC from before the library.
   Set<String> offered = const {};
@@ -115,7 +121,23 @@ const RemoteState sampleState = RemoteState(
   hasPrevious: true,
   hasNext: true,
   shuffle: true,
+  audioTracks: sampleAudioTracks,
+  audioTrack: 1,
+  subtitleTracks: sampleSubtitleTracks,
+  subtitleTrack: 3,
 );
+
+/// The PC menus' tracks in previews and tests, as a two-language anime release names them.
+const List<RemoteTrack> sampleAudioTracks = [
+  RemoteTrack(id: 1, name: 'Japanese', detail: 'FLAC 2.0'),
+  RemoteTrack(id: 2, name: 'English', detail: 'Dub · E-AC-3 5.1'),
+];
+const List<RemoteTrack> sampleSubtitleTracks = [
+  RemoteTrack(id: -1, name: 'Off'),
+  RemoteTrack(id: 3, name: 'English', detail: 'Full subtitles'),
+  RemoteTrack(id: 4, name: 'English', detail: 'Signs & songs'),
+  RemoteTrack(id: 5, name: 'Portuguese (Brazil)'),
+];
 
 /// Debug builds only, from `--preview=<screen>`: shows one screen with made-up data.
 class PreviewApp extends StatelessWidget {
@@ -150,6 +172,14 @@ class PreviewApp extends StatelessWidget {
             hasPrevious: false,
             canControl: false,
             room: RemoteRoom(name: 'Movie club', people: 3),
+            audioTracks: [RemoteTrack(id: 1, name: 'English', detail: '5.1')],
+            audioTrack: 1,
+            subtitleTracks: [
+              RemoteTrack(id: -1, name: 'Off'),
+              RemoteTrack(id: 2, name: 'English', detail: 'SDH'),
+            ],
+            subtitleTrack: -1,
+            canChangeTracks: false,
           ),
         ),
       ),
@@ -172,6 +202,24 @@ class PreviewApp extends StatelessWidget {
         onRetry: () {},
       ),
       'pair-link' => _PairLinkPreview(child: _remote(link(connected, sampleState))),
+      // The Remote tab's tracks sheet: each page, a room where only whoever plays the video picks tracks, and a video still opening.
+      'tracks-audio' || 'tracks-subtitles' || 'tracks-locked' || 'tracks-empty' => Builder(
+        builder: (context) {
+          final remote = link(connected, switch (screen) {
+            'tracks-locked' => sampleState.withTracks(canChange: false, room: const RemoteRoom(name: 'Movie club', people: 3)),
+            'tracks-empty' => sampleState.withTracks(audio: const [], subtitles: const []),
+            _ => sampleState,
+          });
+          return _SheetPreview(
+            open: (context) => showRemoteTracks(
+              context,
+              link: remote,
+              tab: screen == 'tracks-subtitles' ? RemoteTracksTab.subtitles : RemoteTracksTab.audio,
+            ),
+            child: _remote(remote),
+          );
+        },
+      ),
       'pair-timeout' => _remote(
         link(const LinkStatus(LinkPhase.failed, message: "The PC didn't finish pairing this phone", needsPairing: true), null),
       ),
@@ -268,6 +316,31 @@ class _PairLinkPreviewState extends State<_PairLinkPreview> {
 
   @override
   Widget build(BuildContext context) => widget.child;
+}
+
+/// Opens a sheet over [child] once it shows.
+class _SheetPreview extends StatefulWidget {
+  const _SheetPreview({required this.open, required this.child});
+  final Future<void> Function(BuildContext context) open;
+  final Widget child;
+  @override
+  State<_SheetPreview> createState() => _SheetPreviewState();
+}
+
+class _SheetPreviewState extends State<_SheetPreview> {
+  bool _opened = false;
+
+  @override
+  Widget build(BuildContext context) {
+    // Android's first frame can be 0 by 0, which would size the sheet to nothing; open it once the screen has a size.
+    if (!_opened && !MediaQuery.sizeOf(context).isEmpty) {
+      _opened = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(widget.open(context));
+      });
+    }
+    return widget.child;
+  }
 }
 
 /// GitHub with nothing newer, for previews.
