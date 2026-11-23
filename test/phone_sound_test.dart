@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/connection/transport.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
@@ -120,6 +122,42 @@ void main() {
       expect(sound.on, isFalse);
       expect(held, [true, false]);
       expect(sound.notice.value, contains('link to the PC stopped'));
+      sound.dispose();
+    });
+
+    test("back with a PC that can't send its sound (BlackPearl closed, its phone host serving), the sound turns off", () async {
+      final link = pc();
+      link.answer = (type, fields) async => {'type': type};
+      final held = <bool>[];
+      final sound = PhoneSound(link: link, settings: AppSettings(MemorySettingsStore()), keepAwake: held.add);
+      await sound.turnOn();
+      link.status = LinkStatus(LinkPhase.failed, retryAt: DateTime.now().add(const Duration(seconds: 1)));
+      await pumpEventQueue();
+      link.offered = const {'library', 'watch'};
+      link.answer = (type, fields) => Completer<Map<String, dynamic>>().future;
+      link.status = const LinkStatus(LinkPhase.connected, path: NetworkPath.home);
+      await pumpEventQueue();
+      expect(sound.on, isFalse);
+      expect(held, [true, false], reason: 'the phone sleeps again');
+      expect(sound.notice.value, contains("BlackPearl isn't open"));
+      sound.dispose();
+    });
+
+    test("a PC that doesn't answer is asked twice more, then the sound turns off and says so", () async {
+      final link = pc();
+      var asked = 0;
+      link.answer = (type, fields) {
+        if (type == 'listen' && fields['on'] == true) asked++;
+        return Future.error(const RemoteRequestException('timeout', "The PC didn't answer. Try again."));
+      };
+      final held = <bool>[];
+      final sound = PhoneSound(link: link, settings: AppSettings(MemorySettingsStore()), keepAwake: held.add);
+      await sound.turnOn();
+      await pumpEventQueue();
+      expect(asked, 3);
+      expect(sound.on, isFalse);
+      expect(held, [true, false]);
+      expect(sound.notice.value, contains("didn't send its sound"));
       sound.dispose();
     });
 
