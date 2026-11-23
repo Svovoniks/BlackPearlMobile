@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/rendering.dart' show RenderAbstractViewport;
 import 'package:material_ui/material_ui.dart';
 
 import '../connection/remote_link.dart';
@@ -60,20 +61,29 @@ class LibraryListing extends ChangeNotifier {
     await more();
   }
 
-  /// Loads the first page again and swaps it in when it arrives, so the list doesn't blank meanwhile; for progress that
-  /// changed elsewhere.
+  /// Loads every page shown so far again and swaps them in once all have arrived, so the list neither blanks nor
+  /// shrinks back to its first page meanwhile; for progress that changed elsewhere.
   Future<void> reload() async {
     if (loading) return;
     loading = true;
     try {
-      final page = LibraryPage.fromJson(await link.ask('browse', request.toJson()));
-      if (_disposed) return;
+      final shown = entries.length;
+      final fresh = <LibraryEntry>[];
+      final seen = <String>{};
+      var next = request;
+      LibraryPage page;
+      do {
+        page = LibraryPage.fromJson(await link.ask('browse', next.toJson()));
+        if (_disposed) return;
+        fresh.addAll(page.entries.where((entry) => seen.add(_key(entry))));
+        next = next.nextPage();
+      } while (page.hasMore && fresh.length < shown);
       entries
         ..clear()
-        ..addAll(page.entries);
+        ..addAll(fresh);
       total = page.total;
       location = page.location;
-      _next = page.hasMore ? request.nextPage() : null;
+      _next = page.hasMore ? next : null;
       error = null;
       _started = true;
     } on RemoteRequestException catch (e) {
@@ -84,6 +94,10 @@ class LibraryListing extends ChangeNotifier {
     }
   }
 
+  // A page can repeat a title the previous one ended with when the library changed in between.
+  // A queue can hold a video twice: its place tells them apart.
+  static String _key(LibraryEntry entry) => '${entry.id}/${entry.level}/${entry.homeSection}/${entry.index}';
+
   Future<void> more() async {
     final request = _next;
     if (request == null || loading) return;
@@ -92,10 +106,8 @@ class LibraryListing extends ChangeNotifier {
     try {
       final page = LibraryPage.fromJson(await link.ask('browse', request.toJson()));
       if (_disposed) return;
-      // A page can repeat a title the previous one ended with when the library changed in between.
-      // A queue can hold a video twice: its place tells them apart.
-      final seen = {for (final entry in entries) '${entry.id}/${entry.level}/${entry.homeSection}/${entry.index}'};
-      entries.addAll(page.entries.where((entry) => seen.add('${entry.id}/${entry.level}/${entry.homeSection}/${entry.index}')));
+      final seen = {for (final entry in entries) _key(entry)};
+      entries.addAll(page.entries.where((entry) => seen.add(_key(entry))));
       total = page.total;
       location = page.location;
       _next = page.hasMore ? request.nextPage() : null;
@@ -201,8 +213,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
     final connected = link.status.isConnected;
     if (connected == _wasConnected) return;
     _wasConnected = connected;
-    // Coming back after a drop: load again, unless what is shown loaded fine.
-    if (connected && _available && (_listing == null || _listing!.error != null || !_listing!.started)) _open();
+    // Coming back after a drop: load again, unless what is shown loaded fine. An empty list loads again too: a PC that
+    // has just started may have answered before it had read its library.
+    if (connected && _available && (_listing == null || _listing!.error != null || !_listing!.started || _listing!.entries.isEmpty)) _open();
     if (mounted) setState(() {});
   }
 
@@ -228,6 +241,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   void _select(_Mode mode, [LibraryCategory? category]) {
     if (mode == _mode && (category == null || category == _category)) return;
+    // A search still waiting to start belongs to the search field, not to the listing chosen now.
+    _searchDebounce?.cancel();
     setState(() {
       _mode = mode;
       if (category != null) _category = category;
@@ -238,12 +253,50 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _searchFocus.unfocus();
     }
     _open();
+    _revealPill(_pillKeys[mode == _Mode.category ? category ?? _category : mode]!);
   }
 
+  // The pills' row scrolls to show the chosen one whole.
+  late final Map<Object, GlobalKey> _pillKeys = {
+    for (final key in [..._Mode.values, LibraryCategory.films, LibraryCategory.shows, LibraryCategory.anime]) key: GlobalKey(),
+  };
+
+  void _revealPill(GlobalKey key) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final context = key.currentContext;
+      final box = context?.findRenderObject();
+      if (context == null || box is! RenderBox || !box.attached) return;
+      final viewport = RenderAbstractViewport.maybeOf(box);
+      final position = Scrollable.maybeOf(context)?.position;
+      if (viewport == null || position == null) return;
+      // The row's own padding stays beside the pill: 16 before it; after it, the pill's 8 and the row's 8.
+      final start = viewport.getOffsetToReveal(box, 0).offset - 16;
+      final end = viewport.getOffsetToReveal(box, 1).offset + 8;
+      final target = position.pixels > start ? start : position.pixels < end ? end : null;
+      if (target == null) return;
+      unawaited(position.animateTo(target.clamp(position.minScrollExtent, position.maxScrollExtent), duration: const Duration(milliseconds: 250), curve: Curves.easeOutCubic));
+    });
+  }
+
+  /// Pull to refresh: the list stays as it is until the new one has come, and the spinner stays until then too.
   Future<void> _refresh() async {
+    final mode = _mode, category = _category, old = _listing;
     if (_mode == _Mode.home) _seed++;
-    _open();
-    await _listing?.more();
+    final fresh = LibraryListing(link, _request);
+    await fresh.load();
+    if (!mounted || _mode != mode || _category != category || !identical(_listing, old)) {
+      fresh.dispose();
+      return;
+    }
+    if (fresh.error != null && (old?.entries.isNotEmpty ?? false)) {
+      fresh.dispose();
+      ScaffoldMessenger.maybeOf(context)
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(fresh.error!), duration: const Duration(seconds: 4)));
+      return;
+    }
+    old?.dispose();
+    setState(() => _listing = fresh);
   }
 
   void _searchChanged(String _) {
@@ -313,7 +366,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   );
 
   Widget _modes() {
-    Widget pill(String label, bool selected, VoidCallback onTap, {IconData? icon}) => Padding(
+    Widget pill(Object key, String label, bool selected, VoidCallback onTap, {IconData? icon}) => Padding(
+      key: _pillKeys[key],
       padding: const EdgeInsets.only(right: 8),
       child: Pebble(
         height: 38,
@@ -336,11 +390,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.fromLTRB(16, 2, 8, 6),
         children: [
-          pill('Home', _mode == _Mode.home, () => _select(_Mode.home)),
+          pill(_Mode.home, 'Home', _mode == _Mode.home, () => _select(_Mode.home)),
           for (final category in [LibraryCategory.films, LibraryCategory.shows, LibraryCategory.anime])
-            pill(category.label, _mode == _Mode.category && _category == category, () => _select(_Mode.category, category)),
-          if (link.features.contains('queues')) pill('Queues', _mode == _Mode.queues, () => _select(_Mode.queues), icon: Icons.queue_play_next_rounded),
-          pill('Search', _mode == _Mode.search, () => _select(_Mode.search), icon: Icons.search_rounded),
+            pill(category, category.label, _mode == _Mode.category && _category == category, () => _select(_Mode.category, category)),
+          if (link.features.contains('queues'))
+            pill(_Mode.queues, 'Queues', _mode == _Mode.queues, () => _select(_Mode.queues), icon: Icons.queue_play_next_rounded),
+          pill(_Mode.search, 'Search', _mode == _Mode.search, () => _select(_Mode.search), icon: Icons.search_rounded),
         ],
       ),
     );
@@ -390,8 +445,13 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Widget _home(LibraryListing listing) {
-    // Home is one listing; it is short, so all of it loads.
-    if (listing.hasMore && !listing.loading) unawaited(listing.more());
+    // Home is one listing; it is short, so all of it loads. A page that failed waits for Try again: asking again on
+    // every frame would never show why.
+    if (listing.hasMore && !listing.loading && listing.error == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!listing.disposed && listing.hasMore && !listing.loading && listing.error == null) unawaited(listing.more());
+      });
+    }
     final continuing = listing.entries.where((e) => e.homeSection == 'continue').toList();
     final pick = listing.entries.where((e) => e.homeSection == 'mystery').firstOrNull;
     final suggestions = <String, List<LibraryEntry>>{};
@@ -437,7 +497,35 @@ class _LibraryScreenState extends State<LibraryScreen> {
           const _RowTitle("Can't decide?"),
           Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: _PickCard(link: link, entry: pick, onOpen: _openEntry)),
         ],
+        if (listing.hasMore) ListingFooter(listing: listing),
       ],
+    );
+  }
+}
+
+/// Under a list with more to load: a spinner while the next page comes, or why it didn't, with Try again.
+class ListingFooter extends StatelessWidget {
+  const ListingFooter({super.key, required this.listing});
+  final LibraryListing listing;
+
+  @override
+  Widget build(BuildContext context) {
+    final error = listing.error;
+    if (error == null) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      child: Column(
+        children: [
+          Text("Couldn't load more: $error", textAlign: TextAlign.center, style: const TextStyle(color: Palette.muted, fontSize: 13.5, height: 1.35)),
+          const SizedBox(height: 10),
+          PebbleButton(label: 'Try again', onTap: () => unawaited(listing.more())),
+        ],
+      ),
     );
   }
 }
@@ -580,7 +668,7 @@ class PosterGrid extends StatelessWidget {
     final height = math.max(tile / 0.52, (tile * 3 / 2 + cardCaptionHeight(context)).ceilToDouble());
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
-        if (notification.metrics.extentAfter < 600 && listing.hasMore) unawaited(listing.more());
+        if (notification.metrics.extentAfter < 600 && listing.hasMore && listing.error == null) unawaited(listing.more());
         return false;
       },
       child: CustomScrollView(
@@ -594,13 +682,7 @@ class PosterGrid extends StatelessWidget {
               itemBuilder: (context, index) => PosterCard(link: link, entry: listing.entries[index], onOpen: onOpen),
             ),
           ),
-          if (listing.hasMore)
-            const SliverToBoxAdapter(
-              child: Padding(
-                padding: EdgeInsets.only(bottom: 24),
-                child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)),
-              ),
-            ),
+          if (listing.hasMore) SliverToBoxAdapter(child: ListingFooter(listing: listing)),
         ],
       ),
     );
@@ -781,18 +863,19 @@ class _ShowScreenState extends State<ShowScreen> {
           }
           return NotificationListener<ScrollNotification>(
             onNotification: (notification) {
-              if (notification.metrics.extentAfter < 400 && _listing.hasMore) unawaited(_listing.more());
+              if (notification.metrics.extentAfter < 400 && _listing.hasMore && _listing.error == null) unawaited(_listing.more());
               return false;
             },
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+              // Clear of the system's navigation buttons, which this page draws under.
+              padding: EdgeInsets.fromLTRB(16, 4, 16, 24 + MediaQuery.paddingOf(context).bottom),
               children: [
                 if (season == null && widget.show.overview.isNotEmpty) ...[
                   Text(widget.show.overview, style: const TextStyle(fontSize: 14, height: 1.4, color: Palette.muted), maxLines: 6, overflow: TextOverflow.ellipsis),
                   const SizedBox(height: 16),
                 ],
                 for (final entry in _listing.entries) _EpisodeRow(link: widget.link, entry: entry, onOpen: _open),
-                if (_listing.hasMore) const Padding(padding: EdgeInsets.all(16), child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5))),
+                if (_listing.hasMore) ListingFooter(listing: _listing),
               ],
             ),
           );
@@ -890,6 +973,23 @@ class _TitleSheetState extends State<_TitleSheet> {
 
   LibraryEntry get entry => widget.entry;
 
+  // The buttons follow the link: Play on PC greys out while it is down, and comes back with it.
+  @override
+  void initState() {
+    super.initState();
+    widget.link.addListener(_linkChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.link.removeListener(_linkChanged);
+    super.dispose();
+  }
+
+  void _linkChanged() {
+    if (mounted) setState(() {});
+  }
+
   Future<void> _here({bool fromStart = false}) async {
     Navigator.of(context).pop();
     await widget.actions.watchHere(entry, fromStart: fromStart);
@@ -948,9 +1048,9 @@ class _TitleSheetState extends State<_TitleSheet> {
                       if (entry.watched) ...[
                         const SizedBox(height: 8),
                         const Row(children: [Icon(Icons.check_circle_rounded, size: 16, color: Palette.accent), SizedBox(width: 6), Text('Watched', style: TextStyle(fontSize: 13))]),
-                      ] else if (progress != null) ...[
-                        const SizedBox(height: 10),
-                        _ProgressBar(progress),
+                        // A title without a known length has no bar, but its resume point still shows.
+                      ] else if (resume) ...[
+                        if (progress != null) ...[const SizedBox(height: 10), _ProgressBar(progress)],
                         const SizedBox(height: 5),
                         Text(
                           'Stopped at ${formatClock(entry.positionMs)}${entry.durationMs > 0 ? ' of ${formatClock(entry.durationMs)}' : ''}',
