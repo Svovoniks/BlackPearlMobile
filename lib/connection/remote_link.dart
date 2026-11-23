@@ -104,7 +104,8 @@ abstract class RemoteLink extends ChangeNotifier {
     final current = state;
     final at = stateReceivedAt;
     if (current == null) return 0;
-    if (at == null) return current.positionMs;
+    // Disconnected, nothing says the PC still plays: the clock stops at the last word from it.
+    if (at == null || !status.isConnected) return current.positionAfter(0);
     return current.positionAfter(clock.now().difference(at).inMilliseconds);
   }
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:clock/clock.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
@@ -38,7 +39,7 @@ class RemoteScreen extends StatefulWidget {
 
 class _RemoteScreenState extends State<RemoteScreen> {
   Timer? _ticker;
-  Timer? _volumeTimer;
+  Timer? _volumeTimer, _volumeSettleTimer;
   int? _volumeOverride;
   DateTime _volumeChangedAt = DateTime.fromMillisecondsSinceEpoch(0);
   int? _sentVolume;
@@ -97,16 +98,23 @@ class _RemoteScreenState extends State<RemoteScreen> {
     _sound?.notice.removeListener(_showSoundNotice);
     _ticker?.cancel();
     _volumeTimer?.cancel();
+    _volumeSettleTimer?.cancel();
     _feedbackTimer?.cancel();
     super.dispose();
   }
 
   void _changed() {
     final at = link.stateReceivedAt;
-    // A state that arrived after the seek replaces the guess.
-    if (_seekAt != null && at != null && at.isAfter(_seekAt!)) {
-      _seekTarget = null;
-      _seekAt = null;
+    // A state that arrived after the seek replaces the guess once it shows the seek, or after a while if it never does:
+    // one the PC sent before the seek reached it put the knob back for a moment.
+    final seekAt = _seekAt, target = _seekTarget;
+    if (seekAt != null && at != null && at.isAfter(seekAt)) {
+      final since = clock.now().difference(seekAt);
+      final guess = target == null ? null : target + (_state?.playing == true ? since.inMilliseconds : 0);
+      if (guess == null || (link.currentPositionMs() - guess).abs() < 2000 || since > const Duration(milliseconds: 1500)) {
+        _seekTarget = null;
+        _seekAt = null;
+      }
     }
     if (_volumeOverride != null && DateTime.now().difference(_volumeChangedAt) > const Duration(milliseconds: 1500)) {
       _volumeOverride = null;
@@ -167,7 +175,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
   int get _position {
     if (_dragFraction != null) return (_dragFraction! * (_state?.durationMs ?? 0)).round();
     if (_seekTarget != null && _seekAt != null) {
-      final elapsed = _state?.playing == true ? DateTime.now().difference(_seekAt!).inMilliseconds : 0;
+      final elapsed = _state?.playing == true ? clock.now().difference(_seekAt!).inMilliseconds : 0;
       final duration = _state?.durationMs ?? 0;
       final position = _seekTarget! + elapsed;
       return duration > 0 ? math.min(position, duration) : position;
@@ -194,7 +202,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
     // The guess is made before sending: a state that answers the command must replace it, not add to it.
     final duration = _state?.durationMs ?? 0;
     _seekTarget = (_position + ms).clamp(0, duration > 0 ? duration : 1 << 40);
-    _seekAt = DateTime.now();
+    _seekAt = clock.now();
     link.command('seek-by', ms);
     _flash(ms > 0 ? '+${ms ~/ 1000} s' : '−${-ms ~/ 1000} s');
   }
@@ -204,7 +212,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
     if (!_canPlay || duration <= 0) return;
     final target = (fraction.clamp(0.0, 1.0) * duration).round();
     _seekTarget = target;
-    _seekAt = DateTime.now();
+    _seekAt = clock.now();
     link.command('seek-to', target);
   }
 
@@ -226,6 +234,12 @@ class _RemoteScreenState extends State<RemoteScreen> {
     setState(() {
       _volumeOverride = clamped;
       _volumeChangedAt = DateTime.now();
+    });
+    // The PC's own value shows again once the change has settled, also when no further state comes to clear it (a
+    // paused PC sends none), so a change made on the PC meanwhile isn't hidden behind this one.
+    _volumeSettleTimer?.cancel();
+    _volumeSettleTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted && _volumeOverride != null) setState(() => _volumeOverride = null);
     });
     if (done) {
       _volumeTimer?.cancel();
@@ -297,9 +311,47 @@ class _RemoteScreenState extends State<RemoteScreen> {
       if (status.isConnected) return const _Centered(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5));
       return _ConnectionPanel(link: link, onPairAgain: widget.onPairAgain, onChoosePc: widget.onChoosePc);
     }
+    final banner = [if (!status.isConnected) ...[_ConnectionBanner(link: link, onPairAgain: widget.onPairAgain), const SizedBox(height: 12)]];
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Sideways, the touch pad takes the left side and the controls the right, starting with the title, timeline and
+        // play buttons: under the pad, those were below the fold.
+        if (state.media && constraints.maxWidth > constraints.maxHeight && constraints.maxWidth >= 560) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(flex: 5, child: Padding(padding: const EdgeInsets.only(bottom: 12), child: _touchPad())),
+                const SizedBox(width: 20),
+                Expanded(
+                  flex: 6,
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...banner, ..._playing(state)]),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+        return _upright(state, banner);
+      },
+    );
+  }
+
+  Widget _upright(RemoteState state, List<Widget> banner) {
     final children = <Widget>[
-      if (!status.isConnected) ...[_ConnectionBanner(link: link, onPairAgain: widget.onPairAgain), const SizedBox(height: 12)],
-      if (!state.media) ...[_Nothing(pcName: link.pcName, connected: status.isConnected)] else ..._playing(state),
+      ...banner,
+      if (!state.media)
+        _Nothing(pcName: link.pcName, connected: link.status.isConnected)
+      else ...[
+        Expanded(
+          child: ConstrainedBox(constraints: const BoxConstraints(minHeight: 116), child: _touchPad()),
+        ),
+        const SizedBox(height: 16),
+        ..._playing(state),
+      ],
     ];
     // The touch pad takes whatever height the controls leave. On a screen too short for its smallest size, it all
     // scrolls instead of squeezing.
@@ -316,6 +368,34 @@ class _RemoteScreenState extends State<RemoteScreen> {
     );
   }
 
+  static const _volumeStyle = TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]);
+
+  static double _labelWidth(BuildContext context, String text, TextStyle style) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+    final width = painter.width.ceilToDouble() + 1;
+    painter.dispose();
+    return width;
+  }
+
+  Widget _touchPad() => _TouchPad(
+    enabled: _canPlay,
+    volumeEnabled: _canAdjust,
+    feedback: _feedback,
+    onTap: _toggle,
+    onSwipe: (forward) => _seekBy(forward ? 10000 : -10000),
+    volume: () => _volume,
+    onVolume: (value, done) {
+      _setVolume(value, done: done);
+      _flash(_phoneVolume ? 'Phone volume $value%' : 'Volume $value%');
+    },
+  );
+
+  /// Everything but the touch pad, from the title down.
   List<Widget> _playing(RemoteState state) {
     final duration = state.durationMs;
     final position = _position;
@@ -329,24 +409,6 @@ class _RemoteScreenState extends State<RemoteScreen> {
       onTap: () => link.command('loop'),
     );
     return [
-      Expanded(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 116),
-          child: _TouchPad(
-            enabled: _canPlay,
-            volumeEnabled: _canAdjust,
-            feedback: _feedback,
-            onTap: _toggle,
-            onSwipe: (forward) => _seekBy(forward ? 10000 : -10000),
-            volume: () => _volume,
-            onVolume: (value, done) {
-              _setVolume(value, done: done);
-              _flash(_phoneVolume ? 'Phone volume $value%' : 'Volume $value%');
-            },
-          ),
-        ),
-      ),
-      const SizedBox(height: 16),
       Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -401,13 +463,24 @@ class _RemoteScreenState extends State<RemoteScreen> {
       Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            formatClock(position),
-            style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+          // Each shrinks rather than spill past the edge on a narrow phone with very large text.
+          Flexible(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                formatClock(position),
+                style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+              ),
+            ),
           ),
-          Text(
-            duration > 0 ? '−${formatClock(duration - position)}' : '',
-            style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+          Flexible(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                duration > 0 ? '−${formatClock(duration - position)}' : '',
+                style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+              ),
+            ),
           ),
         ],
       ),
@@ -601,12 +674,15 @@ class _RemoteScreenState extends State<RemoteScreen> {
             ),
           ),
           const SizedBox(width: 12),
+          // As wide as "Muted" at the phone's text size, so neither it nor "100%" wraps, and the track keeps its length.
           SizedBox(
-            width: 42,
+            width: math.max(42.0, _labelWidth(context, 'Muted', _volumeStyle)),
             child: Text(
               _muted ? 'Muted' : '$_volume%',
               textAlign: TextAlign.right,
-              style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+              maxLines: 1,
+              softWrap: false,
+              style: _volumeStyle,
             ),
           ),
         ],
@@ -1017,7 +1093,10 @@ class _SoundRow extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  // Two lines of text in a 54 dp pebble: past 160% text they would spill out of it.
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(maxScaleFactor: 1.6, child: _build(context));
+
+  Widget _build(BuildContext context) => ListenableBuilder(
     listenable: Listenable.merge([sound, sound.settings]),
     builder: (context, _) {
       if (!sound.on) {
@@ -1137,7 +1216,10 @@ class _TrackPill extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) {
+  // As the Sound row: two lines in a 54 dp pebble.
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(maxScaleFactor: 1.6, child: Builder(builder: _build));
+
+  Widget _build(BuildContext context) {
     final choice = tracks.where((t) => t.id == selected).firstOrNull;
     final value = choice == null
         ? (tracks.isEmpty && !opened ? 'Not yet' : 'None')
