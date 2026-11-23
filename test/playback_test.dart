@@ -417,6 +417,9 @@ void main() {
     player.listed.add(const Tracks());
     await pumpEventQueue();
     expect(playback.audioTracks.map((t) => t.id), ['1', '2']);
+    // Let go of, the player lists nothing.
+    await playback.stop();
+    expect(playback.tracks.audio, isNot(contains(predicate<AudioTrack>((t) => t.id == '1'))));
     playback.dispose();
   });
 

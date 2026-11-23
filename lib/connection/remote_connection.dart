@@ -289,10 +289,10 @@ class RemoteConnection extends RemoteLink {
     try {
       socket = await connectSocket(uri);
     } catch (e) {
-      // A server that answered, but not as a room server's /remote does (one from before phones, or a proxy whose server
-      // is down), isn't the phone's internet: it says so, and asks again slowly.
-      final answered = RegExp(r'not upgraded to websocket|HTTP status code: \d+', caseSensitive: false).hasMatch('$e');
-      if (answered) {
+      // A server that refused (an error status: one from before phones, or a proxy whose server is down) isn't the
+      // phone's internet: it says so, and asks again slowly. Any other answer, such as a hotel Wi-Fi's sign-in page, is.
+      final status = int.tryParse(RegExp(r'HTTP status code: (\d+)', caseSensitive: false).firstMatch('$e')?.group(1) ?? '');
+      if (status != null && status >= 400) {
         _fail(generation, "The room server didn't take the connection. It may be down or need an update.", slow: true);
       } else {
         _fail(generation, "Can't reach the room server. Check your internet connection.");

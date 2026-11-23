@@ -102,6 +102,8 @@ class LibraryListing extends ChangeNotifier {
     final request = _next;
     if (request == null || loading) return;
     loading = true;
+    // Try again shows the spinner, not the last error, while it asks.
+    error = null;
     _notify();
     try {
       final page = LibraryPage.fromJson(await link.ask('browse', request.toJson()));

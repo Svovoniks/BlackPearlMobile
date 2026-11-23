@@ -517,6 +517,22 @@ void main() {
     });
   });
 
+  test("a sign-in page answering for the room server (hotel Wi-Fi) is the phone's internet, not the server", () {
+    fakeAsync((async) {
+      final connection = RemoteConnection(
+        target: pairedTarget,
+        identity: const PhoneIdentity(appVersion: '1.2.3', device: 'Test phone'),
+        connectSocket: (uri) async => throw Exception("WebSocketException: Connection to 'https://rooms.example.com:0/remote#' was not upgraded to websocket, HTTP status code: 200"),
+        createPeer: (servers, relay) async => FakePeer(servers, relay),
+      );
+      connection.start();
+      async.flushMicrotasks();
+      expect(connection.status.message, contains('Check your internet connection'));
+      expect(connection.status.retryAt!.difference(clock.now()).inSeconds, lessThan(5));
+      connection.dispose();
+    });
+  });
+
   test('coming back to the app while the link is still closing leaves it connecting, not stopped', () {
     fakeAsync((async) {
       final h = Harness(pairedTarget);

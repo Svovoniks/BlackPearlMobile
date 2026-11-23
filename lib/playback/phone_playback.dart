@@ -1102,6 +1102,8 @@ class PhonePlayback extends ChangeNotifier {
   (Player, Uri?)? _detachPlayer() {
     _progressTimer?.cancel();
     _progressTimer = null;
+    // The tracks of a video no longer shown.
+    _tracks = const Tracks();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }

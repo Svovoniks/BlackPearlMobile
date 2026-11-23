@@ -140,9 +140,11 @@ void main() {
     addTearDown(tester.view.reset);
     final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library'};
     var fail = true;
+    Completer<void>? held;
     link.answer = (type, fields) async {
       if (fields['page'] == 0) return {...homePage(), 'total': 43};
       if (fail) throw const RemoteRequestException('timeout', "The PC didn't answer. Try again.");
+      await held?.future;
       return {...homePage(), 'page': 1, 'total': 43, 'entries': <Map<String, dynamic>>[]};
     };
     await tester.pumpWidget(MaterialApp(
@@ -157,7 +159,12 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining("Couldn't load more"), findsOneWidget);
     fail = false;
+    held = Completer<void>();
     await tester.tap(find.text('Try again'));
+    await tester.pump();
+    expect(find.textContaining("Couldn't load more"), findsNothing, reason: 'Try again shows it is trying');
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    held.complete();
     await tester.pumpAndSettle();
     expect(link.asked, hasLength(3));
     expect(find.text('Try again'), findsNothing);

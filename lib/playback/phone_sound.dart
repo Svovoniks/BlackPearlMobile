@@ -212,6 +212,7 @@ class PhoneSound extends ChangeNotifier {
   Future<void> turnOn() async {
     if (_wanted) return;
     _wanted = true;
+    _unanswered = 0;
     _message = null;
     _setPhase(SoundPhase.starting);
     keepAwake?.call(true);
@@ -250,6 +251,7 @@ class PhoneSound extends ChangeNotifier {
   Future<void> turnOff({String? message, bool tell = true}) async {
     final was = _wanted;
     _wanted = false;
+    _unanswered = 0;
     // Told first, before anything here waits: the connection may be disposed right after (another PC chosen).
     if (was && tell && link.status.isConnected) {
       unawaited(link.ask('listen', {'on': false}, timeout: const Duration(seconds: 5)).then((_) {}, onError: (Object _) {}));

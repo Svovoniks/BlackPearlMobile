@@ -161,6 +161,31 @@ void main() {
       sound.dispose();
     });
 
+    test('turned off and on again, the sound gets its three tries again', () async {
+      final link = pc();
+      var asked = 0;
+      link.answer = (type, fields) {
+        if (type != 'listen' || fields['on'] != true) return Future.value({'type': type});
+        asked++;
+        // The first try goes unanswered; the second waits until the user turns the sound off.
+        if (asked == 1) return Future.error(const RemoteRequestException('timeout', "The PC didn't answer. Try again."));
+        return Completer<Map<String, dynamic>>().future;
+      };
+      final sound = PhoneSound(link: link, settings: AppSettings(MemorySettingsStore()));
+      unawaited(sound.turnOn());
+      await pumpEventQueue();
+      await sound.turnOff();
+      asked = 0;
+      link.answer = (type, fields) {
+        if (type == 'listen' && fields['on'] == true) asked++;
+        return Future.error(const RemoteRequestException('timeout', "The PC didn't answer. Try again."));
+      };
+      await sound.turnOn();
+      await pumpEventQueue();
+      expect(asked, 3);
+      sound.dispose();
+    });
+
     test("a PC that refuses says why, and nothing stays on", () async {
       final link = pc();
       link.answer = (type, fields) =>

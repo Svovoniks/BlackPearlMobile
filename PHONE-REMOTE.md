@@ -401,3 +401,21 @@ so phones are never left with neither. The phones then reconnect to the app as a
 doesn't start the host when it closes to install an update or as Windows signs out, and a build started with
 `BLACKPEARL_PHONE_HOST=off` (as `scripts/dev-launch.ps1` does unless `-PhoneHost`) never starts it or changes the
 sign-in entry.
+
+## Diagnostics
+
+The PC writes the phone remote's progress to its diagnostics log, `logs/diagnostics.jsonl` in the app's data folder
+(`logs/phone-host/` for the phone host), so a phone that couldn't connect can be traced afterwards. Records name a
+session and a phone by the first 8 characters of their random ids, and never hold keys, secrets or pairing codes.
+
+| Kind | When |
+| --- | --- |
+| `remote-start`, `remote-stop`, `remote-off` | The link to the room server starts or stops, or the phone remote is turned off |
+| `remote-server` | The room server link changes state: `ready` (with the attempts that failed before it), `lost`, `unreachable` (with the error), `refused`, `replaced`, `outdated-server`, `invalid-address`. A state that repeats is written once. |
+| `remote-signal-refused` | A signal the PC turned away, once per session and reason: `unknown-phone`, `pairing-expired`, `bad-signature`, `too-many-sessions` |
+| `remote-session-opened` | A phone's offer starts a session: whether it pairs, replaces an earlier session, and how many STUN and TURN servers it may use |
+| `remote-session-state` | The connection's state changes, with the candidates gathered on each side by type, and `direct` or `relay` once connected |
+| `remote-session-channel`, `remote-session-greeted`, `remote-session-paired` | The data channel opens, the phone's `hello` is accepted (with its app version), pairing completes |
+| `remote-session-refused` | `protocol` (with the phone's protocol), `pairing-expired`, `already-paired` |
+| `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`), its age, and its path |
+| `phone-read-failed`, `phone-resource-missing` | A read on `media-v1` failed, with the kind of resource; and why the PC had nothing for it (`no-video`, `other-video`, `not-converted`, `other-stream`, `no-such-piece`, `no-such-sound-piece`, `unknown-picture`, `missing-file`, `unreadable:<error>`, `malformed`) |
