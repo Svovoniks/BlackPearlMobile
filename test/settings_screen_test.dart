@@ -4,6 +4,7 @@ import 'package:blackpearl_mobile/app_model.dart';
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/connection/transport.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
+import 'package:blackpearl_mobile/storage/app_settings.dart';
 import 'package:blackpearl_mobile/storage/paired_pcs.dart';
 import 'package:blackpearl_mobile/ui/settings_screen.dart';
 import 'package:blackpearl_mobile/ui/theme.dart';
@@ -41,7 +42,7 @@ const _newer = {
   ],
 };
 
-Future<void> pump(WidgetTester tester, AppUpdater? updater) async {
+Future<void> pump(WidgetTester tester, AppUpdater? updater, {AppSettings? settings}) async {
   tester.view.physicalSize = const Size(1080, 2340);
   tester.view.devicePixelRatio = 2.75;
   addTearDown(tester.view.reset);
@@ -49,7 +50,11 @@ Future<void> pump(WidgetTester tester, AppUpdater? updater) async {
     MaterialApp(
       theme: buildTheme(),
       home: SettingsScreen(
-        model: AppModel(store: PairedPcStore(MemorySecretStore()), connect: (_, {onPaired, onPcName}) => throw UnsupportedError('test')),
+        model: AppModel(
+          store: PairedPcStore(MemorySecretStore()),
+          connect: (_, {onPaired, onPcName}) => throw UnsupportedError('test'),
+          settings: settings,
+        ),
         link: FakeRemoteLink(
           pcName: 'Living room PC',
           status: const LinkStatus(LinkPhase.connected, path: NetworkPath.home),
@@ -111,5 +116,33 @@ void main() {
     await pump(tester, null);
     await tester.pumpAndSettle();
     expect(find.text('Check for updates'), findsNothing);
+  });
+
+  testWidgets('Settings turns following the phone in the player on and off, and keeps it', (tester) async {
+    final store = MemorySettingsStore();
+    final settings = AppSettings(store);
+    await settings.load();
+    expect(settings.followPhoneRotation, isFalse);
+    await pump(tester, null, settings: settings);
+    final toggle = find.text('Turn the player with the phone');
+    // At the end of the list, where a shorter card would pull everything above it down.
+    await tester.drag(find.byType(ListView), const Offset(0, -3000));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Off, each video opens in its own shape'), findsOneWidget);
+    final where = tester.getCenter(toggle);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(settings.followPhoneRotation, isTrue);
+    // Nothing moves under the finger.
+    expect(tester.getCenter(toggle), where);
+    final again = AppSettings(store);
+    await again.load();
+    expect(again.followPhoneRotation, isTrue);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(settings.followPhoneRotation, isFalse);
+    expect(tester.getCenter(toggle), where);
   });
 }

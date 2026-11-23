@@ -110,12 +110,29 @@ class MainActivity : FlutterActivity() {
         pictureInPicture?.userLeaving()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        pictureInPicture?.sawFullScreen()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        pictureInPicture?.sawFullScreen()
+    }
+
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         pictureInPicture?.changed(isInPictureInPictureMode)
-        // Leaving picture in picture while stopped means its window was closed, not expanded back to the app. (Stopping
-        // while still in picture in picture is the screen turning off, which keeps the window.)
-        if (!isInPictureInPictureMode && lifecycle.currentState == Lifecycle.State.CREATED) pictureInPicture?.dismissed()
+        when {
+            isInPictureInPictureMode -> pictureInPicture?.entered()
+            // Leaving picture in picture while stopped means its window was closed, not expanded back to the app.
+            // (Stopping while still in picture in picture is the screen turning off, which keeps the window.)
+            lifecycle.currentState == Lifecycle.State.CREATED -> {
+                pictureInPicture?.release()
+                pictureInPicture?.dismissed()
+            }
+            else -> pictureInPicture?.expanded()
+        }
     }
 
     override fun onStart() {
@@ -123,6 +140,12 @@ class MainActivity : FlutterActivity() {
         // Flutter hears "resumed" only from onResume, which a picture-in-picture window doesn't reach after the screen
         // was off; the app still believes it is in the background.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) pictureInPicture?.shown()
+        pictureInPicture?.visible()
+    }
+
+    override fun onStop() {
+        pictureInPicture?.hidden()
+        super.onStop()
     }
 
     override fun onDestroy() {

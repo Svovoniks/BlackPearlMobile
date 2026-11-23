@@ -46,6 +46,11 @@ class AppSettings extends ChangeNotifier {
   String _loopMode = 'off';
   bool _shuffle = false;
   int _soundDelayMs = 0;
+  bool _followPhoneRotation = false;
+
+  /// Whether the player turns with the phone, as Android's Auto-rotate says. Off by default: each video opens in its
+  /// own shape, sideways for a wide video and upright for a tall one, and keeps it however the phone is held.
+  bool get followPhoneRotation => _followPhoneRotation;
 
   /// How much later than the PC's picture the phone plays the PC's sound, in milliseconds (negative: earlier), for
   /// headphones and speakers that take their own time. Set on the Remote tab while the sound is on the phone.
@@ -79,6 +84,7 @@ class AppSettings extends ChangeNotifier {
       final loop = await _store.readString('loopMode');
       _loopMode = loopModes.contains(loop) ? loop! : 'off';
       _shuffle = await _store.readBool('shuffle') ?? false;
+      _followPhoneRotation = await _store.readBool('followPhoneRotation') ?? false;
       _soundDelayMs = (int.tryParse(await _store.readString('soundDelayMs') ?? '') ?? 0).clamp(-soundDelayLimitMs, soundDelayLimitMs);
     } catch (_) {
       // Unreadable preferences leave the defaults.
@@ -112,6 +118,13 @@ class AppSettings extends ChangeNotifier {
     _shuffle = value;
     notifyListeners();
     await _quietly(_store.writeBool('shuffle', value));
+  }
+
+  Future<void> setFollowPhoneRotation(bool value) async {
+    if (value == _followPhoneRotation) return;
+    _followPhoneRotation = value;
+    notifyListeners();
+    await _quietly(_store.writeBool('followPhoneRotation', value));
   }
 
   Future<void> setSoundDelayMs(int value) async {

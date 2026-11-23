@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui' show DisplayFeatureType;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
@@ -9,6 +10,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../playback/phone_playback.dart';
 import '../playback/picture_in_picture.dart';
 import '../playback/track_languages.dart';
+import '../playback/video_shape.dart';
 import '../protocol/library.dart' show qualityLabel;
 import '../storage/app_settings.dart';
 import 'pebbles.dart';
@@ -75,13 +77,14 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     playback.notice.addListener(_notice);
     playback.pending.addListener(_rebuild);
     playback.upNext.addListener(_upNextChanged);
+    widget.settings?.addListener(_syncShape);
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_readCutout()));
     pip.active.addListener(_pipChanged);
     pip.onToggle = _toggle;
     pip.onDismissed = _pipDismissed;
     pip.onShown = playback.pictureInPictureShown;
-    pip.onReady = _syncPip;
+    pip.onReady = _activityAttached;
     // The app may have started without a window to ask whether picture in picture is there.
     unawaited(
       pip.refresh().then((_) {
@@ -105,13 +108,15 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (pip.onToggle == _toggle) pip.onToggle = null;
     if (pip.onDismissed == _pipDismissed) pip.onDismissed = null;
     if (pip.onShown == playback.pictureInPictureShown) pip.onShown = null;
-    if (pip.onReady == _syncPip) pip.onReady = null;
+    if (pip.onReady == _activityAttached) pip.onReady = null;
     // Leaving the player: leaving the app no longer moves anything to a small window.
     unawaited(pip.update(wanted: false));
+    unawaited(pip.release());
     playback.removeListener(_changed);
     playback.notice.removeListener(_notice);
     playback.pending.removeListener(_rebuild);
     playback.upNext.removeListener(_upNextChanged);
+    widget.settings?.removeListener(_syncShape);
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     unawaited(SystemChrome.setPreferredOrientations([]));
     _hideTimer?.cancel();
@@ -143,17 +148,27 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _playerSubscriptions.clear();
       if (player != null) {
         void sync(Object? _) => _syncPip();
-        void tracks(Object? _) => unawaited(_readTracks());
+        void sized(Object? _) {
+          _syncPip();
+          _syncShape();
+        }
+
+        void tracks(Object? _) {
+          unawaited(_readTracks());
+          _syncShape();
+        }
+
         _playerSubscriptions
           ..add(player.stream.playing.listen(sync))
           ..add(player.stream.playing.listen((_) => _playingChanged()))
-          ..add(player.stream.width.listen(sync))
-          ..add(player.stream.height.listen(sync))
+          ..add(player.stream.width.listen(sized))
+          ..add(player.stream.height.listen(sized))
           ..add(player.stream.tracks.listen(tracks))
           ..add(player.stream.track.listen(tracks));
         unawaited(_readTracks());
       }
       _syncPip();
+      _syncShape();
     } else {
       // Another conversion of the same video, as after another audio track was picked, plays on the same player.
       unawaited(_readTracks());
@@ -193,6 +208,32 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         playing: state?.playing ?? false,
       ),
     );
+  }
+
+  // The ways up the player allows now; none means it turns with the phone, as everywhere else in the app.
+  List<DeviceOrientation> _orientations = const [];
+
+  // Each video opens in its own shape, sideways for a wide one and upright for a tall one, and keeps it however the
+  // phone turns (either way up, as the phone allows). With Turn the player with the phone (Settings) on, it follows the
+  // phone instead. Until a video's size is known, and for a square one, the player keeps the shape it has.
+  void _syncShape() {
+    final state = _player?.state;
+    final size = state == null ? (0.0, 0.0) : shownSize(state.tracks.video, state.track.video.id, state.width, state.height);
+    final wanted = playerOrientations(size, follows: widget.settings?.followPhoneRotation ?? false);
+    if (wanted == null || listEquals(wanted, _orientations)) return;
+    _orientations = wanted;
+    // A shape held since the small window (the player had none of its own then) ends here, so letting go of it later
+    // can't undo this one.
+    if (wanted.isNotEmpty) unawaited(pip.release());
+    unawaited(SystemChrome.setPreferredOrientations(wanted));
+  }
+
+  // A new activity (after the old one went away while the player stayed open, as when the small window is closed)
+  // knows nothing of what the player asked of the last one: the player asks again.
+  void _activityAttached() {
+    _syncPip();
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
+    if (_orientations.isNotEmpty) unawaited(SystemChrome.setPreferredOrientations(_orientations));
   }
 
   void _notice() {

@@ -41,7 +41,9 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   after its last episode) and one, and is remembered. The tune button opens Audio, Subtitles and Quality: beside the
   video in landscape, a short sheet in portrait. Tracks are named by language, with what tells them apart, and start as
   the PC's Settings › Playback languages would pick them. Another quality, a recovery or the next episode opens on the
-  player already on screen, which shows what it is waiting for.
+  player already on screen, which shows what it is waiting for. Each video opens in its own shape, sideways for a wide
+  one and upright for a tall one (from the size its file gives, turned and stretched as the file says), and keeps it
+  however the phone is held; Settings › Turn the player with the phone makes the player turn with the phone instead.
 - **Queues.** The PC's saved queues (its Queues page) are in Library › Queues: each opens its videos in order, with Play
   on the phone or on the PC from where it continues. A video played from a queue steps through the queue: Previous,
   Next, the up-next card and Loop all follow it, on the phone and on the PC. The player's Up next page lists the show's
@@ -50,7 +52,9 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   holds back its next reads for a few seconds, so the answer isn't queued behind more video.
 - **Picture in picture (Android).** While a video plays, leaving the app (Home, or switching apps) moves it to a small
   window with Play/Pause; the player's picture-in-picture button does it at once. A video left without picture in
-  picture (paused, or on a phone that doesn't allow it) waits, and carries on when the app is back.
+  picture (paused, or on a phone that doesn't allow it) waits, and carries on when the app is back. Back from the small
+  window, the video has the shape it had; a player that turns with the phone keeps it until the phone is turned to
+  match.
 - **Background connection (Android).** With Settings › Stay connected in the background on (the default), closing the
   app leaves a foreground service running that keeps the link to the PC. Its notification shows what the PC plays,
   with Play/Pause, and a Disconnect button that drops the link until the app is opened again, without changing the setting. The Flutter engine lives apart from the activity
