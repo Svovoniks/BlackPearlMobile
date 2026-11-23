@@ -34,6 +34,13 @@ void main() {
       expect(TrackLanguages.select(tracks, ['off', 'en'], (t) => t, off: 'none'), 'none');
     });
 
+    test('an untagged track matches any language its title names, as on the PC', () {
+      const tracks = [(tag: null, title: 'Russian dub [English cut]'), (tag: 'eng', title: 'Commentary')];
+      String? language(({String? tag, String? title}) t) => TrackLanguages.languageOf(t.tag, t.title);
+      expect(TrackLanguages.select(tracks, ['en'], language, named: (t) => t), tracks[0]);
+      expect(TrackLanguages.select(tracks, ['ru'], language, named: (t) => t), tracks[0]);
+    });
+
     test("a rule for the audio's language replaces the general subtitle priorities", () {
       const preferences = TrackPreferences(subtitles: ['en'], rules: [SubtitleRule(audio: 'en', languages: ['off'])]);
       expect(TrackLanguages.subtitlePreferences('en', preferences), ['off']);

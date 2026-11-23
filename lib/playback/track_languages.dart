@@ -29,14 +29,23 @@ class TrackLanguages {
 
   /// The first track in a preferred language, in priority order; for subtitles, `off` first means none (returns
   /// [off]). Null when no preference matches.
-  static T? select<T>(List<T> tracks, List<String> preferences, String? Function(T) language, {T? off}) {
+  ///
+  /// With [named] (a track's tag and title), an untagged track matches a language named anywhere in its title, as on
+  /// the PC, rather than only the first one named there: "Russian dub of the English cut" is both.
+  static T? select<T>(List<T> tracks, List<String> preferences, String? Function(T) language, {T? off, ({String? tag, String? title}) Function(T)? named}) {
+    bool names(T track, String preference) {
+      if (named == null) return false;
+      final (:tag, :title) = named(track);
+      return normalize(tag) == null && (title ?? '').split(_separators).any((word) => normalize(word) == preference);
+    }
+
     for (final preference in preferences) {
       if (preference == 'off') {
         if (off != null) return off;
         continue;
       }
       for (final track in tracks) {
-        if (language(track) == preference) return track;
+        if (language(track) == preference || names(track, preference)) return track;
       }
     }
     return null;

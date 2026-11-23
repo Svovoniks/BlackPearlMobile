@@ -15,7 +15,8 @@ enum PlayerOptionsTab { upNext, audio, subtitles, quality }
 
 /// Opens the player's options on [tab]: beside the video in landscape, so the picture stays in view, and as a short
 /// sheet in portrait.
-Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {PlayerOptionsTab tab = PlayerOptionsTab.audio}) {
+/// [insets]: where the camera cutout and the system bars are, which Flutter doesn't report while the player hides the bars.
+Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {PlayerOptionsTab tab = PlayerOptionsTab.audio, EdgeInsets insets = EdgeInsets.zero}) {
   final size = MediaQuery.sizeOf(context);
   if (size.width > size.height) {
     return showGeneralDialog<void>(
@@ -34,9 +35,13 @@ Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {Pl
             color: Palette.surface,
             borderRadius: const BorderRadius.horizontal(left: Radius.circular(26)),
             clipBehavior: Clip.antiAlias,
-            child: SafeArea(
-              left: false,
-              child: PlayerOptionsPanel(playback: playback, initialTab: tab),
+            // Clear of a cutout on the panel's side, which the panel would otherwise cover with its tabs and rows.
+            child: Padding(
+              padding: EdgeInsets.only(top: insets.top, right: insets.right, bottom: insets.bottom),
+              child: SafeArea(
+                left: false,
+                child: PlayerOptionsPanel(playback: playback, initialTab: tab),
+              ),
             ),
           ),
         ),
@@ -52,7 +57,10 @@ Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {Pl
     isScrollControlled: true,
     useSafeArea: true,
     constraints: BoxConstraints(maxHeight: size.height * 0.62),
-    builder: (context) => PlayerOptionsPanel(playback: playback, initialTab: tab),
+    builder: (context) => Padding(
+      padding: EdgeInsets.only(bottom: insets.bottom),
+      child: PlayerOptionsPanel(playback: playback, initialTab: tab),
+    ),
   );
 }
 

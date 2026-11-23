@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/playback/phone_playback.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -221,6 +222,119 @@ void main() {
       expect(playback.audioTracks, isEmpty);
       playback.dispose();
     });
+  });
+
+  test('Watch here left while it waits for the link asks nothing once the link is back: the PC plays on', () async {
+    final pc = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.linking))..offered = const {'watch'};
+    pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 10};
+    final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+    final viewing = playback.startViewing();
+    final opening = playback.watch('film', takeOver: true);
+    await pumpEventQueue();
+    // Back on the Opening screen.
+    playback.cancelOpening(viewing);
+    pc.status = const LinkStatus(LinkPhase.connected);
+    expect(await opening, isFalse);
+    expect(pc.asked, isEmpty);
+    playback.dispose();
+  });
+
+  test('a stream lost while the app is away waits for its return rather than ending in an error', () {
+    fakeAsync((async) {
+      final pc = link();
+      final player = _FakePlayer()..durationMs = 600000;
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000};
+      unawaited(playback.watch('film'));
+      async.flushMicrotasks();
+      player.positionMs = 61000;
+      player.positions.add(const Duration(milliseconds: 61000));
+      async.flushMicrotasks();
+      unawaited(playback.background());
+      async.flushMicrotasks();
+      // Without the background service the link goes after 30 seconds, and the stream with it.
+      pc.status = const LinkStatus(LinkPhase.idle);
+      playback.proxy.onLost!(playback.stream!);
+      async.elapse(const Duration(minutes: 10));
+      expect(playback.phase, PhonePlaybackPhase.playing, reason: 'no error waits on return');
+      unawaited(playback.foreground());
+      pc.status = const LinkStatus(LinkPhase.connected);
+      async.elapse(const Duration(seconds: 1));
+      expect(pc.asked.where((a) => a.$1 == 'watch'), hasLength(2), reason: 'it asks again once back');
+      playback.dispose();
+    });
+  });
+
+  test("the place one video stalled at isn't the next video's end: running out of data there is a stall", () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    Map<String, dynamic> stream(String id) => {'type': 'stream', 'id': id, 'kind': 'file', 'resource': 'file/$id', 'length': 1000, 'durationMs': 600000};
+    pc.answer = (type, fields) async => stream(fields['id'] as String);
+    await playback.watch('e1');
+    player.positionMs = 61000;
+    player.positions.add(const Duration(milliseconds: 61000));
+    await pumpEventQueue();
+    // e1 stalls at 1:01 and is asked for again; meanwhile the user opens e2.
+    pc.answer = (type, fields) => fields['id'] == 'e1' ? Completer<Map<String, dynamic>>().future : Future.value(stream('e2'));
+    playback.proxy.onLost!(playback.stream!);
+    await pumpEventQueue();
+    await playback.watch('e2');
+    player.positionMs = 61500;
+    player.positions.add(const Duration(milliseconds: 61500));
+    await pumpEventQueue();
+    player.completes.add(true);
+    await pumpEventQueue();
+    expect(pc.told.where((t) => t.$1 == 'progress' && t.$2['id'] == 'e2' && t.$2['ended'] == true), isEmpty);
+    expect(pc.asked.last.$2['id'], 'e2', reason: 'e2 is asked for again from where it stopped');
+    playback.dispose();
+  });
+
+  test('another quality starts where the video is when it is ready, not where it was when asked for', () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000, 'qualities': ['original', '720p']};
+    await playback.watch('film');
+    player.positionMs = 61000;
+    player.positions.add(const Duration(milliseconds: 61000));
+    await pumpEventQueue();
+    final answer = Completer<Map<String, dynamic>>();
+    pc.answer = (type, fields) => answer.future;
+    final switching = playback.changeQuality('720p');
+    await pumpEventQueue();
+    expect(pc.asked.last.$2['quality'], '720p');
+    // The PC takes 9 seconds to get it ready; the old stream plays on meanwhile.
+    player.positionMs = 70000;
+    player.positions.add(const Duration(milliseconds: 70000));
+    await pumpEventQueue();
+    answer.complete({'type': 'stream', 'id': 'film', 'kind': 'hls', 'streamId': 'a' * 32, 'segments': 150, 'segmentMs': 4000, 'durationMs': 600000, 'quality': '720p', 'qualities': ['original', '720p']});
+    await switching;
+    expect(player.opened.last.start, const Duration(milliseconds: 70000));
+    playback.dispose();
+  });
+
+  test('Continue on PC: the stream the PC ends before it answers asks for nothing again', () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000};
+    await playback.watch('film');
+    player.positionMs = 61000;
+    player.positions.add(const Duration(milliseconds: 61000));
+    await pumpEventQueue();
+    final played = Completer<Map<String, dynamic>>();
+    pc.answer = (type, fields) => type == 'play' ? played.future : Future.value({'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000});
+    final handing = playback.continueOnPc();
+    await pumpEventQueue();
+    // The PC ends the phone's stream, then answers.
+    playback.proxy.onLost!(playback.stream!);
+    await pumpEventQueue();
+    played.complete({'type': 'done'});
+    expect(await handing, isNull);
+    await pumpEventQueue();
+    expect(pc.asked.map((a) => a.$1), ['watch', 'play']);
+    playback.dispose();
   });
 
   group('a paused video', () {
