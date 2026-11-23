@@ -5,7 +5,9 @@ import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/ui/library_screen.dart';
 import 'package:blackpearl_mobile/ui/queue_widgets.dart';
+import 'package:blackpearl_mobile/ui/theme.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:material_ui/material_ui.dart';
 
 LibraryEntry entry(String id, int index, {bool playable = true, bool watched = false}) =>
     LibraryEntry(id: id, title: id, playable: playable, index: index, watched: watched);
@@ -169,5 +171,35 @@ void main() {
     await actions.playOnPc(entry('d', 3));
     expect((watched?.id, watched?.index), ('evening', 4));
     expect((played?.id, played?.index), ('evening', 3));
+  });
+
+  testWidgets("the Remote's Up next follows the PC to the next episode", (tester) async {
+    final link = FakeRemoteLink(
+      pcName: 'Den',
+      status: const LinkStatus(LinkPhase.connected),
+      state: const RemoteState(media: true, title: 'e1', durationMs: 1000, mediaId: 'e1'),
+    )..offered = const {'library', 'queues'};
+    link.answer = (type, fields) async => type == 'queues'
+        ? {'type': 'queues', 'queues': <Object>[]}
+        : {
+            'type': 'page', 'total': 3, 'page': 0, 'pageSize': 40, 'location': 'Show',
+            'entries': [for (final (i, id) in ['e1', 'e2', 'e3'].indexed) {'id': id, 'title': id, 'level': 'episode', 'playable': true, 'index': i}],
+          };
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(),
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: TextButton(onPressed: () => showRemoteUpNext(context, link: link, mediaId: 'e1', queue: null), child: const Text('open')),
+        ),
+      ),
+    ));
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    bool current(String id) => tester.widget<QueueEntryRow>(find.ancestor(of: find.text(id), matching: find.byType(QueueEntryRow))).current;
+    expect(current('e1'), isTrue);
+    link.setState(const RemoteState(media: true, title: 'e2', durationMs: 1000, mediaId: 'e2'));
+    await tester.pumpAndSettle();
+    expect(current('e1'), isFalse);
+    expect(current('e2'), isTrue);
   });
 }

@@ -601,7 +601,10 @@ class _RemoteUpNext extends StatefulWidget {
 
 class _RemoteUpNextState extends State<_RemoteUpNext> {
   List<QueueSummary>? _queues;
-  late String? _selected = widget.queue?.id;
+  // What the PC plays: it moves on (next episode, a pick here or on the PC), and the playing row follows it.
+  late String? _mediaId = widget.mediaId;
+  late QueueRef? _queue = widget.queue;
+  late String? _selected = _queue?.id;
   LibraryListing? _listing;
   String? _error;
   bool _busy = false;
@@ -621,13 +624,35 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
       ),
     );
     _open();
+    widget.link.addListener(_linkChanged);
   }
 
   @override
   void dispose() {
+    widget.link.removeListener(_linkChanged);
     _listing?.dispose();
     _scroll.dispose();
     super.dispose();
+  }
+
+  void _linkChanged() {
+    final state = widget.link.state;
+    if (!mounted || state == null || !state.media || (state.mediaId == _mediaId && state.queue == _queue)) return;
+    setState(() {
+      _mediaId = state.mediaId;
+      _queue = state.queue;
+    });
+    final listing = _listing;
+    // Another show's episode: its own episodes are the list now.
+    if (_selected == null && _mediaId != null && (listing == null || (!listing.loading && !listing.entries.any((e) => e.id == _mediaId)))) {
+      _open();
+      return;
+    }
+    if (listing != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && identical(listing, _listing)) showQueueRow(_scroll, listing.entries.indexWhere(_current), queueRowExtentOf(context));
+      });
+    }
   }
 
   void _open() {
@@ -635,8 +660,8 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
     final selected = _selected;
     final listing = selected != null
         ? LibraryListing(widget.link, BrowseRequest(queue: selected))
-        : widget.mediaId != null
-        ? LibraryListing(widget.link, BrowseRequest(episodesOf: widget.mediaId))
+        : _mediaId != null
+        ? LibraryListing(widget.link, BrowseRequest(episodesOf: _mediaId))
         : null;
     _listing = listing
       ?..addListener(() {
@@ -644,7 +669,7 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
       });
     if (listing != null) {
       unawaited(
-        loadWholeList(listing, mustHave: widget.mediaId).then((_) {
+        loadWholeList(listing, mustHave: _mediaId).then((_) {
           // The playing video's row comes into view once the list is there.
           if (!mounted || !identical(listing, _listing)) return;
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -679,8 +704,8 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
   }
 
   bool _current(LibraryEntry entry) =>
-      entry.id == widget.mediaId &&
-      (_selected == null || _selected != widget.queue?.id || widget.queue?.index == null || entry.index == widget.queue?.index);
+      entry.id == _mediaId &&
+      (_selected == null || _selected != _queue?.id || _queue?.index == null || entry.index == _queue?.index);
 
   @override
   Widget build(BuildContext context) {
@@ -710,7 +735,7 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
             child: ListChooser(
               queues: _queues,
               selected: _selected,
-              episodes: widget.mediaId != null,
+              episodes: _mediaId != null,
               loading: listing?.loading ?? false,
               onSelect: (queue) {
                 if (queue?.id == _selected) return;

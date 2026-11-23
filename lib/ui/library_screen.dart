@@ -700,6 +700,7 @@ class _ContinueCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final progress = entry.progress;
     final next = entry.positionMs < 10000;
+    final lines = continueLines(entry);
     return Semantics(
       button: true,
       label: '${entry.title}, ${next ? 'next episode' : 'resume at ${formatClock(entry.positionMs)}'}',
@@ -738,14 +739,29 @@ class _ContinueCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 7),
-              Text(entry.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
-              Text(entry.caption, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Palette.muted)),
+              Text(lines.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600)),
+              Text(lines.caption, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Palette.muted)),
             ],
           ),
         ),
       ),
     );
   }
+}
+
+/// A Continue watching card's two lines. An episode's title from the PC names its show, as its caption does
+/// ("Show · Episode 1 · Pilot" over "Show · S01 E01"): the show goes on the first line once, and the episode on the
+/// second ("S01 E01 · Pilot"), so the episode's own title isn't the part cut off.
+@visibleForTesting
+({String title, String caption}) continueLines(LibraryEntry entry) {
+  final caption = entry.caption.split(' · ');
+  final show = caption.first;
+  if (caption.length < 2 || show.isEmpty || !entry.title.startsWith('$show · ')) return (title: entry.title, caption: entry.caption);
+  final rest = entry.title.substring(show.length + 3).split(' · ');
+  // "Episode 1" says what the caption's S01 E01 says.
+  final numbered = caption.skip(1).any((part) => RegExp(r'\bE\d+').hasMatch(part));
+  final episode = rest.where((part) => !(numbered && RegExp(r'^Episode \d+$').hasMatch(part)));
+  return (title: show, caption: [...caption.skip(1), ...episode].join(' · '));
 }
 
 /// Home's random pick.

@@ -43,6 +43,19 @@ class _PebbleState extends State<Pebble> {
 
   bool get _active => widget.enabled && widget.onTap != null;
 
+  // A pebble disabled under the finger hears no end to the press (its tap handlers are gone), and showed it pressed
+  // again once enabled.
+  @override
+  void didUpdateWidget(Pebble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_active) _pressed = false;
+  }
+
+  // Its tap handlers being removed also cancels the press, while the pebble builds: nothing to set again then.
+  void _press(bool value) {
+    if (_pressed != value) setState(() => _pressed = value);
+  }
+
   @override
   Widget build(BuildContext context) {
     final radius = BorderRadius.circular(widget.radius ?? widget.height / 2);
@@ -90,9 +103,9 @@ class _PebbleState extends State<Pebble> {
       label: widget.semanticLabel,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTapDown: _active ? (_) => setState(() => _pressed = true) : null,
-        onTapCancel: _active ? () => setState(() => _pressed = false) : null,
-        onTapUp: _active ? (_) => setState(() => _pressed = false) : null,
+        onTapDown: _active ? (_) => _press(true) : null,
+        onTapCancel: _active ? () => _press(false) : null,
+        onTapUp: _active ? (_) => _press(false) : null,
         onTap: _active
             ? () {
                 HapticFeedback.selectionClick();

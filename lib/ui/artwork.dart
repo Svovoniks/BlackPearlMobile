@@ -96,7 +96,19 @@ class _ArtworkState extends State<Artwork> {
     if (oldWidget.token != widget.token || oldWidget.width != widget.width) _load();
   }
 
+  // A picture that didn't come (the link was down, or the PC was busy or had just restarted) is asked for again a few
+  // times, further apart each time.
+  static const _retries = [Duration(seconds: 2), Duration(seconds: 6), Duration(seconds: 20)];
+  Timer? _retry;
+
+  @override
+  void dispose() {
+    _retry?.cancel();
+    super.dispose();
+  }
+
   void _load() {
+    _retry?.cancel();
     final token = widget.token;
     final key = '$token/${widget.width}';
     _for = key;
@@ -106,8 +118,19 @@ class _ArtworkState extends State<Artwork> {
     }
     _bytes = ArtworkCache.instance.peek(token, widget.width);
     if (_bytes != null) return;
+    _fetch(token, key, 0);
+  }
+
+  void _fetch(String token, String key, int tries) {
     unawaited(ArtworkCache.instance.load(widget.link, token, widget.width).then((bytes) {
-      if (mounted && _for == key && bytes != null) setState(() => _bytes = bytes);
+      if (!mounted || _for != key) return;
+      if (bytes != null) {
+        setState(() => _bytes = bytes);
+      } else if (tries < _retries.length) {
+        _retry = Timer(_retries[tries], () {
+          if (mounted && _for == key) _fetch(token, key, tries + 1);
+        });
+      }
     }));
   }
 

@@ -197,4 +197,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Continue watching'), findsOneWidget);
   });
+
+  test("a Continue watching episode names its show once, and keeps the episode's title", () {
+    const episode = LibraryEntry(id: 'e', title: '3 Body Problem · Episode 1 · Countdown', caption: '3 Body Problem · S01 E01', level: 'episode');
+    expect(continueLines(episode), (title: '3 Body Problem', caption: 'S01 E01 · Countdown'));
+    const film = LibraryEntry(id: 'f', title: 'Asteroid City', caption: 'Movie · 2023');
+    expect(continueLines(film), (title: 'Asteroid City', caption: 'Movie · 2023'));
+  });
 }
