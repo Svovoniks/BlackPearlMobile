@@ -44,8 +44,10 @@ class UpNextOffer {
 /// [MediaProxy] hands it to libmpv. How far the phone gets goes back to the PC as `progress`, so Continue watching
 /// and the watched marks are the same on both.
 class PhonePlayback extends ChangeNotifier {
-  PhonePlayback({required this.link, MediaProxy? proxy, Player Function()? createPlayer, this.awayQuality = 'auto'})
-    : _createPlayer = createPlayer ?? _defaultPlayer {
+  /// [shuffleOrder]: for tests, an order with a seeded random.
+  PhonePlayback({required this.link, MediaProxy? proxy, Player Function()? createPlayer, this.awayQuality = 'auto', ShuffleOrder? shuffleOrder})
+    : _createPlayer = createPlayer ?? _defaultPlayer,
+      _shuffleOrder = shuffleOrder ?? ShuffleOrder() {
     // While the phone waits for an answer, new reads hold back for up to 4 seconds; the player plays from its cache.
     this.proxy = proxy ?? MediaProxy(reader: () => link.media, onLost: _streamLost, beforeRead: () => link.answered(const Duration(seconds: 4)));
   }
@@ -529,7 +531,7 @@ class PhonePlayback extends ChangeNotifier {
   /// Whether the video is part of a show or a queue, so Previous and Next have somewhere to go.
   bool get inList => _followed != null || _stream?.previous != null || _stream?.next != null || _stream?.first != null;
 
-  final ShuffleOrder _shuffleOrder = ShuffleOrder();
+  final ShuffleOrder _shuffleOrder;
   // The list shuffle picks from: a queue's videos, or a show's episodes, and which one it is.
   ({String scope, String? queueId, List<LibraryEntry> entries})? _shuffleList;
   String? _shuffleLoading;

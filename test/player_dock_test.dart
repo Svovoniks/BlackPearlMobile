@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/playback/phone_playback.dart';
+import 'package:blackpearl_mobile/playback/shuffle_order.dart';
 import 'package:blackpearl_mobile/protocol/library.dart';
 import 'package:blackpearl_mobile/ui/player_dock.dart';
 import 'package:flutter/rendering.dart';
@@ -250,7 +252,8 @@ void main() {
       expect(asked, [0, 1]);
       final seen = <String>{};
       for (var i = 0; i < 30; i++) {
-        final order = PhonePlayback(link: link, createPlayer: () => throw StateError('no player'))
+        // Seeded, so the 30 draws are the same every run (unseeded, all 30 missed the second page in about 1 run in 40).
+        final order = PhonePlayback(link: link, createPlayer: () => throw StateError('no player'), shuffleOrder: ShuffleOrder(Random(i)))
           ..debugShow(null, StreamInfo(id: 'e0', title: 'Episode 0', hls: false, next: step('e1')))
           ..shuffle = true;
         await pumpEventQueue();
