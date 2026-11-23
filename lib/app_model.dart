@@ -73,6 +73,9 @@ class AppModel extends ChangeNotifier {
 
   Timer? _backgroundTimer;
 
+  // The notification's Disconnect was pressed while the app showed.
+  bool _disconnectedHere = false;
+
   Future<void> load() async {
     if (_loading) return;
     _loading = true;
@@ -293,6 +296,7 @@ class AppModel extends ChangeNotifier {
         _connection?.command('toggle');
       case 'disconnect':
         // Drops the link now and leaves the setting alone. The service stops as the connection does.
+        _disconnectedHere = _foreground;
         _backgroundTimer?.cancel();
         _backgroundTimer = null;
         // A connection halted by a failure says nothing when it stops, so look again once it has.
@@ -353,10 +357,16 @@ class AppModel extends ChangeNotifier {
   }
 
   void resumed() {
+    final wasAway = !_foreground;
     _foreground = true;
     _backgroundTimer?.cancel();
     _backgroundTimer = null;
-    _connection?.resume();
+    // Disconnect pressed in the notification shade pulled down over the app: the shade closing is no return to the app,
+    // and the link stays dropped until the app is left and opened again.
+    if (!_disconnectedHere || wasAway) {
+      _disconnectedHere = false;
+      _connection?.resume();
+    }
     unawaited(_playback?.foreground());
     _syncBackground();
   }

@@ -177,6 +177,27 @@ void main() {
     app.dispose();
   });
 
+  test("Disconnect in the shade pulled over the app stays when the shade closes; leaving and opening the app reconnects", () {
+    fakeAsync((async) {
+      final background = FakeBackground();
+      final app = model(background, AppSettings(MemorySettingsStore()));
+      unawaited(app.store.save([pc]).then((_) => app.load()));
+      async.flushMicrotasks();
+      final connection = app.connection!;
+      background.press!('disconnect');
+      async.flushMicrotasks();
+      // The shade closes: Android says the app is resumed, without it having been away.
+      app.resumed();
+      async.flushMicrotasks();
+      expect(connection.running, isFalse);
+      app.paused();
+      app.resumed();
+      async.flushMicrotasks();
+      expect(connection.running, isTrue);
+      app.dispose();
+    });
+  });
+
   test('turning the setting off stops the service; on again starts it', () async {
     final background = FakeBackground();
     final settings = AppSettings(MemorySettingsStore());
