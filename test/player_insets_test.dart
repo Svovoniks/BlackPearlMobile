@@ -19,17 +19,26 @@ void main() {
     expect(insets.top, 0);
   });
 
+  test('a camera in the corner keeps the controls off the short edge it sits on, not the long one', () {
+    // A top-left hole, as on the emulator's and some phones' screens: in portrait it is at the top, turned sideways at
+    // the bottom left, where it must not lift the dock.
+    final upright = controlInsets(MediaQueryData(size: const Size(411, 914), displayFeatures: [cutout(const Rect.fromLTWH(0, 0, 52, 52))]));
+    expect(upright, const EdgeInsets.only(top: 52));
+    final sideways = controlInsets(MediaQueryData(size: const Size(914, 411), displayFeatures: [cutout(const Rect.fromLTWH(0, 359, 52, 52))]));
+    expect(sideways, const EdgeInsets.only(left: 52));
+  });
+
   test("the cutout Android reports counts when Flutter reports none", () {
     final insets = controlInsets(const MediaQueryData(size: Size(411, 914)), cutout: const EdgeInsets.only(top: 34));
     expect(insets.top, 34);
   });
 
-  test('the gesture strip and the bars count when they are larger', () {
+  test('the bars count when they show; the gesture strip does not lift the dock', () {
     final insets = controlInsets(const MediaQueryData(
       size: Size(411, 914),
       viewPadding: EdgeInsets.only(top: 52),
       systemGestureInsets: EdgeInsets.only(bottom: 32),
     ));
-    expect(insets, const EdgeInsets.only(top: 52, bottom: 32));
+    expect(insets, const EdgeInsets.only(top: 52));
   });
 }
