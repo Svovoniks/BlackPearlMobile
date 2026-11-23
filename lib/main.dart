@@ -214,6 +214,7 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
     model.notice.addListener(_showNotice);
     // A picture-in-picture window back on screen after the screen was off never gets "resumed" from Flutter.
     PictureInPicture.instance.onAppShown = model.resumed;
+    PictureInPicture.instance.onAppHidden = model.paused;
     try {
       // Covers both the link the app was opened with and links that arrive while it runs.
       _links = (widget.links ?? AppLinks().uriLinkStream).listen(_openLink, onError: (_) {});

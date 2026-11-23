@@ -115,8 +115,13 @@ class MainActivity : FlutterActivity() {
         pictureInPicture?.sawFullScreen()
     }
 
+    // Started in picture in picture after the screen was off, without reaching onResume: Flutter, told nothing then, takes
+    // the stop that follows for the one before it and says nothing again, so the app is told here.
+    private var shownUnresumed = false
+
     override fun onResume() {
         super.onResume()
+        shownUnresumed = false
         pictureInPicture?.sawFullScreen()
     }
 
@@ -139,12 +144,19 @@ class MainActivity : FlutterActivity() {
         super.onStart()
         // Flutter hears "resumed" only from onResume, which a picture-in-picture window doesn't reach after the screen
         // was off; the app still believes it is in the background.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) pictureInPicture?.shown()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode) {
+            shownUnresumed = true
+            pictureInPicture?.shown()
+        }
         pictureInPicture?.visible()
     }
 
     override fun onStop() {
         pictureInPicture?.hidden()
+        if (shownUnresumed) {
+            shownUnresumed = false
+            pictureInPicture?.hiddenAgain()
+        }
         super.onStop()
     }
 
