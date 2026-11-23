@@ -87,8 +87,8 @@ class PictureInPicture {
     await _invoke<void>('enter', null);
   }
 
-  /// The player closed. Back from the small window, the player keeps the shape it had before (portrait or landscape)
-  /// until the phone is turned to match; after the player, turning the phone works as before at once.
+  /// The player closed, or asks for a shape of its own. Back from the small window, a player that turns with the phone
+  /// keeps the shape it had before (portrait or landscape) until the phone is turned to match; this ends that at once.
   Future<void> release() async {
     if (!supported) return;
     await _invoke<void>('release', null);

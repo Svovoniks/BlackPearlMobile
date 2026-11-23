@@ -55,6 +55,8 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
     private var held = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     private var turning: OrientationEventListener? = null
     private var watching: ContentObserver? = null
+    // Stopped: nothing on screen to turn, so the sensor rests.
+    private var outOfSight = false
 
     private val supported: Boolean
         get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
@@ -81,7 +83,7 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
                     apply()
                     result.success(null)
                 }
-                // The player closed: turning the phone works as before.
+                // The player closed, or asks for a shape of its own: the held shape ends.
                 "release" -> {
                     release()
                     result.success(null)
@@ -210,6 +212,7 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
             if (shapeOf(locked == Surface.ROTATION_90 || locked == Surface.ROTATION_270) == fullShape) release()
             return
         }
+        if (outOfSight) return
         val listener = object : OrientationEventListener(activity) {
             override fun onOrientationChanged(degrees: Int) {
                 if (degrees == ORIENTATION_UNKNOWN) return
@@ -238,6 +241,20 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
         holding = false
         // Unless the player asked for a shape of its own meanwhile.
         if (activity.requestedOrientation == held) activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+
+    /** The app went out of sight while the shape is held: the sensor rests until it is back. */
+    fun hidden() {
+        outOfSight = true
+        turning?.disable()
+        turning = null
+    }
+
+    /** Back in sight, full screen: watching the phone for the held shape again, if it was watching before. */
+    fun visible() {
+        outOfSight = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && activity.isInPictureInPictureMode) return
+        if (holding && watching != null) followWhenMatched()
     }
 
     private fun stopFollowing() {

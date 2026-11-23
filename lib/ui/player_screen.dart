@@ -10,6 +10,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../playback/phone_playback.dart';
 import '../playback/picture_in_picture.dart';
 import '../playback/track_languages.dart';
+import '../playback/video_shape.dart';
 import '../protocol/library.dart' show qualityLabel;
 import '../storage/app_settings.dart';
 import 'pebbles.dart';
@@ -83,7 +84,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     pip.onToggle = _toggle;
     pip.onDismissed = _pipDismissed;
     pip.onShown = playback.pictureInPictureShown;
-    pip.onReady = _syncPip;
+    pip.onReady = _activityAttached;
     // The app may have started without a window to ask whether picture in picture is there.
     unawaited(
       pip.refresh().then((_) {
@@ -107,7 +108,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (pip.onToggle == _toggle) pip.onToggle = null;
     if (pip.onDismissed == _pipDismissed) pip.onDismissed = null;
     if (pip.onShown == playback.pictureInPictureShown) pip.onShown = null;
-    if (pip.onReady == _syncPip) pip.onReady = null;
+    if (pip.onReady == _activityAttached) pip.onReady = null;
     // Leaving the player: leaving the app no longer moves anything to a small window.
     unawaited(pip.update(wanted: false));
     unawaited(pip.release());
@@ -216,36 +217,23 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   // phone turns (either way up, as the phone allows). With Turn the player with the phone (Settings) on, it follows the
   // phone instead. Until a video's size is known, and for a square one, the player keeps the shape it has.
   void _syncShape() {
-    final (width, height) = _videoSize();
-    final List<DeviceOrientation> wanted;
-    if (widget.settings?.followPhoneRotation ?? false) {
-      wanted = const [];
-    } else if (width <= 0 || height <= 0 || width == height) {
-      return;
-    } else if (width > height) {
-      wanted = const [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight];
-    } else {
-      wanted = const [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown];
-    }
-    if (listEquals(wanted, _orientations)) return;
+    final state = _player?.state;
+    final size = state == null ? (0.0, 0.0) : shownSize(state.tracks.video, state.track.video.id, state.width, state.height);
+    final wanted = playerOrientations(size, follows: widget.settings?.followPhoneRotation ?? false);
+    if (wanted == null || listEquals(wanted, _orientations)) return;
     _orientations = wanted;
+    // A shape held since the small window (the player had none of its own then) ends here, so letting go of it later
+    // can't undo this one.
+    if (wanted.isNotEmpty) unawaited(pip.release());
     unawaited(SystemChrome.setPreferredOrientations(wanted));
   }
 
-  // The video's size as shown: as its file says, which is known as soon as it opens (turned and stretched as the file
-  // says), or else as the picture came out.
-  (double, double) _videoSize() {
-    final state = _player?.state;
-    if (state == null) return (0, 0);
-    final chosen = state.track.video.id;
-    final files = state.tracks.video.where((t) => (t.w ?? 0) > 0 && (t.h ?? 0) > 0 && t.albumart != true && t.image != true);
-    final track = files.where((t) => t.id == chosen).firstOrNull ?? files.firstOrNull;
-    if (track != null) {
-      final width = track.w! * (track.par ?? 1.0);
-      final height = track.h!.toDouble();
-      return (track.rotate ?? 0) % 180 == 90 ? (height, width) : (width, height);
-    }
-    return ((state.width ?? 0).toDouble(), (state.height ?? 0).toDouble());
+  // A new activity (after the old one went away while the player stayed open, as when the small window is closed)
+  // knows nothing of what the player asked of the last one: the player asks again.
+  void _activityAttached() {
+    _syncPip();
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
+    if (_orientations.isNotEmpty) unawaited(SystemChrome.setPreferredOrientations(_orientations));
   }
 
   void _notice() {
