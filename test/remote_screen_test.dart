@@ -59,6 +59,26 @@ void main() {
     expect(link.sent.single.$2, isA<int>());
   });
 
+  testWidgets('a timeline drag the link cuts short ends: the knob and clocks follow the PC again', (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    final box = tester.getRect(find.bySemanticsLabel('Timeline'));
+    final gesture = await tester.startGesture(box.centerLeft + Offset(box.width * 0.1, 0));
+    await gesture.moveBy(Offset(box.width * 0.1, 0));
+    await gesture.moveBy(Offset(box.width * 0.1, 0));
+    await tester.pump();
+    expect(find.text(formatClock(sampleState.positionMs)), findsNothing, reason: 'the clock follows the finger');
+    link.status = const LinkStatus(LinkPhase.failed, message: 'Lost the connection to the PC.');
+    await tester.pump();
+    await gesture.up();
+    link.status = const LinkStatus(LinkPhase.connected, path: NetworkPath.home);
+    await tester.pump();
+    expect(find.text(formatClock(sampleState.positionMs)), findsOneWidget);
+    expect(link.sent, isEmpty, reason: 'a drag cut short seeks nowhere');
+    await tester.tap(find.bySemanticsLabel('Forward 10 seconds'));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text(formatClock(sampleState.positionMs + 10000)), findsOneWidget, reason: '+10 s starts from where the PC is');
+  });
+
   testWidgets('a timeline drag that ends in the same frame as its last move seeks to where the finger left', (tester) async {
     final link = await pump(tester, state: sampleState.copyWith(playing: false));
     final box = tester.getRect(find.bySemanticsLabel('Timeline'));
@@ -305,6 +325,14 @@ void main() {
     await tester.tap(find.bySemanticsLabel(RegExp('^Subtitles, Not yet')));
     await tester.pumpAndSettle();
     expect(inSheet('The subtitles show once the video has opened on the PC.'), findsOneWidget);
+  });
+
+  testWidgets('a video without subtitles says it has none, not that they are still coming', (tester) async {
+    await pump(tester, state: sampleState.withTracks(subtitles: const []));
+    await tester.ensureVisible(find.bySemanticsLabel(RegExp('^Subtitles, None')));
+    await tester.tap(find.bySemanticsLabel(RegExp('^Subtitles, None')));
+    await tester.pumpAndSettle();
+    expect(inSheet('This video has no subtitles. Subtitles from a file can be loaded on the PC.'), findsOneWidget);
   });
 
   testWidgets('a PC from before tracks on the remote shows no track pills', (tester) async {

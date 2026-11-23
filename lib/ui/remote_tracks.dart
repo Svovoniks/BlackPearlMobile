@@ -164,6 +164,9 @@ class _RemoteTracksPanelState extends State<RemoteTracksPanel> {
                   ),
                 if (state == null || !state.media)
                   const OptionNote('Nothing is playing on the PC.')
+                // Once the audio is listed, an empty Subtitles menu is a video without subtitles, as on the PC.
+                else if (tracks.isEmpty && _tab == RemoteTracksTab.subtitles && (state.audioTracks?.isNotEmpty ?? false))
+                  const OptionNote('This video has no subtitles. Subtitles from a file can be loaded on the PC.')
                 else if (tracks.isEmpty)
                   OptionNote(
                     _tab == RemoteTracksTab.audio

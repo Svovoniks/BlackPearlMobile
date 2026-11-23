@@ -45,6 +45,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
   int? _seekTarget;
   DateTime? _seekAt;
   double? _dragFraction;
+  // The video a timeline drag began on.
+  String? _dragVideo;
   String? _feedback;
   Timer? _feedbackTimer;
 
@@ -109,6 +111,9 @@ class _RemoteScreenState extends State<RemoteScreen> {
     if (_volumeOverride != null && DateTime.now().difference(_volumeChangedAt) > const Duration(milliseconds: 1500)) {
       _volumeOverride = null;
     }
+    // A timeline that goes grey under the finger (the link dropped) gets no end to its drag, and neither does one whose
+    // video changed: the drag ends here, and the knob follows the PC again.
+    if (_dragFraction != null && (!_canPlay || (_state?.durationMs ?? 0) <= 0 || _videoOf(_state) != _dragVideo)) _dragFraction = null;
     _syncTicker();
     setState(() {});
   }
@@ -155,6 +160,9 @@ class _RemoteScreenState extends State<RemoteScreen> {
   RemoteState? get _state => link.state;
   bool get _canPlay => _connected && (_state?.media ?? false) && (_state?.canControl ?? false);
   bool get _canAdjust => _connected && (_state?.media ?? false);
+
+  static String? _videoOf(RemoteState? state) =>
+      state == null || !state.media ? null : '${state.mediaId}|${state.title}|${state.detail}|${state.durationMs}';
 
   int get _position {
     if (_dragFraction != null) return (_dragFraction! * (_state?.durationMs ?? 0)).round();
@@ -379,11 +387,15 @@ class _RemoteScreenState extends State<RemoteScreen> {
       _Timeline(
         fraction: _dragFraction ?? fraction,
         enabled: _canPlay && duration > 0,
-        onDrag: (value) => setState(() => _dragFraction = value),
+        onDrag: (value) => setState(() {
+          if (_dragFraction == null) _dragVideo = _videoOf(state);
+          _dragFraction = value;
+        }),
         onRelease: (value) {
           _seekTo(value);
           setState(() => _dragFraction = null);
         },
+        onCancel: () => setState(() => _dragFraction = null),
       ),
       const SizedBox(height: 2),
       Row(
@@ -524,6 +536,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
                 label: 'Subtitles',
                 icon: Icons.subtitles_outlined,
                 tracks: state.subtitleTracks!,
+                // A video without subtitles has an empty menu on the PC once its audio is listed: it has none, not "not yet".
+                opened: state.audioTracks!.isNotEmpty,
                 selected: state.subtitleTrack,
                 enabled: _canAdjust,
                 onTap: () => unawaited(showRemoteTracks(context, link: link, tab: RemoteTracksTab.subtitles)),
@@ -1106,6 +1120,7 @@ class _TrackPill extends StatelessWidget {
   const _TrackPill({
     required this.label,
     required this.icon,
+    this.opened = false,
     required this.tracks,
     required this.selected,
     required this.enabled,
@@ -1114,6 +1129,9 @@ class _TrackPill extends StatelessWidget {
   final String label;
   final IconData icon;
   final List<RemoteTrack> tracks;
+
+  /// The video has opened on the PC, so an empty list means none rather than not yet.
+  final bool opened;
   final int? selected;
   final bool enabled;
   final VoidCallback onTap;
@@ -1122,7 +1140,7 @@ class _TrackPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final choice = tracks.where((t) => t.id == selected).firstOrNull;
     final value = choice == null
-        ? (tracks.isEmpty ? 'Not yet' : 'None')
+        ? (tracks.isEmpty && !opened ? 'Not yet' : 'None')
         : choice.id == RemoteTrack.off
         ? 'Off'
         // Two tracks in one language are told apart by their detail, as in the sheet.
@@ -1172,11 +1190,12 @@ class _TrackPill extends StatelessWidget {
 
 /// The timeline: a well with an accent fill and a knob. Tap or drag; the seek is sent on release.
 class _Timeline extends StatelessWidget {
-  const _Timeline({required this.fraction, required this.enabled, required this.onDrag, required this.onRelease});
+  const _Timeline({required this.fraction, required this.enabled, required this.onDrag, required this.onRelease, required this.onCancel});
   final double fraction;
   final bool enabled;
   final ValueChanged<double> onDrag;
   final ValueChanged<double> onRelease;
+  final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -1193,6 +1212,7 @@ class _Timeline extends StatelessWidget {
         onHorizontalDragUpdate: enabled ? (d) => onDrag(at(d.localPosition)) : null,
         // Where the finger left, not [fraction]: a drag can end in the same frame as its last move, before a rebuild.
         onHorizontalDragEnd: enabled ? (d) => onRelease(at(d.localPosition)) : null,
+        onHorizontalDragCancel: enabled ? onCancel : null,
         onTapUp: enabled ? (d) => onRelease(at(d.localPosition)) : null,
         child: SizedBox(
           height: 30,
