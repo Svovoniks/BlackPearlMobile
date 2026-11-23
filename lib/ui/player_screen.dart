@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui' show DisplayFeatureType;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:media_kit/media_kit.dart';
@@ -75,6 +76,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     playback.notice.addListener(_notice);
     playback.pending.addListener(_rebuild);
     playback.upNext.addListener(_upNextChanged);
+    widget.settings?.addListener(_syncShape);
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_readCutout()));
     pip.active.addListener(_pipChanged);
@@ -113,6 +115,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     playback.notice.removeListener(_notice);
     playback.pending.removeListener(_rebuild);
     playback.upNext.removeListener(_upNextChanged);
+    widget.settings?.removeListener(_syncShape);
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     unawaited(SystemChrome.setPreferredOrientations([]));
     _hideTimer?.cancel();
@@ -144,17 +147,27 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       _playerSubscriptions.clear();
       if (player != null) {
         void sync(Object? _) => _syncPip();
-        void tracks(Object? _) => unawaited(_readTracks());
+        void sized(Object? _) {
+          _syncPip();
+          _syncShape();
+        }
+
+        void tracks(Object? _) {
+          unawaited(_readTracks());
+          _syncShape();
+        }
+
         _playerSubscriptions
           ..add(player.stream.playing.listen(sync))
           ..add(player.stream.playing.listen((_) => _playingChanged()))
-          ..add(player.stream.width.listen(sync))
-          ..add(player.stream.height.listen(sync))
+          ..add(player.stream.width.listen(sized))
+          ..add(player.stream.height.listen(sized))
           ..add(player.stream.tracks.listen(tracks))
           ..add(player.stream.track.listen(tracks));
         unawaited(_readTracks());
       }
       _syncPip();
+      _syncShape();
     } else {
       // Another conversion of the same video, as after another audio track was picked, plays on the same player.
       unawaited(_readTracks());
@@ -194,6 +207,45 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         playing: state?.playing ?? false,
       ),
     );
+  }
+
+  // The ways up the player allows now; none means it turns with the phone, as everywhere else in the app.
+  List<DeviceOrientation> _orientations = const [];
+
+  // Each video opens in its own shape, sideways for a wide one and upright for a tall one, and keeps it however the
+  // phone turns (either way up, as the phone allows). With Turn the player with the phone (Settings) on, it follows the
+  // phone instead. Until a video's size is known, and for a square one, the player keeps the shape it has.
+  void _syncShape() {
+    final (width, height) = _videoSize();
+    final List<DeviceOrientation> wanted;
+    if (widget.settings?.followPhoneRotation ?? false) {
+      wanted = const [];
+    } else if (width <= 0 || height <= 0 || width == height) {
+      return;
+    } else if (width > height) {
+      wanted = const [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight];
+    } else {
+      wanted = const [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown];
+    }
+    if (listEquals(wanted, _orientations)) return;
+    _orientations = wanted;
+    unawaited(SystemChrome.setPreferredOrientations(wanted));
+  }
+
+  // The video's size as shown: as its file says, which is known as soon as it opens (turned and stretched as the file
+  // says), or else as the picture came out.
+  (double, double) _videoSize() {
+    final state = _player?.state;
+    if (state == null) return (0, 0);
+    final chosen = state.track.video.id;
+    final files = state.tracks.video.where((t) => (t.w ?? 0) > 0 && (t.h ?? 0) > 0 && t.albumart != true && t.image != true);
+    final track = files.where((t) => t.id == chosen).firstOrNull ?? files.firstOrNull;
+    if (track != null) {
+      final width = track.w! * (track.par ?? 1.0);
+      final height = track.h!.toDouble();
+      return (track.rotate ?? 0) % 180 == 90 ? (height, width) : (width, height);
+    }
+    return ((state.width ?? 0).toDouble(), (state.height ?? 0).toDouble());
   }
 
   void _notice() {

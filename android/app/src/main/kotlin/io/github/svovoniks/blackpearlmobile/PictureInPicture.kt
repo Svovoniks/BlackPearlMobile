@@ -52,6 +52,7 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
     // Without that it comes back in whatever shape the home screen or the other app had, which is portrait while the
     // phone is held upright to use it (with auto-rotate on).
     private var holding = false
+    private var held = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     private var turning: OrientationEventListener? = null
     private var watching: ContentObserver? = null
 
@@ -165,6 +166,8 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
         // phone while the small window shows changes nothing.
         stopFollowing()
         if (holding) return
+        // The player keeps the video's own shape (player_screen.dart): that comes back by itself.
+        if (activity.requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) return
         val requested = when (fullShape) {
             // Either way up, as the sensor (or the locked rotation) says; most phones show landscape both ways.
             Configuration.ORIENTATION_LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
@@ -172,6 +175,7 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
             else -> return
         }
         holding = true
+        held = requested
         activity.requestedOrientation = requested
     }
 
@@ -232,7 +236,8 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
         stopFollowing()
         if (!holding) return
         holding = false
-        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        // Unless the player asked for a shape of its own meanwhile.
+        if (activity.requestedOrientation == held) activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 
     private fun stopFollowing() {

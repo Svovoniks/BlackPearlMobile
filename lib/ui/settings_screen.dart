@@ -11,7 +11,8 @@ import 'home_shell.dart';
 import 'pebbles.dart';
 import 'theme.dart';
 
-/// The Settings tab: the background connection, the quality away from home, the paired PCs, and app updates.
+/// The Settings tab: the background connection, the quality away from home, how the player turns, the paired PCs, and
+/// app updates.
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key, required this.model, required this.link, required this.onChoosePc, this.updater});
   final AppModel model;
@@ -90,6 +91,33 @@ class SettingsScreen extends StatelessWidget {
                               title: Text(awayQualityLabel(quality), style: const TextStyle(fontSize: 14.5)),
                             ),
                         ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              Slab(
+                padding: const EdgeInsets.fromLTRB(16, 8, 8, 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: settings.followPhoneRotation,
+                      onChanged: (value) => settings.setFollowPhoneRotation(value),
+                      activeThumbColor: Palette.accentInk,
+                      activeTrackColor: Palette.accent,
+                      title: const Text('Turn the player with the phone', style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600)),
+                    ),
+                    // The same words either way, so nothing below the switch moves under the finger.
+                    const Padding(
+                      padding: EdgeInsets.only(right: 8),
+                      child: Text(
+                        "On, the player turns as the phone does, as Android's Auto-rotate says. Off, each video opens in "
+                        'its own shape, sideways for a wide video and upright for a tall one, and keeps it however you '
+                        'hold the phone.',
+                        style: TextStyle(color: Palette.muted, fontSize: 13, height: 1.35),
                       ),
                     ),
                   ],
