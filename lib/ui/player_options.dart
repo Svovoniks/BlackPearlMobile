@@ -35,14 +35,20 @@ Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {Pl
             color: Palette.surface,
             borderRadius: const BorderRadius.horizontal(left: Radius.circular(26)),
             clipBehavior: Clip.antiAlias,
-            // Clear of a cutout on the panel's side, which the panel would otherwise cover with its tabs and rows.
-            child: Padding(
-              padding: EdgeInsets.only(top: insets.top, right: insets.right, bottom: insets.bottom),
-              child: SafeArea(
-                left: false,
-                child: PlayerOptionsPanel(playback: playback, initialTab: tab),
-              ),
-            ),
+            // Clear of a cutout on the panel's side, which the panel would otherwise cover with its tabs and rows, and of
+            // the bars ([insets] holds both, or else the safe area does).
+            child: insets == EdgeInsets.zero
+                ? SafeArea(left: false, child: PlayerOptionsPanel(playback: playback, initialTab: tab))
+                : Padding(
+                    padding: EdgeInsets.only(top: insets.top, right: insets.right, bottom: insets.bottom),
+                    child: MediaQuery.removePadding(
+                      context: context,
+                      removeTop: true,
+                      removeRight: true,
+                      removeBottom: true,
+                      child: PlayerOptionsPanel(playback: playback, initialTab: tab),
+                    ),
+                  ),
           ),
         ),
       ),
