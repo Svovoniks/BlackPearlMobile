@@ -1019,7 +1019,8 @@ class _TitleSheetState extends State<_TitleSheet> {
     final error = await widget.actions.playOnPc(entry);
     if (!mounted) return;
     if (error == null) {
-      Navigator.of(context).pop();
+      // Closed already, when the pages under it closed for the Remote: once more would close those under them.
+      if (ModalRoute.of(context)?.isCurrent ?? false) Navigator.of(context).pop();
     } else {
       setState(() {
         _busy = false;

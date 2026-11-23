@@ -204,4 +204,41 @@ void main() {
     const film = LibraryEntry(id: 'f', title: 'Asteroid City', caption: 'Movie · 2023');
     expect(continueLines(film), (title: 'Asteroid City', caption: 'Movie · 2023'));
   });
+
+  testWidgets('Play on PC from a show page closes the pages for the Remote, and nothing more', (tester) async {
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    final navigator = GlobalKey<NavigatorState>();
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch'};
+    link.answer = (type, fields) async => fields['parentId'] == 'show'
+        ? {
+            'type': 'page', 'total': 1, 'page': 0, 'pageSize': 40, 'location': 'Night Signal',
+            'entries': [{'id': 'e1', 'title': 'Episode 1', 'level': 'episode', 'kind': 'Show', 'playable': true}],
+          }
+        : homePage();
+    await tester.pumpWidget(MaterialApp(
+      navigatorKey: navigator,
+      theme: buildTheme(),
+      home: LibraryScreen(
+        link: link,
+        actions: LibraryActions(
+          watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {},
+          // As the app does: the Remote shows, over any page.
+          playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async {
+            navigator.currentState!.popUntil((route) => route.isFirst);
+            return null;
+          },
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Night Signal'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Episode 1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Play on PC'));
+    await tester.pumpAndSettle();
+    expect(find.text('Continue watching'), findsOneWidget, reason: 'the first page stays');
+  });
 }
