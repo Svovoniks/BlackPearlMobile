@@ -110,12 +110,29 @@ class MainActivity : FlutterActivity() {
         pictureInPicture?.userLeaving()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        pictureInPicture?.sawFullScreen()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        pictureInPicture?.sawFullScreen()
+    }
+
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         pictureInPicture?.changed(isInPictureInPictureMode)
-        // Leaving picture in picture while stopped means its window was closed, not expanded back to the app. (Stopping
-        // while still in picture in picture is the screen turning off, which keeps the window.)
-        if (!isInPictureInPictureMode && lifecycle.currentState == Lifecycle.State.CREATED) pictureInPicture?.dismissed()
+        when {
+            isInPictureInPictureMode -> pictureInPicture?.entered()
+            // Leaving picture in picture while stopped means its window was closed, not expanded back to the app.
+            // (Stopping while still in picture in picture is the screen turning off, which keeps the window.)
+            lifecycle.currentState == Lifecycle.State.CREATED -> {
+                pictureInPicture?.release()
+                pictureInPicture?.dismissed()
+            }
+            else -> pictureInPicture?.expanded()
+        }
     }
 
     override fun onStart() {

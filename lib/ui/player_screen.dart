@@ -108,6 +108,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (pip.onReady == _syncPip) pip.onReady = null;
     // Leaving the player: leaving the app no longer moves anything to a small window.
     unawaited(pip.update(wanted: false));
+    unawaited(pip.release());
     playback.removeListener(_changed);
     playback.notice.removeListener(_notice);
     playback.pending.removeListener(_rebuild);
