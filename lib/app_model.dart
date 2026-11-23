@@ -119,25 +119,63 @@ class AppModel extends ChangeNotifier {
     _pairingRequested = false;
     _pairingError = null;
     _use(LinkTarget.pairing(link), hold: true);
+    // A code tried while another PC is kept gets a while to pair, and no more: that PC must not stay connected out of
+    // sight behind an attempt that neither pairs nor fails.
+    _attemptTimer?.cancel();
+    if (_held != null) {
+      final trial = _connection!;
+      _attemptTimer = Timer(pairingAttemptLimit, () {
+        final held = _held;
+        if (held != null && identical(_connection, trial)) {
+          _endAttempt(trial, held, "${trial.pcName} didn't finish pairing this phone. Show the code on the PC again and scan it.");
+        }
+      });
+    }
     notifyListeners();
   }
 
+  /// How long a pairing code is tried while the PC in use is kept, before that PC comes back.
+  static const pairingAttemptLimit = Duration(seconds: 45);
+
   // The working link to the PC in use, kept while a pairing code is tried.
   RemoteConnection? _held;
+  Timer? _attemptTimer;
 
   void _pairingChanged() {
     final trial = _connection;
     final held = _held;
-    if (trial == null || held == null || !trial.target.isPairing || trial.status.phase != LinkPhase.failed) return;
-    final message = trial.status.message;
+    if (trial == null || held == null || !trial.target.isPairing) return;
+    final phase = trial.status.phase;
+    // The user has just shown the code on the PC: one that isn't online is a code that won't work, not one to wait for.
+    if (phase != LinkPhase.failed && phase != LinkPhase.waitingForPc) return;
+    final message = phase == LinkPhase.waitingForPc
+        ? "${trial.pcName} isn't online. Open BlackPearl on it, show the code again and scan it."
+        : trial.status.message;
     // Not from inside the failing connection's own notification.
-    scheduleMicrotask(() {
-      if (!identical(_connection, trial) || !identical(_held, held)) return;
-      _held = null;
-      _disposeConnection(sync: false);
-      _adopt(held);
+    scheduleMicrotask(() => _endAttempt(trial, held, message));
+  }
+
+  /// Ends the pairing attempt [trial] and goes back to the PC kept for it, [held]. With [message], the pairing screen
+  /// says why; without, the app simply shows that PC again.
+  void _endAttempt(RemoteConnection trial, RemoteConnection held, String? message) {
+    if (!identical(_connection, trial) || !identical(_held, held)) return;
+    _attemptTimer?.cancel();
+    _attemptTimer = null;
+    _held = null;
+    _disposeConnection(sync: false);
+    _adopt(held);
+    if (message != null) {
       requestPairing(error: message);
-    });
+    } else {
+      notifyListeners();
+    }
+  }
+
+  /// Leaving the app or the notification's Disconnect drops the link the app stands on: during a pairing attempt that is
+  /// the PC kept for it, which the attempt gives way to.
+  void _abandonAttempt() {
+    final trial = _connection, held = _held;
+    if (trial != null && held != null && trial.target.isPairing) _endAttempt(trial, held, null);
   }
 
   void requestPairing({String? error}) {
@@ -154,6 +192,12 @@ class AppModel extends ChangeNotifier {
 
   Future<void> forget(PairedPc pc) async {
     _pcs = _pcs.where((p) => p.pcId != pc.pcId).toList();
+    // Kept for a pairing attempt: it goes now, and an attempt that fails then has no PC to go back to.
+    if (_held?.target.pcId == pc.pcId) {
+      _held!.dispose();
+      _held = null;
+      _syncBackground();
+    }
     final saved = _save("Couldn't save on this phone. ${pc.name} will be back the next time the app starts.");
     if (_connection?.target.pcId == pc.pcId) {
       final next = _pcs.firstOrNull;
@@ -206,6 +250,8 @@ class AppModel extends ChangeNotifier {
     } else {
       connection?.dispose();
       if (!hold) {
+        _attemptTimer?.cancel();
+        _attemptTimer = null;
         _held?.dispose();
         _held = null;
       }
@@ -293,12 +339,14 @@ class AppModel extends ChangeNotifier {
   void _backgroundAction(String action) {
     switch (action) {
       case 'toggle':
-        _connection?.command('toggle');
+        // The PC the notification names: during a pairing attempt, the one kept for it.
+        _linkKept?.command('toggle');
       case 'disconnect':
         // Drops the link now and leaves the setting alone. The service stops as the connection does.
         _disconnectedHere = _foreground;
         _backgroundTimer?.cancel();
         _backgroundTimer = null;
+        _abandonAttempt();
         // A connection halted by a failure says nothing when it stops, so look again once it has.
         unawaited(_connection?.stop().then((_) => _syncBackground()));
     }
@@ -306,6 +354,8 @@ class AppModel extends ChangeNotifier {
 
   void _paired(PairedPc pc) {
     // The code worked: the link to the PC used until now goes.
+    _attemptTimer?.cancel();
+    _attemptTimer = null;
     _held?.dispose();
     _held = null;
     _pcs = [..._pcs.where((p) => p.pcId != pc.pcId), pc];
@@ -353,7 +403,10 @@ class AppModel extends ChangeNotifier {
     _backgroundTimer?.cancel();
     _backgroundTimer = null;
     if (_keepsLink && (background?.running ?? false)) return;
-    _backgroundTimer = Timer(const Duration(seconds: 30), () => unawaited(_connection?.stop()));
+    _backgroundTimer = Timer(const Duration(seconds: 30), () {
+      _abandonAttempt();
+      unawaited(_connection?.stop());
+    });
   }
 
   void resumed() {
@@ -371,7 +424,10 @@ class AppModel extends ChangeNotifier {
     _syncBackground();
   }
 
-  void networkChanged() => _connection?.networkChanged();
+  void networkChanged() {
+    _connection?.networkChanged();
+    _held?.networkChanged();
+  }
 
   @override
   void dispose() {
