@@ -433,7 +433,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   String? get _tickedAudio => playback.pending.value?.audio ?? _audioId;
 
   ({List<SubtitleTrack> tracks, List<TrackLabel> labels}) get _subtitles {
-    final tracks = PhonePlayback.subtitleChoices(_player?.state.tracks ?? const Tracks());
+    final tracks = PhonePlayback.subtitleChoices(playback.tracks);
     return (tracks: tracks, labels: subtitleLabels(tracks));
   }
 

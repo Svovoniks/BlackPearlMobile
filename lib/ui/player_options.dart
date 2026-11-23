@@ -124,7 +124,7 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
   @override
   Widget build(BuildContext context) {
     final stream = playback.stream;
-    final tracks = playback.player?.state.tracks ?? const Tracks();
+    final tracks = playback.tracks;
     final tabs = [
       if (playback.link.features.contains('queues')) PlayerOptionsTab.upNext,
       PlayerOptionsTab.audio,

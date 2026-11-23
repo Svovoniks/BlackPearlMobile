@@ -223,6 +223,89 @@ void main() {
     });
   });
 
+  group('a paused video', () {
+    Map<String, dynamic> file() => {
+      'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000,
+      'qualities': ['original', '720p'],
+    };
+    Map<String, dynamic> converted() => {
+      'type': 'stream', 'id': 'film', 'kind': 'hls', 'streamId': 'a' * 32, 'segments': 150, 'segmentMs': 4000, 'durationMs': 600000,
+      'quality': '720p', 'qualities': ['original', '720p'],
+    };
+
+    test('stays paused through another quality; a playing one plays on', () async {
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => file();
+      await playback.watch('film');
+      expect(player.openedPlaying.single, isTrue);
+      await player.pause();
+      pc.answer = (type, fields) async => converted();
+      await playback.changeQuality('720p');
+      expect(player.openedPlaying.last, isFalse, reason: 'paused by hand, it stays paused');
+      await player.play();
+      pc.answer = (type, fields) async => file();
+      await playback.changeQuality('original');
+      expect(player.openedPlaying.last, isTrue);
+      playback.dispose();
+    });
+
+    test('stays paused through a recovery of its stream', () async {
+      final pc = link();
+      final player = _FakePlayer()..durationMs = 600000;
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => file();
+      await playback.watch('film');
+      player.positionMs = 61000;
+      player.positions.add(const Duration(milliseconds: 61000));
+      await player.pause();
+      await pumpEventQueue();
+      // The PC let the stream go while the video waited paused; the proxy's read fails.
+      playback.proxy.onLost!(playback.stream!);
+      await pumpEventQueue();
+      expect(pc.asked.last.$1, 'watch');
+      expect(player.opened, hasLength(2));
+      expect(player.openedPlaying.last, isFalse);
+      playback.dispose();
+    });
+  });
+
+  test("closing the picture-in-picture window stops the up-next countdown: nothing starts on the app's return", () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    pc.answer = (type, fields) async => {
+      'type': 'stream', 'id': 'e1', 'kind': 'file', 'resource': 'file/e1', 'length': 1000, 'durationMs': 600000,
+      'next': {'id': 'e2', 'title': 'Episode 2'},
+    };
+    await playback.watch('e1');
+    player.positionMs = 599000;
+    player.positions.add(const Duration(milliseconds: 599000));
+    player.completes.add(true);
+    await pumpEventQueue();
+    expect(playback.upNext.value?.step.id, 'e2');
+    await playback.pictureInPictureClosed();
+    expect(playback.upNext.value, isNull);
+    playback.dispose();
+  });
+
+  test("the tracks stay listed after the video's end, when libmpv plays it on without listing them again", () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000};
+    await playback.watch('film');
+    await player.lists(const [AudioTrack('1', null, 'jpn'), AudioTrack('2', null, 'eng')]);
+    expect(playback.audioTracks, hasLength(2));
+    // At the end media_kit empties its lists; Loop one or Previous then plays the same file from the start.
+    player.audio = const [];
+    player.listed.add(const Tracks());
+    await pumpEventQueue();
+    expect(playback.audioTracks.map((t) => t.id), ['1', '2']);
+    playback.dispose();
+  });
+
   test('a refused watch says why', () async {
     final pc = link();
     pc.answer = (type, fields) => Future.error(const RemoteRequestException('gone', 'Its drive may be disconnected.'));
@@ -243,13 +326,23 @@ class _FakePlayer extends Fake implements Player {
   List<AudioTrack> audio = const [];
   final StreamController<Tracks> listed = StreamController<Tracks>.broadcast();
   final List<String> audioSet = [];
+  // Whether it plays, and what each open was asked: play at once or not.
+  bool playing = false;
+  final List<bool> openedPlaying = [];
+  int durationMs = 0;
+  final StreamController<bool> completes = StreamController<bool>.broadcast();
 
   @override
-  PlayerState get state => PlayerState(position: Duration(milliseconds: positionMs), tracks: Tracks(audio: audio));
+  PlayerState get state => PlayerState(
+    position: Duration(milliseconds: positionMs),
+    duration: Duration(milliseconds: durationMs),
+    playing: playing,
+    tracks: Tracks(audio: audio),
+  );
 
   @override
   late final PlayerStream stream = PlayerStream(
-    const Stream.empty(), const Stream.empty(), const Stream.empty(), positions.stream, const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), completes.stream, positions.stream, const Stream.empty(),
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), listed.stream,
@@ -267,13 +360,20 @@ class _FakePlayer extends Fake implements Player {
   PlatformPlayer? get platform => null;
 
   @override
-  Future<void> open(Playable playable, {bool play = true}) async => opened.add(playable as Media);
+  Future<void> open(Playable playable, {bool play = true}) async {
+    opened.add(playable as Media);
+    openedPlaying.add(play);
+    playing = play;
+  }
 
   @override
-  Future<void> pause() async {}
+  Future<void> pause() async => playing = false;
 
   @override
-  Future<void> play() async {}
+  Future<void> play() async => playing = true;
+
+  @override
+  Future<void> seek(Duration position) async => positionMs = position.inMilliseconds;
 
   @override
   Future<void> setAudioTrack(AudioTrack track) async => audioSet.add(track.id);
