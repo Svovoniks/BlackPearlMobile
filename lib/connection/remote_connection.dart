@@ -212,10 +212,11 @@ class RemoteConnection extends RemoteLink {
   /// user stays on screen.
   Future<void> stop() async {
     _running = false;
-    _generation++;
+    final generation = ++_generation;
     _retryTimer?.cancel();
     await _teardown();
-    if (!_halted) _setStatus(const LinkStatus(LinkPhase.idle));
+    // Started again while it closed (the app came back meanwhile): the new attempt's status stands.
+    if (!_halted && !_running && generation == _generation) _setStatus(const LinkStatus(LinkPhase.idle));
   }
 
   /// The user asked to try again: also after a failure that stopped the automatic retries.
@@ -287,8 +288,15 @@ class RemoteConnection extends RemoteLink {
     final SignalingSocket socket;
     try {
       socket = await connectSocket(uri);
-    } catch (_) {
-      _fail(generation, "Can't reach the room server. Check your internet connection.");
+    } catch (e) {
+      // A server that answered, but not as a room server's /remote does (one from before phones, or a proxy whose server
+      // is down), isn't the phone's internet: it says so, and asks again slowly.
+      final answered = RegExp(r'not upgraded to websocket|HTTP status code: \d+', caseSensitive: false).hasMatch('$e');
+      if (answered) {
+        _fail(generation, "The room server didn't take the connection. It may be down or need an update.", slow: true);
+      } else {
+        _fail(generation, "Can't reach the room server. Check your internet connection.");
+      }
       return;
     }
     if (generation != _generation || !_running) {
@@ -460,6 +468,17 @@ class RemoteConnection extends RemoteLink {
     }
     _answerTimer = Timer(answerTimeout, () {
       if (generation == _generation && !_welcomed) {
+        if (!_answered && _target.isPairing) {
+          // A PC ignores an offer signed with a code that isn't its current one (replaced by a newer code, or mistyped),
+          // and trying the same code again gets the same silence.
+          _fail(
+            generation,
+            "The PC didn't answer this code. Show the code on the PC again, or check that Phone remote is on in BlackPearl's Settings › Profile.",
+            permanent: true,
+            needsPairing: true,
+          );
+          return;
+        }
         _fail(
           generation,
           _answered

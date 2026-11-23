@@ -80,7 +80,13 @@ class FakePeer extends PeerLink {
   @override
   Future<NetworkPath> path() async => currentPath;
   @override
-  Future<void> close() async => closed = true;
+  Future<void> close() async {
+    closed = true;
+    // A real peer connection takes a while to close.
+    if (closeGate case final gate?) await gate.future;
+  }
+
+  Completer<void>? closeGate;
 
   void open() => onOpen?.call();
   void receive(Map<String, dynamic> message) => onMessage?.call(jsonEncode(message));
@@ -471,6 +477,63 @@ void main() {
       async.elapse(const Duration(milliseconds: 1500));
       expect(h.connection.status.phase, LinkPhase.failed);
       expect(h.connection.status.message, contains('Phone remote is on'));
+      h.connection.dispose();
+    });
+  });
+
+  test("a pairing code the PC doesn't answer isn't tried again: it asks for a new code", () {
+    fakeAsync((async) {
+      final h = Harness(LinkTarget.pairing(PairLink(pcId: pcId, code: code, server: 'https://rooms.example.com', name: 'Study')));
+      h.connection.start();
+      async.flushMicrotasks();
+      h.socket.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      async.elapse(const Duration(seconds: 21));
+      expect(h.connection.status.phase, LinkPhase.failed);
+      expect(h.connection.status.needsPairing, isTrue);
+      expect(h.connection.status.retryAt, isNull);
+      expect(h.connection.halted, isTrue);
+      async.elapse(const Duration(minutes: 5));
+      expect(h.sockets, hasLength(1), reason: 'the dead code is not sent again');
+      h.connection.dispose();
+    });
+  });
+
+  test("a room server that answers without taking the connection says so, and asks again slowly", () {
+    fakeAsync((async) {
+      final connection = RemoteConnection(
+        target: pairedTarget,
+        identity: const PhoneIdentity(appVersion: '1.2.3', device: 'Test phone'),
+        connectSocket: (uri) async => throw Exception("WebSocketException: Connection to 'https://rooms.example.com:0/remote#' was not upgraded to websocket, HTTP status code: 404"),
+        createPeer: (servers, relay) async => FakePeer(servers, relay),
+      );
+      connection.start();
+      async.flushMicrotasks();
+      expect(connection.status.phase, LinkPhase.failed);
+      expect(connection.status.message, contains("didn't take the connection"));
+      expect(connection.status.retryAt!.difference(clock.now()).inSeconds, greaterThanOrEqualTo(29));
+      connection.dispose();
+    });
+  });
+
+  test('coming back to the app while the link is still closing leaves it connecting, not stopped', () {
+    fakeAsync((async) {
+      final h = Harness(pairedTarget);
+      h.connection.start();
+      async.flushMicrotasks();
+      h.socket.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      final closing = h.peer.closeGate = Completer<void>();
+      // Back before the stop has finished closing the peer connection.
+      unawaited(h.connection.stop());
+      h.connection.resume();
+      async.flushMicrotasks();
+      closing.complete();
+      async.flushMicrotasks();
+      expect(h.connection.running, isTrue);
+      expect(h.connection.status.phase, isNot(LinkPhase.idle));
       h.connection.dispose();
     });
   });

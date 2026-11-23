@@ -18,11 +18,17 @@ class FakeBackground extends BackgroundLink {
 
   @override
   bool get running => _on;
+
+  /// Started by Android on its own, before the app said anything.
+  bool unsettled = false;
+  @override
+  bool get mayBeRunning => _on || unsettled;
   @override
   void listen(void Function(String action) onAction) => press = onAction;
   @override
   Future<bool> show(BackgroundNotice notice) async {
     _on = true;
+    unsettled = false;
     shown.add(notice);
     return true;
   }
@@ -30,6 +36,7 @@ class FakeBackground extends BackgroundLink {
   @override
   Future<void> stop() async {
     _on = false;
+    unsettled = false;
     stops++;
   }
 
@@ -118,25 +125,56 @@ void main() {
     });
   });
 
-  test('Disconnect also stops the service of a connection halted by a failure', () {
+  test('a connection halted by a failure only the user can fix keeps no service, and no stale notification', () {
     fakeAsync((async) {
       final background = FakeBackground();
       final app = model(background, AppSettings(MemorySettingsStore()));
-      final broken = PairedPc(pcId: pc.pcId, name: pc.name, server: 'ftp://rooms.example.com', phoneId: pc.phoneId, secret: pc.secret);
-      unawaited(app.store.save([broken]).then((_) => app.load()));
-      async.flushMicrotasks();
-      final connection = app.connection!;
-      expect(connection.halted, isTrue);
-      app.paused();
+      unawaited(app.store.save([pc]).then((_) => app.load()));
       async.flushMicrotasks();
       expect(background.running, isTrue);
-
-      background.press!('disconnect');
+      final connection = app.connection!;
+      // The PC removed this phone: nothing retries until the user pairs again.
+      final broken = PairedPc(pcId: pc.pcId, name: pc.name, server: 'ftp://rooms.example.com', phoneId: pc.phoneId, secret: pc.secret);
+      app.select(broken);
       async.flushMicrotasks();
-      expect(connection.running, isFalse);
+      expect(app.connection, isNot(same(connection)));
+      expect(app.connection!.halted, isTrue);
+      expect(background.running, isFalse, reason: 'its notification said "Reconnecting to the PC" for good');
+      app.paused();
+      async.flushMicrotasks();
       expect(background.running, isFalse);
       app.dispose();
     });
+  });
+
+  test('switching PCs keeps the service running rather than stopping and starting it in one go', () {
+    fakeAsync((async) {
+      final background = FakeBackground();
+      final app = model(background, AppSettings(MemorySettingsStore()));
+      final other = PairedPc(pcId: 'F' * 32, name: 'Den', server: 'https://rooms.example.com', phoneId: 'c' * 32, secret: 'd' * 64);
+      unawaited(app.store.save([pc, other]).then((_) => app.load()));
+      async.flushMicrotasks();
+      expect(background.running, isTrue);
+      final stops = background.stops;
+      app.select(other);
+      async.flushMicrotasks();
+      expect(background.stops, stops);
+      expect(background.shown.last.title, 'Den');
+      unawaited(app.forget(other));
+      async.flushMicrotasks();
+      expect(background.stops, stops);
+      expect(background.shown.last.title, 'Study');
+      app.dispose();
+    });
+  });
+
+  test('a service Android started again by itself stops once the app finds nothing needs it', () async {
+    final background = FakeBackground()..unsettled = true;
+    final app = model(background, AppSettings(MemorySettingsStore()));
+    await app.load();
+    await pumpEventQueue();
+    expect(background.stops, 1);
+    app.dispose();
   });
 
   test('turning the setting off stops the service; on again starts it', () async {

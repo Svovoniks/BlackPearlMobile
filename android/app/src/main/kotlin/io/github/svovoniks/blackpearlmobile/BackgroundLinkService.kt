@@ -64,6 +64,10 @@ class BackgroundLinkService : Service() {
         }
 
         fun stop(context: Context) {
+            // Stopped from here on: the service goes away only later (onDestroy), and a start asked for before then must
+            // start it again rather than update the one going away.
+            running = false
+            starting = false
             context.stopService(Intent(context, BackgroundLinkService::class.java))
         }
 
@@ -148,8 +152,8 @@ class BackgroundLinkService : Service() {
     }
 
     override fun onDestroy() {
+        // A start asked for since this one was stopped (starting) is the next service's, and stays.
         running = false
-        starting = false
         super.onDestroy()
     }
 

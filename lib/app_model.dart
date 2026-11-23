@@ -94,6 +94,8 @@ class AppModel extends ChangeNotifier {
     _loaded = true;
     final pc = _pcs.where((p) => p.pcId == last).firstOrNull ?? _pcs.firstOrNull;
     if (pc != null && _connection == null) _use(LinkTarget.paired(pc));
+    // A service Android started again by itself is stopped here when nothing needs it.
+    _syncBackground();
     notifyListeners();
   }
 
@@ -107,12 +109,32 @@ class AppModel extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Starts pairing with a scanned or pasted link (or one the system opened the app with).
+  /// Starts pairing with a scanned or pasted link (or one the system opened the app with). The PC in use stays
+  /// connected meanwhile: a code that doesn't work (used, expired, replaced, or its server out of reach) brings it back,
+  /// with the pairing screen saying why.
   void pair(PairLink link) {
     _pairingRequested = false;
     _pairingError = null;
-    _use(LinkTarget.pairing(link));
+    _use(LinkTarget.pairing(link), hold: true);
     notifyListeners();
+  }
+
+  // The working link to the PC in use, kept while a pairing code is tried.
+  RemoteConnection? _held;
+
+  void _pairingChanged() {
+    final trial = _connection;
+    final held = _held;
+    if (trial == null || held == null || !trial.target.isPairing || trial.status.phase != LinkPhase.failed) return;
+    final message = trial.status.message;
+    // Not from inside the failing connection's own notification.
+    scheduleMicrotask(() {
+      if (!identical(_connection, trial) || !identical(_held, held)) return;
+      _held = null;
+      _disposeConnection(sync: false);
+      _adopt(held);
+      requestPairing(error: message);
+    });
   }
 
   void requestPairing({String? error}) {
@@ -131,29 +153,41 @@ class AppModel extends ChangeNotifier {
     _pcs = _pcs.where((p) => p.pcId != pc.pcId).toList();
     final saved = _save("Couldn't save on this phone. ${pc.name} will be back the next time the app starts.");
     if (_connection?.target.pcId == pc.pcId) {
-      _disposeConnection();
       final next = _pcs.firstOrNull;
-      if (next != null) _use(LinkTarget.paired(next));
+      // Straight to the next PC: the service carries on with it rather than stopping and starting at once.
+      if (next != null) {
+        _use(LinkTarget.paired(next));
+      } else {
+        _disposeConnection();
+      }
       await _quietly(store.setLastUsed(next?.pcId));
     }
     await saved;
     notifyListeners();
   }
 
-  void _use(LinkTarget target) {
-    _disposeConnection();
-    final connection = connect(target, onPaired: _paired, onPcName: _renamed);
+  /// Connects to [target]. [hold]: a pairing code is tried, and the working link it replaces is kept until it pairs.
+  void _use(LinkTarget target, {bool hold = false}) {
+    // The service is set for the new link once, rather than stopped for the old one and started again in the same turn.
+    _disposeConnection(hold: hold && target.isPairing, sync: false);
+    _adopt(connect(target, onPaired: _paired, onPcName: _renamed), start: true);
+  }
+
+  void _adopt(RemoteConnection connection, {bool start = false}) {
     _connection = connection;
     _playback = createPlayback?.call(connection)?..awayQuality = settings.awayQuality;
     _playback?.addListener(_playbackChanged);
     _sound = createSound?.call(connection, settings, background)?..addListener(_soundChanged);
     connection.addListener(_syncBackground);
-    connection.start();
+    connection.addListener(_pairingChanged);
+    if (start) connection.start();
     _syncBackground();
   }
 
-  void _disposeConnection() {
-    _connection?.removeListener(_syncBackground);
+  void _disposeConnection({bool hold = false, bool sync = true}) {
+    final connection = _connection;
+    connection?.removeListener(_syncBackground);
+    connection?.removeListener(_pairingChanged);
     // Before the connection goes: it tells the PC to play its sound again.
     _sound?.removeListener(_soundChanged);
     _sound?.dispose();
@@ -161,9 +195,19 @@ class AppModel extends ChangeNotifier {
     _playback?.removeListener(_playbackChanged);
     _playback?.dispose();
     _playback = null;
-    _connection?.dispose();
     _connection = null;
-    _syncBackground();
+    if (hold && connection != null && !connection.target.isPairing) {
+      // Kept as it is, connected or trying, in case the code doesn't work.
+      _held?.dispose();
+      _held = connection;
+    } else {
+      connection?.dispose();
+      if (!hold) {
+        _held?.dispose();
+        _held = null;
+      }
+    }
+    if (sync) _syncBackground();
   }
 
   // ---- the background service ----
@@ -171,12 +215,15 @@ class AppModel extends ChangeNotifier {
   /// A stopped connection (the notification's Disconnect, or the app closed without the service) needs no service; it
   /// comes back with the connection when the app is opened again. While the phone plays the PC's sound the service runs
   /// even with the setting off: without it the sound would stop soon after the screen turns off.
+  /// A connection halted by a failure only the user can fix (the phone was removed from the PC, say) needs none either:
+  /// it tries nothing more until the app is opened. While a pairing code is tried, the PC in use keeps it.
+  RemoteConnection? get _linkKept => _held ?? (_connection?.target.isPairing == false ? _connection : null);
   bool get _keepsLink =>
       background != null &&
       (settings.backgroundLink || (_sound?.on ?? false)) &&
-      _connection != null &&
-      _connection!.running &&
-      !_connection!.target.isPairing;
+      _linkKept != null &&
+      _linkKept!.running &&
+      !_linkKept!.halted;
 
   void _soundChanged() {
     _syncBackground();
@@ -204,12 +251,14 @@ class AppModel extends ChangeNotifier {
     final service = background;
     if (service == null) return;
     if (!_keepsLink) {
-      if (service.running) unawaited(service.stop());
+      // Also one Android started again by itself after it stopped the app, which this side never started; only once the
+      // paired PCs are read, though, as a link to one of them may want it.
+      if (service.running || service.mayBeRunning && _loaded) unawaited(service.stop());
       return;
     }
     // Android starts a foreground service only while the app is showing; one already running can be updated any time.
     if (!service.running && !_foreground) return;
-    final connection = _connection!;
+    final connection = _linkKept!;
     final state = connection.state;
     final status = connection.status;
     final String text;
@@ -252,6 +301,9 @@ class AppModel extends ChangeNotifier {
   }
 
   void _paired(PairedPc pc) {
+    // The code worked: the link to the PC used until now goes.
+    _held?.dispose();
+    _held = null;
     _pcs = [..._pcs.where((p) => p.pcId != pc.pcId), pc];
     unawaited(_save("Paired with ${pc.name}, but this phone couldn't save it. The remote works until the app closes; then pair again."));
     unawaited(_quietly(store.setLastUsed(pc.pcId)));

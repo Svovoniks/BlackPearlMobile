@@ -113,6 +113,60 @@ void main() {
     app.model.dispose();
   });
 
+  test("a pairing code that doesn't work keeps the PC in use connected, and says why on the pairing screen", () async {
+    final living = PairedPc(pcId: 'F' * 32, name: 'Living room', server: 'https://rooms.example.com', phoneId: 'c' * 32, secret: 'd' * 64);
+    final secrets = FlakyStore();
+    await PairedPcStore(secrets).save([living]);
+    final connections = <RemoteConnection>[];
+    final model = AppModel(
+      store: PairedPcStore(secrets),
+      connect: (target, {onPaired, onPcName}) {
+        final connection = RemoteConnection(
+          target: target,
+          identity: const PhoneIdentity(appVersion: '1.0.0', device: 'Test phone'),
+          // The PC in use stays connecting; the code's server can't be reached.
+          connectSocket: (_) => target.isPairing ? Future.error(Exception('unreachable')) : Completer<SignalingSocket>().future,
+          createPeer: (_, _) => Completer<PeerLink>().future,
+          onPaired: onPaired,
+          onPcName: onPcName,
+        );
+        connections.add(connection);
+        return connection;
+      },
+    );
+    await model.load();
+    final working = model.connection!;
+    model.pair(link);
+    expect(model.connection!.target.isPairing, isTrue);
+    expect(working.running, isTrue, reason: 'kept while the code is tried');
+    await pumpEventQueue();
+    expect(model.connection, same(working));
+    expect(working.running, isTrue);
+    expect(connections[1].running, isFalse, reason: 'the attempt with the code is over');
+    expect(model.showPairing, isTrue);
+    expect(model.pairingError, contains("Can't reach the room server"));
+    expect(model.currentPcId, 'F' * 32);
+    // Back from the pairing screen: the PC in use, still connected.
+    model.cancelPairing();
+    expect(model.showPairing, isFalse);
+    model.dispose();
+  });
+
+  test('a pairing code that works replaces the PC in use', () async {
+    final app = TestApp(FlakyStore());
+    await PairedPcStore(app.secrets)
+        .save([PairedPc(pcId: 'F' * 32, name: 'Living room', server: 'https://rooms.example.com', phoneId: 'c' * 32, secret: 'd' * 64)]);
+    await app.model.load();
+    final working = app.model.connection!;
+    app.model.pair(link);
+    final trial = app.model.connection!;
+    app.onPaired!(pc);
+    await pumpEventQueue();
+    expect(working.running, isFalse);
+    expect(app.model.connection, same(trial));
+    app.model.dispose();
+  });
+
   testWidgets('the app shows the storage problem with a working Try again', (tester) async {
     final app = TestApp(FlakyStore()..failReads = true);
     await tester.pumpWidget(
