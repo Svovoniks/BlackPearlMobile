@@ -212,6 +212,7 @@ class PhoneSound extends ChangeNotifier {
   Future<void> turnOn() async {
     if (_wanted) return;
     _wanted = true;
+    _unanswered = 0;
     _message = null;
     _setPhase(SoundPhase.starting);
     keepAwake?.call(true);
@@ -220,15 +221,29 @@ class PhoneSound extends ChangeNotifier {
     await _listen();
   }
 
+  // Unanswered `listen` requests in a row.
+  int _unanswered = 0;
+
   Future<void> _listen() async {
     try {
       await link.ask('listen', {'on': true}, timeout: const Duration(seconds: 10));
+      _unanswered = 0;
       if (_wanted && _phase == SoundPhase.starting) _setPhase(SoundPhase.waiting);
       unawaited(_askClock());
     } on RemoteRequestException catch (e) {
       // Offline: the link asks again once it is back.
-      if (e.code == 'offline' || e.code == 'timeout') return;
-      if (_wanted) await turnOff(message: e.message, tell: false);
+      if (e.code == 'offline' || !_wanted) return;
+      if (e.code == 'timeout') {
+        // Asked again, twice; then it gives up rather than wait (and hold the phone awake) for good.
+        if (++_unanswered < 3) {
+          unawaited(_listen());
+        } else {
+          _unanswered = 0;
+          await turnOff(message: "The PC didn't send its sound. Try again.");
+        }
+        return;
+      }
+      await turnOff(message: e.message, tell: false);
     }
   }
 
@@ -236,6 +251,7 @@ class PhoneSound extends ChangeNotifier {
   Future<void> turnOff({String? message, bool tell = true}) async {
     final was = _wanted;
     _wanted = false;
+    _unanswered = 0;
     // Told first, before anything here waits: the connection may be disposed right after (another PC chosen).
     if (was && tell && link.status.isConnected) {
       unawaited(link.ask('listen', {'on': false}, timeout: const Duration(seconds: 5)).then((_) {}, onError: (Object _) {}));
@@ -322,6 +338,12 @@ class PhoneSound extends ChangeNotifier {
       return;
     }
     final connected = status.isConnected;
+    if (connected && !_wasConnected && _wanted && !available) {
+      // Back with a PC that can't send its sound: BlackPearl closed on it, and its phone host has no player.
+      _wasConnected = true;
+      unawaited(turnOff(message: "The PC can't send its sound now: BlackPearl isn't open on it.", tell: false));
+      return;
+    }
     if (connected && !_wasConnected && _wanted) {
       // Back after a drop: the PC kept the sound for this phone a while; asking again keeps it, or starts it again.
       unawaited(_listen());
@@ -396,12 +418,22 @@ class PhoneSound extends ChangeNotifier {
     final target = _clock.source == stream.id ? _clock.positionAt(_now()) : null;
     final start = target == null ? 0 : max(0, target - settings.soundDelayMs + _seekLeadMs);
     _rate = 1.0;
-    await player.setRate(1.0);
-    await player.setVolume(_muted ? 0 : _volume.toDouble());
-    await player.open(
-      Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null),
-      play: _clock.playing != false,
-    );
+    // Turned off (or another stream opened) while this waits on the player, which may be disposed by then: media_kit
+    // throws an AssertionError for a disposed player's calls, so each step looks first.
+    bool current() => opening == _opening && _wanted && identical(_player, player);
+    try {
+      await player.setRate(1.0);
+      if (!current()) return;
+      await player.setVolume(_muted ? 0 : _volume.toDouble());
+      if (!current()) return;
+      await player.open(
+        Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null),
+        play: _clock.playing != false,
+      );
+    } catch (_) {
+      if (current()) rethrow;
+      return;
+    }
     // Opening waits for the PC to start converting, which a seek in the same sound doesn't: it teaches the lead nothing.
     _afterSeek = false;
     _holdUntil = _now() + 1200;

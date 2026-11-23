@@ -94,8 +94,11 @@ Limits: 8 phone connections per PC at a time, and the same message rate limits a
 - Both sides drop a signal whose `auth` doesn't verify, without answering, except for one case: when the PC doesn't
   know the phone id, or its pairing code has expired or been used, it answers once per session with an
   **unsigned** `{"phone":…,"session":…,"kind":"rejected","payload":"unknown-phone|pairing-expired","auth":""}`.
-  The phone shows "This phone was removed from the PC. Pair it again." or "That code has expired". It is a hint only:
-  it can't grant anything.
+  A `pair` offer signed with a code that isn't the PC's live one (a newer code replaced it, or it was never this
+  PC's) gets `pairing-expired` too, from PCs after 0.3.144; earlier ones answer it with nothing. The phone shows
+  "This phone was removed from the PC. Pair it again." or "That code has expired". It is a hint only: it can't grant
+  anything. A pairing offer that gets no answer at all within 20 seconds is not tried again either (the phone asks for
+  a new code), as an older PC's silence about a replaced code looks the same.
 
 Test vectors:
 
@@ -231,6 +234,12 @@ PC → phone:
 (which name the episode to resume even when their level is `series`). `positionMs` and `watched` are the PC's own
 resume point and watched mark. A failure is an `error` with code `browse` and the `request`.
 
+BlackPearl's window starts the phone remote before it has read its library. After 0.3.144 a library request (`browse`,
+`queues`, `watch`, `play`, `progress`) that arrives meanwhile waits for it, up to 15 seconds, and past that is an
+`error` with code `loading` and the `request` (a `progress` is dropped). Earlier PCs answered from an empty library,
+so a phone that connected that early got an empty Home; the phone loads an empty list again whenever the link comes
+back.
+
 ### Watching on the phone
 
 Phone → PC: `{"type":"watch","request":<n>,"id":"<entry id>","quality":"auto|original|1080p|720p|480p","network":"home|away|relayed","takeOver":false,"audio":null}`.
@@ -325,7 +334,9 @@ know it closes it. The phone asks with text messages:
 
 Resources: `file/<id>` (the video of the phone's current `file` stream), `stream/<stream id>/<piece>` (a piece of
 its current conversion) and `art/<token>/<width>` (an entry's picture as JPEG, at most `width` pixels wide, 64 to
-1280, never enlarged).
+1280, never enlarged). A token names the same picture in every BlackPearl process on the PC: after 0.3.144, one handed
+out by the phone host still works once the app has taken over, and the other way round. The phone asks again for a
+picture that didn't come, a few times, further apart each time.
 
 The PC answers reads in the order they were asked, each as binary frames of at most 16 KiB of data after a 24-byte
 little-endian header:
@@ -390,3 +401,21 @@ so phones are never left with neither. The phones then reconnect to the app as a
 doesn't start the host when it closes to install an update or as Windows signs out, and a build started with
 `BLACKPEARL_PHONE_HOST=off` (as `scripts/dev-launch.ps1` does unless `-PhoneHost`) never starts it or changes the
 sign-in entry.
+
+## Diagnostics
+
+The PC writes the phone remote's progress to its diagnostics log, `logs/diagnostics.jsonl` in the app's data folder
+(`logs/phone-host/` for the phone host), so a phone that couldn't connect can be traced afterwards. Records name a
+session and a phone by the first 8 characters of their random ids, and never hold keys, secrets or pairing codes.
+
+| Kind | When |
+| --- | --- |
+| `remote-start`, `remote-stop`, `remote-off` | The link to the room server starts or stops, or the phone remote is turned off |
+| `remote-server` | The room server link changes state: `ready` (with the attempts that failed before it), `lost`, `unreachable` (with the error), `refused`, `replaced`, `outdated-server`, `invalid-address`. A state that repeats is written once. |
+| `remote-signal-refused` | A signal the PC turned away, once per session and reason: `unknown-phone`, `pairing-expired`, `bad-signature`, `too-many-sessions` |
+| `remote-session-opened` | A phone's offer starts a session: whether it pairs, replaces an earlier session, and how many STUN and TURN servers it may use |
+| `remote-session-state` | The connection's state changes, with the candidates gathered on each side by type, and `direct` or `relay` once connected |
+| `remote-session-channel`, `remote-session-greeted`, `remote-session-paired` | The data channel opens, the phone's `hello` is accepted (with its app version), pairing completes |
+| `remote-session-refused` | `protocol` (with the phone's protocol), `pairing-expired`, `already-paired` |
+| `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`), its age, and its path |
+| `phone-read-failed`, `phone-resource-missing` | A read on `media-v1` failed, with the kind of resource; and why the PC had nothing for it (`no-video`, `other-video`, `not-converted`, `other-stream`, `no-such-piece`, `no-such-sound-piece`, `unknown-picture`, `missing-file`, `unreadable:<error>`, `malformed`) |

@@ -59,6 +59,26 @@ void main() {
     expect(link.sent.single.$2, isA<int>());
   });
 
+  testWidgets('a timeline drag the link cuts short ends: the knob and clocks follow the PC again', (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    final box = tester.getRect(find.bySemanticsLabel('Timeline'));
+    final gesture = await tester.startGesture(box.centerLeft + Offset(box.width * 0.1, 0));
+    await gesture.moveBy(Offset(box.width * 0.1, 0));
+    await gesture.moveBy(Offset(box.width * 0.1, 0));
+    await tester.pump();
+    expect(find.text(formatClock(sampleState.positionMs)), findsNothing, reason: 'the clock follows the finger');
+    link.status = const LinkStatus(LinkPhase.failed, message: 'Lost the connection to the PC.');
+    await tester.pump();
+    await gesture.up();
+    link.status = const LinkStatus(LinkPhase.connected, path: NetworkPath.home);
+    await tester.pump();
+    expect(find.text(formatClock(sampleState.positionMs)), findsOneWidget);
+    expect(link.sent, isEmpty, reason: 'a drag cut short seeks nowhere');
+    await tester.tap(find.bySemanticsLabel('Forward 10 seconds'));
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.text(formatClock(sampleState.positionMs + 10000)), findsOneWidget, reason: '+10 s starts from where the PC is');
+  });
+
   testWidgets('a timeline drag that ends in the same frame as its last move seeks to where the finger left', (tester) async {
     final link = await pump(tester, state: sampleState.copyWith(playing: false));
     final box = tester.getRect(find.bySemanticsLabel('Timeline'));
@@ -307,6 +327,51 @@ void main() {
     expect(inSheet('The subtitles show once the video has opened on the PC.'), findsOneWidget);
   });
 
+  testWidgets("a track change the PC refuses says why in the sheet, not behind it", (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    await tester.ensureVisible(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.tap(find.bySemanticsLabel(RegExp('^Audio, Japanese')));
+    await tester.pumpAndSettle();
+    link.showNotice("The PC couldn't change the audio track.");
+    await tester.pump();
+    expect(inSheet("The PC couldn't change the audio track."), findsOneWidget);
+    await tester.pump(const Duration(seconds: 6));
+  });
+
+  testWidgets("a state the PC sent before a seek reached it doesn't put the knob back", (tester) async {
+    final link = await pump(tester, state: sampleState.copyWith(playing: false));
+    link.ignoreCommands = true;
+    final box = tester.getRect(find.bySemanticsLabel('Timeline'));
+    await tester.tapAt(box.centerLeft + Offset(box.width * 0.8, 0));
+    await tester.pump();
+    final target = link.sent.single.$2 as int;
+    expect(find.text(formatClock(target)), findsOneWidget);
+    // Sent before the seek arrived: the old position.
+    await tester.pump(const Duration(milliseconds: 500));
+    link.setState(sampleState.copyWith(playing: false));
+    await tester.pump();
+    expect(find.text(formatClock(target)), findsOneWidget);
+    // The seek done.
+    link.setState(sampleState.copyWith(playing: false, positionMs: target));
+    await tester.pump();
+    expect(find.text(formatClock(target)), findsOneWidget);
+  });
+
+  testWidgets('while disconnected the clock stops at the last word from the PC', (tester) async {
+    final link = await pump(tester);
+    link.status = const LinkStatus(LinkPhase.failed, message: 'Lost the connection to the PC.');
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.text(formatClock(sampleState.positionMs)), findsOneWidget);
+  });
+
+  testWidgets('a video without subtitles says it has none, not that they are still coming', (tester) async {
+    await pump(tester, state: sampleState.withTracks(subtitles: const []));
+    await tester.ensureVisible(find.bySemanticsLabel(RegExp('^Subtitles, None')));
+    await tester.tap(find.bySemanticsLabel(RegExp('^Subtitles, None')));
+    await tester.pumpAndSettle();
+    expect(inSheet('This video has no subtitles. Subtitles from a file can be loaded on the PC.'), findsOneWidget);
+  });
+
   testWidgets('a PC from before tracks on the remote shows no track pills', (tester) async {
     await pump(
       tester,
@@ -315,4 +380,44 @@ void main() {
     expect(find.bySemanticsLabel(RegExp('^Audio, ')), findsNothing);
     expect(find.bySemanticsLabel(RegExp('^Subtitles, ')), findsNothing);
   });
+
+  testWidgets('"Muted" stays on one line with large text', (tester) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 1.3;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    await pump(tester, state: sampleState.copyWith(playing: false, muted: true));
+    final muted = find.text('Muted');
+    await tester.ensureVisible(muted);
+    final line = tester.getSize(muted);
+    expect(line.height, lessThan(13 * 1.3 * 1.6), reason: 'one line, not "Mute" over "d"');
+  });
+
+  for (final scale in [1.0, 1.3]) {
+    testWidgets('sideways, the play buttons show without scrolling, at ${(scale * 100).round()}% text', (tester) async {
+      tester.platformDispatcher.textScaleFactorTestValue = scale;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      tester.view.physicalSize = const Size(2400, 1080);
+      tester.view.devicePixelRatio = 2.625;
+      addTearDown(tester.view.reset);
+      final link = FakeRemoteLink(pcName: 'Living room PC', status: const LinkStatus(LinkPhase.connected, path: NetworkPath.home), state: sampleState);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildTheme(),
+          // The tab bar takes the bottom of the screen, as in the app.
+          home: Scaffold(
+            body: RemoteScreen(link: link, onChoosePc: () {}, onPairAgain: () {}),
+            bottomNavigationBar: const SizedBox(height: 70),
+          ),
+        ),
+      );
+      await tester.pump();
+      final height = 1080 / 2.625 - 70;
+      for (final label in ['Previous', 'Back 10 seconds', 'Pause', 'Forward 10 seconds', 'Next']) {
+        expect(tester.getRect(find.bySemanticsLabel(label)).bottom, lessThanOrEqualTo(height), reason: label);
+      }
+      // Every control is still there, further down.
+      for (final label in [RegExp('^Stop'), RegExp('^Loop'), RegExp('^Shuffle'), RegExp('^Fullscreen'), RegExp('^Audio'), RegExp('^Subtitles'), RegExp('PC volume')]) {
+        expect(find.bySemanticsLabel(label), findsWidgets, reason: '$label');
+      }
+    });
+  }
 }

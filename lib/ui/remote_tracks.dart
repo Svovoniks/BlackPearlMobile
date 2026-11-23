@@ -47,6 +47,22 @@ class _RemoteTracksPanelState extends State<RemoteTracksPanel> {
     super.initState();
     _videoShown = _video(link.state);
     link.addListener(_changed);
+    link.notice.addListener(_noticed);
+  }
+
+  // What the PC said it couldn't do, such as change a track: shown here, as the Remote's own message would sit behind
+  // the sheet.
+  String? _problem;
+  Timer? _problemTimer;
+
+  void _noticed() {
+    final text = link.notice.value;
+    if (text == null || !mounted) return;
+    setState(() => _problem = text);
+    _problemTimer?.cancel();
+    _problemTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _problem = null);
+    });
   }
 
   @override
@@ -54,13 +70,17 @@ class _RemoteTracksPanelState extends State<RemoteTracksPanel> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.link != link) {
       oldWidget.link.removeListener(_changed);
+      oldWidget.link.notice.removeListener(_noticed);
       link.addListener(_changed);
+      link.notice.addListener(_noticed);
     }
   }
 
   @override
   void dispose() {
     link.removeListener(_changed);
+    link.notice.removeListener(_noticed);
+    _problemTimer?.cancel();
     _pendingTimer?.cancel();
     super.dispose();
   }
@@ -148,6 +168,11 @@ class _RemoteTracksPanelState extends State<RemoteTracksPanel> {
                     style: const TextStyle(fontSize: 12.5, color: Palette.muted),
                   ),
                 ),
+                if (_problem != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                    child: Text(_problem!, style: const TextStyle(color: Palette.danger, fontSize: 13.5, height: 1.35)),
+                  ),
                 if (!canChange && link.status.isConnected && state != null && state.media)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
@@ -164,6 +189,9 @@ class _RemoteTracksPanelState extends State<RemoteTracksPanel> {
                   ),
                 if (state == null || !state.media)
                   const OptionNote('Nothing is playing on the PC.')
+                // Once the audio is listed, an empty Subtitles menu is a video without subtitles, as on the PC.
+                else if (tracks.isEmpty && _tab == RemoteTracksTab.subtitles && (state.audioTracks?.isNotEmpty ?? false))
+                  const OptionNote('This video has no subtitles. Subtitles from a file can be loaded on the PC.')
                 else if (tracks.isEmpty)
                   OptionNote(
                     _tab == RemoteTracksTab.audio

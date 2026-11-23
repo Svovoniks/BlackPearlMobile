@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/playback/phone_playback.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -223,6 +224,205 @@ void main() {
     });
   });
 
+  test('Watch here left while it waits for the link asks nothing once the link is back: the PC plays on', () async {
+    final pc = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.linking))..offered = const {'watch'};
+    pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 10};
+    final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+    final viewing = playback.startViewing();
+    final opening = playback.watch('film', takeOver: true);
+    await pumpEventQueue();
+    // Back on the Opening screen.
+    playback.cancelOpening(viewing);
+    pc.status = const LinkStatus(LinkPhase.connected);
+    expect(await opening, isFalse);
+    expect(pc.asked, isEmpty);
+    playback.dispose();
+  });
+
+  test('a stream lost while the app is away waits for its return rather than ending in an error', () {
+    fakeAsync((async) {
+      final pc = link();
+      final player = _FakePlayer()..durationMs = 600000;
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000};
+      unawaited(playback.watch('film'));
+      async.flushMicrotasks();
+      player.positionMs = 61000;
+      player.positions.add(const Duration(milliseconds: 61000));
+      async.flushMicrotasks();
+      unawaited(playback.background());
+      async.flushMicrotasks();
+      // Without the background service the link goes after 30 seconds, and the stream with it.
+      pc.status = const LinkStatus(LinkPhase.idle);
+      playback.proxy.onLost!(playback.stream!);
+      async.elapse(const Duration(minutes: 10));
+      expect(playback.phase, PhonePlaybackPhase.playing, reason: 'no error waits on return');
+      unawaited(playback.foreground());
+      pc.status = const LinkStatus(LinkPhase.connected);
+      async.elapse(const Duration(seconds: 1));
+      expect(pc.asked.where((a) => a.$1 == 'watch'), hasLength(2), reason: 'it asks again once back');
+      playback.dispose();
+    });
+  });
+
+  test("the place one video stalled at isn't the next video's end: running out of data there is a stall", () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    Map<String, dynamic> stream(String id) => {'type': 'stream', 'id': id, 'kind': 'file', 'resource': 'file/$id', 'length': 1000, 'durationMs': 600000};
+    pc.answer = (type, fields) async => stream(fields['id'] as String);
+    await playback.watch('e1');
+    player.positionMs = 61000;
+    player.positions.add(const Duration(milliseconds: 61000));
+    await pumpEventQueue();
+    // e1 stalls at 1:01 and is asked for again; meanwhile the user opens e2.
+    pc.answer = (type, fields) => fields['id'] == 'e1' ? Completer<Map<String, dynamic>>().future : Future.value(stream('e2'));
+    playback.proxy.onLost!(playback.stream!);
+    await pumpEventQueue();
+    await playback.watch('e2');
+    player.positionMs = 61500;
+    player.positions.add(const Duration(milliseconds: 61500));
+    await pumpEventQueue();
+    player.completes.add(true);
+    await pumpEventQueue();
+    expect(pc.told.where((t) => t.$1 == 'progress' && t.$2['id'] == 'e2' && t.$2['ended'] == true), isEmpty);
+    expect(pc.asked.last.$2['id'], 'e2', reason: 'e2 is asked for again from where it stopped');
+    playback.dispose();
+  });
+
+  test('another quality starts where the video is when it is ready, not where it was when asked for', () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000, 'qualities': ['original', '720p']};
+    await playback.watch('film');
+    player.positionMs = 61000;
+    player.positions.add(const Duration(milliseconds: 61000));
+    await pumpEventQueue();
+    final answer = Completer<Map<String, dynamic>>();
+    pc.answer = (type, fields) => answer.future;
+    final switching = playback.changeQuality('720p');
+    await pumpEventQueue();
+    expect(pc.asked.last.$2['quality'], '720p');
+    // The PC takes 9 seconds to get it ready; the old stream plays on meanwhile.
+    player.positionMs = 70000;
+    player.positions.add(const Duration(milliseconds: 70000));
+    await pumpEventQueue();
+    answer.complete({'type': 'stream', 'id': 'film', 'kind': 'hls', 'streamId': 'a' * 32, 'segments': 150, 'segmentMs': 4000, 'durationMs': 600000, 'quality': '720p', 'qualities': ['original', '720p']});
+    await switching;
+    expect(player.opened.last.start, const Duration(milliseconds: 70000));
+    playback.dispose();
+  });
+
+  test('Continue on PC: the stream the PC ends before it answers asks for nothing again', () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000};
+    await playback.watch('film');
+    player.positionMs = 61000;
+    player.positions.add(const Duration(milliseconds: 61000));
+    await pumpEventQueue();
+    final played = Completer<Map<String, dynamic>>();
+    pc.answer = (type, fields) => type == 'play' ? played.future : Future.value({'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000});
+    final handing = playback.continueOnPc();
+    await pumpEventQueue();
+    // The PC ends the phone's stream, then answers.
+    playback.proxy.onLost!(playback.stream!);
+    await pumpEventQueue();
+    played.complete({'type': 'done'});
+    expect(await handing, isNull);
+    await pumpEventQueue();
+    expect(pc.asked.map((a) => a.$1), ['watch', 'play']);
+    playback.dispose();
+  });
+
+  group('a paused video', () {
+    Map<String, dynamic> file() => {
+      'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000,
+      'qualities': ['original', '720p'],
+    };
+    Map<String, dynamic> converted() => {
+      'type': 'stream', 'id': 'film', 'kind': 'hls', 'streamId': 'a' * 32, 'segments': 150, 'segmentMs': 4000, 'durationMs': 600000,
+      'quality': '720p', 'qualities': ['original', '720p'],
+    };
+
+    test('stays paused through another quality; a playing one plays on', () async {
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => file();
+      await playback.watch('film');
+      expect(player.openedPlaying.single, isTrue);
+      await player.pause();
+      pc.answer = (type, fields) async => converted();
+      await playback.changeQuality('720p');
+      expect(player.openedPlaying.last, isFalse, reason: 'paused by hand, it stays paused');
+      await player.play();
+      pc.answer = (type, fields) async => file();
+      await playback.changeQuality('original');
+      expect(player.openedPlaying.last, isTrue);
+      playback.dispose();
+    });
+
+    test('stays paused through a recovery of its stream', () async {
+      final pc = link();
+      final player = _FakePlayer()..durationMs = 600000;
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => file();
+      await playback.watch('film');
+      player.positionMs = 61000;
+      player.positions.add(const Duration(milliseconds: 61000));
+      await player.pause();
+      await pumpEventQueue();
+      // The PC let the stream go while the video waited paused; the proxy's read fails.
+      playback.proxy.onLost!(playback.stream!);
+      await pumpEventQueue();
+      expect(pc.asked.last.$1, 'watch');
+      expect(player.opened, hasLength(2));
+      expect(player.openedPlaying.last, isFalse);
+      playback.dispose();
+    });
+  });
+
+  test("closing the picture-in-picture window stops the up-next countdown: nothing starts on the app's return", () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    pc.answer = (type, fields) async => {
+      'type': 'stream', 'id': 'e1', 'kind': 'file', 'resource': 'file/e1', 'length': 1000, 'durationMs': 600000,
+      'next': {'id': 'e2', 'title': 'Episode 2'},
+    };
+    await playback.watch('e1');
+    player.positionMs = 599000;
+    player.positions.add(const Duration(milliseconds: 599000));
+    player.completes.add(true);
+    await pumpEventQueue();
+    expect(playback.upNext.value?.step.id, 'e2');
+    await playback.pictureInPictureClosed();
+    expect(playback.upNext.value, isNull);
+    playback.dispose();
+  });
+
+  test("the tracks stay listed after the video's end, when libmpv plays it on without listing them again", () async {
+    final pc = link();
+    final player = _FakePlayer()..durationMs = 600000;
+    final playback = PhonePlayback(link: pc, createPlayer: () => player);
+    pc.answer = (type, fields) async => {'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'durationMs': 600000};
+    await playback.watch('film');
+    await player.lists(const [AudioTrack('1', null, 'jpn'), AudioTrack('2', null, 'eng')]);
+    expect(playback.audioTracks, hasLength(2));
+    // At the end media_kit empties its lists; Loop one or Previous then plays the same file from the start.
+    player.audio = const [];
+    player.listed.add(const Tracks());
+    await pumpEventQueue();
+    expect(playback.audioTracks.map((t) => t.id), ['1', '2']);
+    // Let go of, the player lists nothing.
+    await playback.stop();
+    expect(playback.tracks.audio, isNot(contains(predicate<AudioTrack>((t) => t.id == '1'))));
+    playback.dispose();
+  });
+
   test('a refused watch says why', () async {
     final pc = link();
     pc.answer = (type, fields) => Future.error(const RemoteRequestException('gone', 'Its drive may be disconnected.'));
@@ -243,13 +443,23 @@ class _FakePlayer extends Fake implements Player {
   List<AudioTrack> audio = const [];
   final StreamController<Tracks> listed = StreamController<Tracks>.broadcast();
   final List<String> audioSet = [];
+  // Whether it plays, and what each open was asked: play at once or not.
+  bool playing = false;
+  final List<bool> openedPlaying = [];
+  int durationMs = 0;
+  final StreamController<bool> completes = StreamController<bool>.broadcast();
 
   @override
-  PlayerState get state => PlayerState(position: Duration(milliseconds: positionMs), tracks: Tracks(audio: audio));
+  PlayerState get state => PlayerState(
+    position: Duration(milliseconds: positionMs),
+    duration: Duration(milliseconds: durationMs),
+    playing: playing,
+    tracks: Tracks(audio: audio),
+  );
 
   @override
   late final PlayerStream stream = PlayerStream(
-    const Stream.empty(), const Stream.empty(), const Stream.empty(), positions.stream, const Stream.empty(),
+    const Stream.empty(), const Stream.empty(), completes.stream, positions.stream, const Stream.empty(),
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), listed.stream,
@@ -267,13 +477,20 @@ class _FakePlayer extends Fake implements Player {
   PlatformPlayer? get platform => null;
 
   @override
-  Future<void> open(Playable playable, {bool play = true}) async => opened.add(playable as Media);
+  Future<void> open(Playable playable, {bool play = true}) async {
+    opened.add(playable as Media);
+    openedPlaying.add(play);
+    playing = play;
+  }
 
   @override
-  Future<void> pause() async {}
+  Future<void> pause() async => playing = false;
 
   @override
-  Future<void> play() async {}
+  Future<void> play() async => playing = true;
+
+  @override
+  Future<void> seek(Duration position) async => positionMs = position.inMilliseconds;
 
   @override
   Future<void> setAudioTrack(AudioTrack track) async => audioSet.add(track.id);

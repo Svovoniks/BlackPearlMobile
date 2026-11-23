@@ -284,6 +284,9 @@ class PictureInPicture(private val activity: Activity, messenger: BinaryMessenge
     /** The window shows again after the screen was off: the activity starts, but goes no further than paused. */
     fun shown() = channel.invokeMethod("shown", null)
 
+    /** The window shown that way went out of sight again (closed, or the screen off): Flutter heard of neither. */
+    fun hiddenAgain() = channel.invokeMethod("hidden", null)
+
     fun dispose() {
         stopFollowing()
         if (current === this) {

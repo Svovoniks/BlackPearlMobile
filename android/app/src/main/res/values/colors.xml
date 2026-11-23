@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The app's dark canvas (Palette.canvas), behind it from the first frame in light mode too: a white window
+         flashed before the app drew. -->
+    <color name="canvas">#FF0F1311</color>
+</resources>

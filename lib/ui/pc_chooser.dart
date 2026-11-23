@@ -12,7 +12,11 @@ Future<void> showPcChooser(BuildContext context, AppModel model) => showModalBot
   isScrollControlled: true,
   builder: (context) => ListenableBuilder(
     listenable: model,
-    builder: (context, _) => _PcChooser(model: model),
+    // The current PC's line follows its connection as it goes ("Connecting…", "Connected…").
+    builder: (context, _) => ListenableBuilder(
+      listenable: model.connection ?? model,
+      builder: (context, _) => _PcChooser(model: model),
+    ),
   ),
 );
 
@@ -25,7 +29,8 @@ class _PcChooser extends StatelessWidget {
     final current = model.currentPcId;
     final connection = model.connection;
     return SafeArea(
-      child: Padding(
+      // Many PCs, a sideways phone or large text scroll rather than overflow.
+      child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,

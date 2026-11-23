@@ -65,6 +65,9 @@ class _HomeShellState extends State<HomeShell> {
       builder: (_) => PlayerScreen(playback: playback, pcName: link.pcName, settings: widget.model.settings, onHandedToPc: () => setState(() => _tab = 0)),
     ));
     _playerOpen = false;
+    // Left while it was still opening: a request still waiting for the link is not sent any more (Watch here would
+    // stop the PC's video for a player that is gone).
+    playback.cancelOpening(viewing);
     await opened;
     // The player is off screen now, so its picture can go.
     await playback.stop(viewing: viewing);
@@ -86,7 +89,11 @@ class _HomeShellState extends State<HomeShell> {
       } on RemoteRequestException catch (e) {
         return e.message;
       }
-      if (mounted) setState(() => _tab = 0);
+      if (mounted) {
+        // The Remote shows what the PC now plays: over a show's or season's page too, which close for it.
+        Navigator.of(context).popUntil((route) => route.isFirst);
+        setState(() => _tab = 0);
+      }
       _playbackChanged.value++;
       return null;
     },

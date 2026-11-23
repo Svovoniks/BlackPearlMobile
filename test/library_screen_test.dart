@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/protocol/library.dart';
@@ -104,5 +106,146 @@ void main() {
     expect(find.text('Watch here'), findsNothing);
     await pump('film', const {});
     expect(find.text('Watch here'), findsNothing);
+  });
+
+  Map<String, dynamic> episodes(int page, {int total = 61}) => {
+    'type': 'page',
+    'total': total,
+    'page': page,
+    'pageSize': 40,
+    'location': 'Season 1',
+    'entries': [
+      for (var i = page * 40; i < total && i < page * 40 + 40; i++)
+        {'id': 'e$i', 'title': 'Episode ${i + 1}', 'level': 'episode', 'kind': 'Anime', 'season': 1, 'episode': i + 1, 'playable': true},
+    ],
+  };
+
+  test('loading again keeps every page shown, not only the first', () async {
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected));
+    link.answer = (type, fields) async => episodes(fields['page'] as int);
+    final listing = LibraryListing(link, const BrowseRequest(parentId: 'show', season: 1));
+    await listing.load();
+    await listing.more();
+    expect(listing.entries, hasLength(61));
+    await listing.reload();
+    expect(listing.entries, hasLength(61));
+    expect(listing.entries.last.title, 'Episode 61');
+    expect(listing.hasMore, isFalse);
+    expect(link.asked.map((a) => a.$2['page']), [0, 1, 0, 1]);
+  });
+
+  testWidgets("Home whose next page fails asks once, says why, and tries again on request", (tester) async {
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library'};
+    var fail = true;
+    Completer<void>? held;
+    link.answer = (type, fields) async {
+      if (fields['page'] == 0) return {...homePage(), 'total': 43};
+      if (fail) throw const RemoteRequestException('timeout', "The PC didn't answer. Try again.");
+      await held?.future;
+      return {...homePage(), 'page': 1, 'total': 43, 'entries': <Map<String, dynamic>>[]};
+    };
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(),
+      home: LibraryScreen(link: link, actions: LibraryActions(watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {}, playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null)),
+    ));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(link.asked, hasLength(2), reason: 'the failed page is not asked for again on every frame');
+    await tester.ensureVisible(find.text('Try again'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining("Couldn't load more"), findsOneWidget);
+    fail = false;
+    held = Completer<void>();
+    await tester.tap(find.text('Try again'));
+    await tester.pump();
+    expect(find.textContaining("Couldn't load more"), findsNothing, reason: 'Try again shows it is trying');
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    held.complete();
+    await tester.pumpAndSettle();
+    expect(link.asked, hasLength(3));
+    expect(find.text('Try again'), findsNothing);
+  });
+
+  testWidgets('pulling to refresh keeps the list until the new one has come', (tester) async {
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    final (link, _) = await pumpLibrary(tester);
+    final pending = Completer<Map<String, dynamic>>();
+    link.answer = (type, fields) => pending.future;
+    await tester.fling(find.text('Continue watching'), const Offset(0, 500), 1500);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(link.asked.last.$2['home'], isTrue);
+    expect(find.text('Asteroid City'), findsWidgets, reason: 'the list stays meanwhile');
+    expect(find.byType(RefreshProgressIndicator), findsOneWidget, reason: 'and the spinner shows until the new list comes');
+    pending.complete(homePage());
+    await tester.pumpAndSettle();
+    expect(find.byType(RefreshProgressIndicator), findsNothing);
+  });
+
+  testWidgets('an empty Home loads again when the link comes back: the PC may have answered before reading its library', (tester) async {
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library'};
+    link.answer = (type, fields) async => {...homePage(), 'total': 0, 'entries': <Map<String, dynamic>>[]};
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(),
+      home: LibraryScreen(link: link, actions: LibraryActions(watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {}, playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null)),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('Nothing here yet'), findsOneWidget);
+    link.status = const LinkStatus(LinkPhase.failed, message: 'Lost the connection to the PC.');
+    await tester.pump();
+    link.answer = (type, fields) async => homePage();
+    link.status = const LinkStatus(LinkPhase.connected);
+    await tester.pumpAndSettle();
+    expect(find.text('Continue watching'), findsOneWidget);
+  });
+
+  test("a Continue watching episode names its show once, and keeps the episode's title", () {
+    const episode = LibraryEntry(id: 'e', title: '3 Body Problem · Episode 1 · Countdown', caption: '3 Body Problem · S01 E01', level: 'episode');
+    expect(continueLines(episode), (title: '3 Body Problem', caption: 'S01 E01 · Countdown'));
+    const film = LibraryEntry(id: 'f', title: 'Asteroid City', caption: 'Movie · 2023');
+    expect(continueLines(film), (title: 'Asteroid City', caption: 'Movie · 2023'));
+  });
+
+  testWidgets('Play on PC from a show page closes the pages for the Remote, and nothing more', (tester) async {
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    final navigator = GlobalKey<NavigatorState>();
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch'};
+    link.answer = (type, fields) async => fields['parentId'] == 'show'
+        ? {
+            'type': 'page', 'total': 1, 'page': 0, 'pageSize': 40, 'location': 'Night Signal',
+            'entries': [{'id': 'e1', 'title': 'Episode 1', 'level': 'episode', 'kind': 'Show', 'playable': true}],
+          }
+        : homePage();
+    await tester.pumpWidget(MaterialApp(
+      navigatorKey: navigator,
+      theme: buildTheme(),
+      home: LibraryScreen(
+        link: link,
+        actions: LibraryActions(
+          watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {},
+          // As the app does: the Remote shows, over any page.
+          playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async {
+            navigator.currentState!.popUntil((route) => route.isFirst);
+            return null;
+          },
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Night Signal'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Episode 1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Play on PC'));
+    await tester.pumpAndSettle();
+    expect(find.text('Continue watching'), findsOneWidget, reason: 'the first page stays');
   });
 }

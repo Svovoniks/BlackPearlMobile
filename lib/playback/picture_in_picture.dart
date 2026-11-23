@@ -34,6 +34,10 @@ class PictureInPicture {
   /// The same, for the app as a whole: its link to the PC comes back, as on any return to the app.
   VoidCallback? onAppShown;
 
+  /// The window shown that way went out of sight again (closed, or the screen off), which Flutter doesn't report: the
+  /// app is in the background again.
+  VoidCallback? onAppHidden;
+
   /// An activity attached and learned nothing yet: whoever uses picture in picture says what it wants again.
   VoidCallback? onReady;
 
@@ -58,6 +62,8 @@ class PictureInPicture {
         case 'shown':
           onShown?.call();
           onAppShown?.call();
+        case 'hidden':
+          onAppHidden?.call();
         case 'toggle':
           onToggle?.call();
       }

@@ -214,6 +214,7 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
     model.notice.addListener(_showNotice);
     // A picture-in-picture window back on screen after the screen was off never gets "resumed" from Flutter.
     PictureInPicture.instance.onAppShown = model.resumed;
+    PictureInPicture.instance.onAppHidden = model.paused;
     try {
       // Covers both the link the app was opened with and links that arrive while it runs.
       _links = (widget.links ?? AppLinks().uriLinkStream).listen(_openLink, onError: (_) {});
@@ -246,18 +247,29 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
   /// A link from outside the app: another app or a web page can send one too, so ask before it replaces the current PC.
   /// The in-app scanner and paste don't ask; the user is already pairing there.
   Future<void> _openLink(Uri uri) async {
-    final link = PairLinkParser.tryParse(uri.toString());
-    if (link == null) {
-      if (uri.scheme == 'blackpearl') {
-        model.requestPairing(error: "That link didn't contain a pairing code. Show the code on the PC again.");
-      }
+    final PairLink link;
+    try {
+      link = PairLinkParser.parse(uri.toString());
+    } on PairLinkException catch (e) {
+      // What is wrong with it: a newer PC, a cut-off link, a server that isn't a web address.
+      if (uri.scheme == 'blackpearl') model.requestPairing(error: e.message);
       return;
     }
     // One question at a time; a second link while it's open is dropped.
     if (_confirmingLink || !mounted) return;
     _confirmingLink = true;
     try {
-      if (await confirmPairLink(context, link) && mounted) model.pair(link);
+      if (await confirmPairLink(context, link) && mounted) {
+        // The phone's player, if open, goes first: the pairing replaces the link it plays through. It is off screen
+        // before its player is let go.
+        final navigator = Navigator.of(context);
+        if (navigator.canPop()) {
+          navigator.popUntil((route) => route.isFirst);
+          await Future<void>.delayed(const Duration(milliseconds: 450));
+          if (!mounted) return;
+        }
+        model.pair(link);
+      }
     } finally {
       _confirmingLink = false;
     }

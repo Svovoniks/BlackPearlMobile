@@ -15,7 +15,8 @@ enum PlayerOptionsTab { upNext, audio, subtitles, quality }
 
 /// Opens the player's options on [tab]: beside the video in landscape, so the picture stays in view, and as a short
 /// sheet in portrait.
-Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {PlayerOptionsTab tab = PlayerOptionsTab.audio}) {
+/// [insets]: where the camera cutout and the system bars are, which Flutter doesn't report while the player hides the bars.
+Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {PlayerOptionsTab tab = PlayerOptionsTab.audio, EdgeInsets insets = EdgeInsets.zero}) {
   final size = MediaQuery.sizeOf(context);
   if (size.width > size.height) {
     return showGeneralDialog<void>(
@@ -34,10 +35,20 @@ Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {Pl
             color: Palette.surface,
             borderRadius: const BorderRadius.horizontal(left: Radius.circular(26)),
             clipBehavior: Clip.antiAlias,
-            child: SafeArea(
-              left: false,
-              child: PlayerOptionsPanel(playback: playback, initialTab: tab),
-            ),
+            // Clear of a cutout on the panel's side, which the panel would otherwise cover with its tabs and rows, and of
+            // the bars ([insets] holds both, or else the safe area does).
+            child: insets == EdgeInsets.zero
+                ? SafeArea(left: false, child: PlayerOptionsPanel(playback: playback, initialTab: tab))
+                : Padding(
+                    padding: EdgeInsets.only(top: insets.top, right: insets.right, bottom: insets.bottom),
+                    child: MediaQuery.removePadding(
+                      context: context,
+                      removeTop: true,
+                      removeRight: true,
+                      removeBottom: true,
+                      child: PlayerOptionsPanel(playback: playback, initialTab: tab),
+                    ),
+                  ),
           ),
         ),
       ),
@@ -52,7 +63,10 @@ Future<void> showPlayerOptions(BuildContext context, PhonePlayback playback, {Pl
     isScrollControlled: true,
     useSafeArea: true,
     constraints: BoxConstraints(maxHeight: size.height * 0.62),
-    builder: (context) => PlayerOptionsPanel(playback: playback, initialTab: tab),
+    builder: (context) => Padding(
+      padding: EdgeInsets.only(bottom: insets.bottom),
+      child: PlayerOptionsPanel(playback: playback, initialTab: tab),
+    ),
   );
 }
 
@@ -124,7 +138,7 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
   @override
   Widget build(BuildContext context) {
     final stream = playback.stream;
-    final tracks = playback.player?.state.tracks ?? const Tracks();
+    final tracks = playback.tracks;
     final tabs = [
       if (playback.link.features.contains('queues')) PlayerOptionsTab.upNext,
       PlayerOptionsTab.audio,

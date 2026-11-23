@@ -189,6 +189,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   // The window's button: the user is watching the window, so nothing waits to resume.
   void _toggle() {
+    if (_switchingEpisode) return;
     playback.pictureInPictureShown();
     unawaited(_player?.playOrPause());
   }
@@ -281,7 +282,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   void _options([PlayerOptionsTab tab = PlayerOptionsTab.audio]) {
     if (playback.player == null || playback.stream == null) return;
-    unawaited(showPlayerOptions(context, playback, tab: tab));
+    unawaited(showPlayerOptions(context, playback, tab: tab, insets: controlInsets(MediaQuery.of(context), cutout: _cutout)));
   }
 
   // Loop cycles as on the PC: off, all, one.
@@ -306,7 +307,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }, duration: const Duration(seconds: 2));
   }
 
+  // While the next episode opens, the last one's picture stays, but it doesn't play or seek any more: its final report is
+  // made, and the PC would otherwise hear it again.
+  bool get _switchingEpisode => playback.pending.value?.episode != null;
+
   void _seekBy(int seconds) {
+    if (_switchingEpisode) return;
     final player = _player;
     if (player == null) return;
     final duration = player.state.duration;
@@ -433,7 +439,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   String? get _tickedAudio => playback.pending.value?.audio ?? _audioId;
 
   ({List<SubtitleTrack> tracks, List<TrackLabel> labels}) get _subtitles {
-    final tracks = PhonePlayback.subtitleChoices(_player?.state.tracks ?? const Tracks());
+    final tracks = PhonePlayback.subtitleChoices(playback.tracks);
     return (tracks: tracks, labels: subtitleLabels(tracks));
   }
 
@@ -635,9 +641,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
       );
 
       Widget timeline() => _LiveTimeline(
+        playback: playback,
         player: player!,
         portrait: portrait && upNext == null,
-        onSeek: (to) => unawaited(player.seek(to)),
+        onSeek: (to) {
+          if (!_switchingEpisode) unawaited(player.seek(to));
+        },
         onDragging: (dragging) {
           _dragging = dragging;
           if (dragging) {
@@ -664,7 +673,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
               timeline: timeline(),
               playing: _playing,
               onPlayPause: () {
-                unawaited(player!.playOrPause());
+                if (!_switchingEpisode) unawaited(player!.playOrPause());
                 _showControls();
               },
               onBack10: () {
@@ -825,8 +834,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         body: switch (playback.phase) {
           // The small window shows the picture alone; its own buttons replace the controls.
           _ when inPip && controller != null => Video(key: ObjectKey(controller), controller: controller, controls: NoVideoControls, fill: Colors.black),
-          PhonePlaybackPhase.failed => _Problem(message: playback.error ?? "The video didn't open.", onBack: _leave),
-          _ when controller == null || player == null => _Opening(title: title, onBack: _leave),
+          PhonePlaybackPhase.failed => _Problem(message: playback.error ?? "The video didn't open.", onBack: _leave, insets: safe),
+          _ when controller == null || player == null => _Opening(title: title, onBack: _leave, insets: safe),
           _ => body(),
         },
       ),
@@ -836,8 +845,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
 /// The timeline, following the player's position, length and buffer.
 class _LiveTimeline extends StatelessWidget {
-  const _LiveTimeline({required this.player, required this.portrait, required this.onSeek, required this.onDragging});
+  const _LiveTimeline({required this.player, required this.playback, required this.portrait, required this.onSeek, required this.onDragging});
   final Player player;
+  final PhonePlayback playback;
   final bool portrait;
   final ValueChanged<Duration> onSeek;
   final ValueChanged<bool> onDragging;
@@ -854,8 +864,9 @@ class _LiveTimeline extends StatelessWidget {
         initialData: player.state.position,
         builder: (context, position) => DockTimeline(
           portrait: portrait,
-          position: position.data ?? Duration.zero,
-          duration: duration.data ?? Duration.zero,
+          // Just opened at a place (another quality, a recovery), media_kit says 0:00 until libmpv has gone there.
+          position: playback.positionKnown ? position.data ?? Duration.zero : Duration(milliseconds: playback.openedAtMs),
+          duration: (duration.data ?? Duration.zero) > Duration.zero ? duration.data! : Duration(milliseconds: playback.stream?.durationMs ?? 0),
           buffered: buffer.data ?? Duration.zero,
           onSeek: onSeek,
           onDragging: onDragging,
@@ -983,11 +994,15 @@ class _PendingChip extends StatelessWidget {
 }
 
 class _Opening extends StatelessWidget {
-  const _Opening({required this.title, required this.onBack});
+  const _Opening({required this.title, required this.onBack, required this.insets});
   final String title;
   final VoidCallback onBack;
+
+  /// As _Problem's.
+  final EdgeInsets insets;
   @override
-  Widget build(BuildContext context) => SafeArea(
+  Widget build(BuildContext context) => Padding(
+    padding: insets,
     child: Stack(
       children: [
         Positioned(
@@ -1017,11 +1032,15 @@ class _Opening extends StatelessWidget {
 }
 
 class _Problem extends StatelessWidget {
-  const _Problem({required this.message, required this.onBack});
+  const _Problem({required this.message, required this.onBack, required this.insets});
   final String message;
   final VoidCallback onBack;
+
+  /// Clear of the cutout and the bars, which Flutter doesn't report while the player hides the bars (see controlInsets).
+  final EdgeInsets insets;
   @override
-  Widget build(BuildContext context) => SafeArea(
+  Widget build(BuildContext context) => Padding(
+    padding: insets,
     child: Center(
       child: Padding(
         padding: const EdgeInsets.all(32),

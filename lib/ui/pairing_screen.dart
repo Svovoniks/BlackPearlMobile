@@ -76,6 +76,17 @@ class _PairingScreenState extends State<PairingScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // With somewhere to go back to, the system's Back does what the back arrow does, rather than close the app.
+    return PopScope(
+      canPop: widget.onCancel == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) widget.onCancel?.call();
+      },
+      child: _page(context),
+    );
+  }
+
+  Widget _page(BuildContext context) {
     return Scaffold(
       body: SafeArea(
         child: LayoutBuilder(

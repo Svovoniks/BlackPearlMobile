@@ -40,6 +40,11 @@ class BackgroundLink {
   bool get running => _running;
   BackgroundNotice? _shown;
 
+  // Android starts the service again by itself after it stopped the app (it is sticky), and the app with it, which then
+  // never asked for it. Until this side has started or stopped it, it may be running.
+  bool _settled = false;
+  bool get mayBeRunning => _running || !_settled;
+
   /// Called with `toggle` (the notification's Play/Pause) and `disconnect`.
   void listen(void Function(String action) onAction) {
     _channel.setMethodCallHandler((call) async {
@@ -55,6 +60,7 @@ class BackgroundLink {
     try {
       final started = await _channel.invokeMethod<bool>(_running ? 'update' : 'start', notice.toMap()) ?? false;
       _running = started;
+      _settled = true;
       _shown = started ? notice : null;
       return started;
     } on PlatformException {
@@ -66,6 +72,7 @@ class BackgroundLink {
 
   Future<void> stop() async {
     _running = false;
+    _settled = true;
     _shown = null;
     try {
       await _channel.invokeMethod<void>('stop');

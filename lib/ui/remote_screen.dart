@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:clock/clock.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
@@ -38,13 +39,15 @@ class RemoteScreen extends StatefulWidget {
 
 class _RemoteScreenState extends State<RemoteScreen> {
   Timer? _ticker;
-  Timer? _volumeTimer;
+  Timer? _volumeTimer, _volumeSettleTimer;
   int? _volumeOverride;
   DateTime _volumeChangedAt = DateTime.fromMillisecondsSinceEpoch(0);
   int? _sentVolume;
   int? _seekTarget;
   DateTime? _seekAt;
   double? _dragFraction;
+  // The video a timeline drag began on.
+  String? _dragVideo;
   String? _feedback;
   Timer? _feedbackTimer;
 
@@ -95,20 +98,30 @@ class _RemoteScreenState extends State<RemoteScreen> {
     _sound?.notice.removeListener(_showSoundNotice);
     _ticker?.cancel();
     _volumeTimer?.cancel();
+    _volumeSettleTimer?.cancel();
     _feedbackTimer?.cancel();
     super.dispose();
   }
 
   void _changed() {
     final at = link.stateReceivedAt;
-    // A state that arrived after the seek replaces the guess.
-    if (_seekAt != null && at != null && at.isAfter(_seekAt!)) {
-      _seekTarget = null;
-      _seekAt = null;
+    // A state that arrived after the seek replaces the guess once it shows the seek, or after a while if it never does:
+    // one the PC sent before the seek reached it put the knob back for a moment.
+    final seekAt = _seekAt, target = _seekTarget;
+    if (seekAt != null && at != null && at.isAfter(seekAt)) {
+      final since = clock.now().difference(seekAt);
+      final guess = target == null ? null : target + (_state?.playing == true ? since.inMilliseconds : 0);
+      if (guess == null || (link.currentPositionMs() - guess).abs() < 2000 || since > const Duration(milliseconds: 1500)) {
+        _seekTarget = null;
+        _seekAt = null;
+      }
     }
     if (_volumeOverride != null && DateTime.now().difference(_volumeChangedAt) > const Duration(milliseconds: 1500)) {
       _volumeOverride = null;
     }
+    // A timeline that goes grey under the finger (the link dropped) gets no end to its drag, and neither does one whose
+    // video changed: the drag ends here, and the knob follows the PC again.
+    if (_dragFraction != null && (!_canPlay || (_state?.durationMs ?? 0) <= 0 || _videoOf(_state) != _dragVideo)) _dragFraction = null;
     _syncTicker();
     setState(() {});
   }
@@ -156,10 +169,13 @@ class _RemoteScreenState extends State<RemoteScreen> {
   bool get _canPlay => _connected && (_state?.media ?? false) && (_state?.canControl ?? false);
   bool get _canAdjust => _connected && (_state?.media ?? false);
 
+  static String? _videoOf(RemoteState? state) =>
+      state == null || !state.media ? null : '${state.mediaId}|${state.title}|${state.detail}|${state.durationMs}';
+
   int get _position {
     if (_dragFraction != null) return (_dragFraction! * (_state?.durationMs ?? 0)).round();
     if (_seekTarget != null && _seekAt != null) {
-      final elapsed = _state?.playing == true ? DateTime.now().difference(_seekAt!).inMilliseconds : 0;
+      final elapsed = _state?.playing == true ? clock.now().difference(_seekAt!).inMilliseconds : 0;
       final duration = _state?.durationMs ?? 0;
       final position = _seekTarget! + elapsed;
       return duration > 0 ? math.min(position, duration) : position;
@@ -186,7 +202,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
     // The guess is made before sending: a state that answers the command must replace it, not add to it.
     final duration = _state?.durationMs ?? 0;
     _seekTarget = (_position + ms).clamp(0, duration > 0 ? duration : 1 << 40);
-    _seekAt = DateTime.now();
+    _seekAt = clock.now();
     link.command('seek-by', ms);
     _flash(ms > 0 ? '+${ms ~/ 1000} s' : '−${-ms ~/ 1000} s');
   }
@@ -196,7 +212,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
     if (!_canPlay || duration <= 0) return;
     final target = (fraction.clamp(0.0, 1.0) * duration).round();
     _seekTarget = target;
-    _seekAt = DateTime.now();
+    _seekAt = clock.now();
     link.command('seek-to', target);
   }
 
@@ -218,6 +234,12 @@ class _RemoteScreenState extends State<RemoteScreen> {
     setState(() {
       _volumeOverride = clamped;
       _volumeChangedAt = DateTime.now();
+    });
+    // The PC's own value shows again once the change has settled, also when no further state comes to clear it (a
+    // paused PC sends none), so a change made on the PC meanwhile isn't hidden behind this one.
+    _volumeSettleTimer?.cancel();
+    _volumeSettleTimer = Timer(const Duration(milliseconds: 1600), () {
+      if (mounted && _volumeOverride != null) setState(() => _volumeOverride = null);
     });
     if (done) {
       _volumeTimer?.cancel();
@@ -289,9 +311,47 @@ class _RemoteScreenState extends State<RemoteScreen> {
       if (status.isConnected) return const _Centered(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5));
       return _ConnectionPanel(link: link, onPairAgain: widget.onPairAgain, onChoosePc: widget.onChoosePc);
     }
+    final banner = [if (!status.isConnected) ...[_ConnectionBanner(link: link, onPairAgain: widget.onPairAgain), const SizedBox(height: 12)]];
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Sideways, the touch pad takes the left side and the controls the right, starting with the title, timeline and
+        // play buttons: under the pad, those were below the fold.
+        if (state.media && constraints.maxWidth > constraints.maxHeight && constraints.maxWidth >= 560) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(flex: 5, child: Padding(padding: const EdgeInsets.only(bottom: 12), child: _touchPad())),
+                const SizedBox(width: 20),
+                Expanded(
+                  flex: 6,
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...banner, ..._playing(state, sideways: true)]),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+        return _upright(state, banner);
+      },
+    );
+  }
+
+  Widget _upright(RemoteState state, List<Widget> banner) {
     final children = <Widget>[
-      if (!status.isConnected) ...[_ConnectionBanner(link: link, onPairAgain: widget.onPairAgain), const SizedBox(height: 12)],
-      if (!state.media) ...[_Nothing(pcName: link.pcName, connected: status.isConnected)] else ..._playing(state),
+      ...banner,
+      if (!state.media)
+        _Nothing(pcName: link.pcName, connected: link.status.isConnected)
+      else ...[
+        Expanded(
+          child: ConstrainedBox(constraints: const BoxConstraints(minHeight: 116), child: _touchPad()),
+        ),
+        const SizedBox(height: 16),
+        ..._playing(state),
+      ],
     ];
     // The touch pad takes whatever height the controls leave. On a screen too short for its smallest size, it all
     // scrolls instead of squeezing.
@@ -308,7 +368,36 @@ class _RemoteScreenState extends State<RemoteScreen> {
     );
   }
 
-  List<Widget> _playing(RemoteState state) {
+  static const _volumeStyle = TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]);
+
+  static double _labelWidth(BuildContext context, String text, TextStyle style) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+    final width = painter.width.ceilToDouble() + 1;
+    painter.dispose();
+    return width;
+  }
+
+  Widget _touchPad() => _TouchPad(
+    enabled: _canPlay,
+    volumeEnabled: _canAdjust,
+    feedback: _feedback,
+    onTap: _toggle,
+    onSwipe: (forward) => _seekBy(forward ? 10000 : -10000),
+    volume: () => _volume,
+    onVolume: (value, done) {
+      _setVolume(value, done: done);
+      _flash(_phoneVolume ? 'Phone volume $value%' : 'Volume $value%');
+    },
+  );
+
+  /// Everything but the touch pad, from the title down.
+  /// [sideways]: beside the touch pad, where the title and its detail take a line each, to leave the play buttons in view.
+  List<Widget> _playing(RemoteState state, {bool sideways = false}) {
     final duration = state.durationMs;
     final position = _position;
     final fraction = duration > 0 ? (position / duration).clamp(0.0, 1.0) : 0.0;
@@ -321,24 +410,6 @@ class _RemoteScreenState extends State<RemoteScreen> {
       onTap: () => link.command('loop'),
     );
     return [
-      Expanded(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(minHeight: 116),
-          child: _TouchPad(
-            enabled: _canPlay,
-            volumeEnabled: _canAdjust,
-            feedback: _feedback,
-            onTap: _toggle,
-            onSwipe: (forward) => _seekBy(forward ? 10000 : -10000),
-            volume: () => _volume,
-            onVolume: (value, done) {
-              _setVolume(value, done: done);
-              _flash(_phoneVolume ? 'Phone volume $value%' : 'Volume $value%');
-            },
-          ),
-        ),
-      ),
-      const SizedBox(height: 16),
       Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -346,13 +417,13 @@ class _RemoteScreenState extends State<RemoteScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(state.title.isEmpty ? 'Untitled' : state.title, style: display(26), maxLines: 2, overflow: TextOverflow.ellipsis),
+                Text(state.title.isEmpty ? 'Untitled' : state.title, style: display(26), maxLines: sideways ? 1 : 2, overflow: TextOverflow.ellipsis),
                 if (state.detail.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(
                     state.detail,
                     style: const TextStyle(color: Palette.muted, fontSize: 14),
-                    maxLines: 2,
+                    maxLines: sideways ? 1 : 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ],
@@ -379,23 +450,38 @@ class _RemoteScreenState extends State<RemoteScreen> {
       _Timeline(
         fraction: _dragFraction ?? fraction,
         enabled: _canPlay && duration > 0,
-        onDrag: (value) => setState(() => _dragFraction = value),
+        onDrag: (value) => setState(() {
+          if (_dragFraction == null) _dragVideo = _videoOf(state);
+          _dragFraction = value;
+        }),
         onRelease: (value) {
           _seekTo(value);
           setState(() => _dragFraction = null);
         },
+        onCancel: () => setState(() => _dragFraction = null),
       ),
       const SizedBox(height: 2),
       Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            formatClock(position),
-            style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+          // Each shrinks rather than spill past the edge on a narrow phone with very large text.
+          Flexible(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                formatClock(position),
+                style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+              ),
+            ),
           ),
-          Text(
-            duration > 0 ? '−${formatClock(duration - position)}' : '',
-            style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+          Flexible(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                duration > 0 ? '−${formatClock(duration - position)}' : '',
+                style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+              ),
+            ),
           ),
         ],
       ),
@@ -524,6 +610,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
                 label: 'Subtitles',
                 icon: Icons.subtitles_outlined,
                 tracks: state.subtitleTracks!,
+                // A video without subtitles has an empty menu on the PC once its audio is listed: it has none, not "not yet".
+                opened: state.audioTracks!.isNotEmpty,
                 selected: state.subtitleTrack,
                 enabled: _canAdjust,
                 onTap: () => unawaited(showRemoteTracks(context, link: link, tab: RemoteTracksTab.subtitles)),
@@ -587,12 +675,15 @@ class _RemoteScreenState extends State<RemoteScreen> {
             ),
           ),
           const SizedBox(width: 12),
+          // As wide as "Muted" at the phone's text size, so neither it nor "100%" wraps, and the track keeps its length.
           SizedBox(
-            width: 42,
+            width: math.max(42.0, _labelWidth(context, 'Muted', _volumeStyle)),
             child: Text(
               _muted ? 'Muted' : '$_volume%',
               textAlign: TextAlign.right,
-              style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
+              maxLines: 1,
+              softWrap: false,
+              style: _volumeStyle,
             ),
           ),
         ],
@@ -1003,7 +1094,10 @@ class _SoundRow extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  // Two lines of text in a 54 dp pebble: past 160% text they would spill out of it.
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(maxScaleFactor: 1.6, child: _build(context));
+
+  Widget _build(BuildContext context) => ListenableBuilder(
     listenable: Listenable.merge([sound, sound.settings]),
     builder: (context, _) {
       if (!sound.on) {
@@ -1106,6 +1200,7 @@ class _TrackPill extends StatelessWidget {
   const _TrackPill({
     required this.label,
     required this.icon,
+    this.opened = false,
     required this.tracks,
     required this.selected,
     required this.enabled,
@@ -1114,15 +1209,21 @@ class _TrackPill extends StatelessWidget {
   final String label;
   final IconData icon;
   final List<RemoteTrack> tracks;
+
+  /// The video has opened on the PC, so an empty list means none rather than not yet.
+  final bool opened;
   final int? selected;
   final bool enabled;
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) {
+  // As the Sound row: two lines in a 54 dp pebble.
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(maxScaleFactor: 1.6, child: Builder(builder: _build));
+
+  Widget _build(BuildContext context) {
     final choice = tracks.where((t) => t.id == selected).firstOrNull;
     final value = choice == null
-        ? (tracks.isEmpty ? 'Not yet' : 'None')
+        ? (tracks.isEmpty && !opened ? 'Not yet' : 'None')
         : choice.id == RemoteTrack.off
         ? 'Off'
         // Two tracks in one language are told apart by their detail, as in the sheet.
@@ -1172,11 +1273,12 @@ class _TrackPill extends StatelessWidget {
 
 /// The timeline: a well with an accent fill and a knob. Tap or drag; the seek is sent on release.
 class _Timeline extends StatelessWidget {
-  const _Timeline({required this.fraction, required this.enabled, required this.onDrag, required this.onRelease});
+  const _Timeline({required this.fraction, required this.enabled, required this.onDrag, required this.onRelease, required this.onCancel});
   final double fraction;
   final bool enabled;
   final ValueChanged<double> onDrag;
   final ValueChanged<double> onRelease;
+  final VoidCallback onCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -1193,6 +1295,7 @@ class _Timeline extends StatelessWidget {
         onHorizontalDragUpdate: enabled ? (d) => onDrag(at(d.localPosition)) : null,
         // Where the finger left, not [fraction]: a drag can end in the same frame as its last move, before a rebuild.
         onHorizontalDragEnd: enabled ? (d) => onRelease(at(d.localPosition)) : null,
+        onHorizontalDragCancel: enabled ? onCancel : null,
         onTapUp: enabled ? (d) => onRelease(at(d.localPosition)) : null,
         child: SizedBox(
           height: 30,
