@@ -391,29 +391,33 @@ void main() {
     expect(line.height, lessThan(13 * 1.3 * 1.6), reason: 'one line, not "Mute" over "d"');
   });
 
-  testWidgets('sideways, the play buttons show without scrolling', (tester) async {
-    tester.view.physicalSize = const Size(2400, 1080);
-    tester.view.devicePixelRatio = 2.625;
-    addTearDown(tester.view.reset);
-    final link = FakeRemoteLink(pcName: 'Living room PC', status: const LinkStatus(LinkPhase.connected, path: NetworkPath.home), state: sampleState);
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: buildTheme(),
-        // The tab bar takes the bottom of the screen, as in the app.
-        home: Scaffold(
-          body: RemoteScreen(link: link, onChoosePc: () {}, onPairAgain: () {}),
-          bottomNavigationBar: const SizedBox(height: 70),
+  for (final scale in [1.0, 1.3]) {
+    testWidgets('sideways, the play buttons show without scrolling, at ${(scale * 100).round()}% text', (tester) async {
+      tester.platformDispatcher.textScaleFactorTestValue = scale;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      tester.view.physicalSize = const Size(2400, 1080);
+      tester.view.devicePixelRatio = 2.625;
+      addTearDown(tester.view.reset);
+      final link = FakeRemoteLink(pcName: 'Living room PC', status: const LinkStatus(LinkPhase.connected, path: NetworkPath.home), state: sampleState);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildTheme(),
+          // The tab bar takes the bottom of the screen, as in the app.
+          home: Scaffold(
+            body: RemoteScreen(link: link, onChoosePc: () {}, onPairAgain: () {}),
+            bottomNavigationBar: const SizedBox(height: 70),
+          ),
         ),
-      ),
-    );
-    await tester.pump();
-    final height = 1080 / 2.625 - 70;
-    for (final label in ['Previous', 'Back 10 seconds', 'Pause', 'Forward 10 seconds', 'Next']) {
-      expect(tester.getRect(find.bySemanticsLabel(label)).bottom, lessThanOrEqualTo(height), reason: label);
-    }
-    // Every control is still there, further down.
-    for (final label in [RegExp('^Stop'), RegExp('^Loop'), RegExp('^Shuffle'), RegExp('^Fullscreen'), RegExp('^Audio'), RegExp('^Subtitles'), RegExp('PC volume')]) {
-      expect(find.bySemanticsLabel(label), findsWidgets, reason: '$label');
-    }
-  });
+      );
+      await tester.pump();
+      final height = 1080 / 2.625 - 70;
+      for (final label in ['Previous', 'Back 10 seconds', 'Pause', 'Forward 10 seconds', 'Next']) {
+        expect(tester.getRect(find.bySemanticsLabel(label)).bottom, lessThanOrEqualTo(height), reason: label);
+      }
+      // Every control is still there, further down.
+      for (final label in [RegExp('^Stop'), RegExp('^Loop'), RegExp('^Shuffle'), RegExp('^Fullscreen'), RegExp('^Audio'), RegExp('^Subtitles'), RegExp('PC volume')]) {
+        expect(find.bySemanticsLabel(label), findsWidgets, reason: '$label');
+      }
+    });
+  }
 }

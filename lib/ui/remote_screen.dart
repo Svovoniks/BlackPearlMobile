@@ -328,7 +328,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
                   flex: 6,
                   child: SingleChildScrollView(
                     padding: const EdgeInsets.only(bottom: 12),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...banner, ..._playing(state)]),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...banner, ..._playing(state, sideways: true)]),
                   ),
                 ),
               ],
@@ -396,7 +396,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
   );
 
   /// Everything but the touch pad, from the title down.
-  List<Widget> _playing(RemoteState state) {
+  /// [sideways]: beside the touch pad, where the title and its detail take a line each, to leave the play buttons in view.
+  List<Widget> _playing(RemoteState state, {bool sideways = false}) {
     final duration = state.durationMs;
     final position = _position;
     final fraction = duration > 0 ? (position / duration).clamp(0.0, 1.0) : 0.0;
@@ -416,13 +417,13 @@ class _RemoteScreenState extends State<RemoteScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(state.title.isEmpty ? 'Untitled' : state.title, style: display(26), maxLines: 2, overflow: TextOverflow.ellipsis),
+                Text(state.title.isEmpty ? 'Untitled' : state.title, style: display(26), maxLines: sideways ? 1 : 2, overflow: TextOverflow.ellipsis),
                 if (state.detail.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(
                     state.detail,
                     style: const TextStyle(color: Palette.muted, fontSize: 14),
-                    maxLines: 2,
+                    maxLines: sideways ? 1 : 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                 ],
