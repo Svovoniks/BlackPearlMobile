@@ -46,7 +46,7 @@ class PlayerDock extends StatelessWidget {
     this.shuffle,
     this.onShuffle,
     this.onUpNext,
-  });
+  }) : assert(openMenu == null || onCloseMenu != null, 'A dock with a menu open takes every tap on it to close the menu.');
 
   final bool portrait;
 

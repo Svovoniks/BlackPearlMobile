@@ -74,7 +74,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     playback.addListener(_changed);
     playback.notice.addListener(_notice);
     playback.pending.addListener(_rebuild);
-    playback.upNext.addListener(_rebuild);
+    playback.upNext.addListener(_upNextChanged);
     WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => unawaited(_readCutout()));
     pip.active.addListener(_pipChanged);
@@ -111,7 +111,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     playback.removeListener(_changed);
     playback.notice.removeListener(_notice);
     playback.pending.removeListener(_rebuild);
-    playback.upNext.removeListener(_rebuild);
+    playback.upNext.removeListener(_upNextChanged);
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
     unawaited(SystemChrome.setPreferredOrientations([]));
     _hideTimer?.cancel();
@@ -121,6 +121,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   void _rebuild() {
     if (mounted) setState(() {});
+  }
+
+  // The up-next card takes the dock's place, chips and all: a menu open over the dock closes with it.
+  void _upNextChanged() {
+    if (playback.upNext.value != null) _menu = null;
+    _rebuild();
   }
 
   void _changed() {
@@ -742,10 +748,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                     ),
                   ),
                   // As far from the bottom edge as the top bar is from the top (see controlInsets on the gesture strip).
+                  // The up-next card's timeline is its last row, 12 dp above its bottom: the card rises as far as it
+                  // takes to keep that drag above the gesture strip.
                   Positioned(
                     left: safe.left + side,
                     right: safe.right + side,
-                    bottom: safe.bottom + 14,
+                    bottom: upNext == null ? safe.bottom + 14 : [safe.bottom + 14, MediaQuery.systemGestureInsetsOf(context).bottom - 8].reduce((a, b) => a > b ? a : b),
                     child: KeyedSubtree(key: _dockKey, child: dock),
                   ),
                   ?menu,
@@ -998,7 +1006,8 @@ class _Problem extends StatelessWidget {
 /// How far the player's controls keep from the screen's edges: clear of the camera cutout and of any bars showing.
 /// With the system bars hidden, Android reports no cutout in the padding, so it comes from [cutout] (asked of Android)
 /// or the display features. The gesture strip along the bottom doesn't count: it takes only drags, with the bars hidden
-/// a swipe there shows them rather than going home, and the dock's one drag, the timeline, sits far above it.
+/// a swipe there shows them rather than going home, and the dock's one drag, the timeline, sits far above it. (The
+/// up-next card, whose timeline is at its bottom, rises above the strip on its own.)
 @visibleForTesting
 EdgeInsets controlInsets(MediaQueryData view, {EdgeInsets cutout = EdgeInsets.zero}) {
   final reported = cutout;
