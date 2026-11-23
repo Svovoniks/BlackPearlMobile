@@ -638,6 +638,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
               quality: _qualityChip,
               openMenu: _menu,
               onChip: _openMenu,
+              onCloseMenu: _closeMenu,
               chipKeys: _chipKeys,
               loop: playback.loopMode,
               onLoop: () {
@@ -740,7 +741,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                       ),
                     ),
                   ),
-                  // Above the gesture strip along the bottom edge, where a drag would go home instead of seeking.
+                  // As far from the bottom edge as the top bar is from the top (see controlInsets on the gesture strip).
                   Positioned(
                     left: safe.left + side,
                     right: safe.right + side,
@@ -994,9 +995,10 @@ class _Problem extends StatelessWidget {
   );
 }
 
-/// How far the player's controls keep from the screen's edges: clear of the camera cutout and of the gesture strip.
-/// With the system bars hidden, Android reports neither in the padding, so the cutout comes from [cutout] (asked of
-/// Android) or the display features, and the strip from the gesture insets.
+/// How far the player's controls keep from the screen's edges: clear of the camera cutout and of any bars showing.
+/// With the system bars hidden, Android reports no cutout in the padding, so it comes from [cutout] (asked of Android)
+/// or the display features. The gesture strip along the bottom doesn't count: it takes only drags, with the bars hidden
+/// a swipe there shows them rather than going home, and the dock's one drag, the timeline, sits far above it.
 @visibleForTesting
 EdgeInsets controlInsets(MediaQueryData view, {EdgeInsets cutout = EdgeInsets.zero}) {
   final reported = cutout;
@@ -1005,8 +1007,12 @@ EdgeInsets controlInsets(MediaQueryData view, {EdgeInsets cutout = EdgeInsets.ze
   final size = view.size;
   for (final feature in view.displayFeatures.where((f) => f.type == DisplayFeatureType.cutout)) {
     final b = feature.bounds;
-    // The cutout belongs to the edge it is nearest; the controls stay past its far side.
-    final distances = {'top': b.top, 'bottom': size.height - b.bottom, 'left': b.left, 'right': size.width - b.right};
+    // The cutout belongs to the edge it is nearest; the controls stay past its far side. A camera in a corner touches two
+    // edges: it belongs to the screen's short edge, as Android reports it, so turned sideways it moves the controls in
+    // from the side rather than lifting the dock.
+    final top = {'top': b.top, 'bottom': size.height - b.bottom};
+    final sides = {'left': b.left, 'right': size.width - b.right};
+    final distances = size.height >= size.width ? {...top, ...sides} : {...sides, ...top};
     final edge = distances.entries.reduce((a, b) => a.value <= b.value ? a : b).key;
     cutout = switch (edge) {
       'top' => cutout.copyWith(top: most([cutout.top, b.bottom])),
@@ -1019,6 +1025,6 @@ EdgeInsets controlInsets(MediaQueryData view, {EdgeInsets cutout = EdgeInsets.ze
     most([view.viewPadding.left, view.padding.left, cutout.left, reported.left]),
     most([view.viewPadding.top, view.padding.top, cutout.top, reported.top]),
     most([view.viewPadding.right, view.padding.right, cutout.right, reported.right]),
-    most([view.viewPadding.bottom, view.padding.bottom, view.systemGestureInsets.bottom, cutout.bottom, reported.bottom]),
+    most([view.viewPadding.bottom, view.padding.bottom, cutout.bottom, reported.bottom]),
   );
 }

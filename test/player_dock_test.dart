@@ -134,6 +134,78 @@ void main() {
     });
   }
 
+  for (final portrait in [false, true]) {
+    testWidgets('with a menu open, a tap anywhere on the ${portrait ? 'portrait' : 'landscape'} dock only closes it', (tester) async {
+      tester.view.physicalSize = portrait ? const Size(420, 900) : const Size(1200, 600);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final did = <String>[];
+      DockMenu? open = DockMenu.audio;
+      Widget build() => MaterialApp(
+        theme: ThemeData(fontFamily: 'Roboto'),
+        home: Scaffold(
+          body: Align(
+            alignment: Alignment.bottomCenter,
+            child: SizedBox(
+              width: portrait ? 392 : 1100,
+              child: PlayerDock(
+                portrait: portrait,
+                timeline: GestureDetector(
+                  key: const Key('timeline'),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => did.add('timeline'),
+                  child: const SizedBox(height: 28),
+                ),
+                playing: true,
+                onPlayPause: () => did.add('play'),
+                onBack10: () => did.add('back'),
+                onForward10: () => did.add('forward'),
+                onPrevious: () => did.add('previous'),
+                onNext: () => did.add('next'),
+                audio: const DockChipValue('English'),
+                subtitles: const DockChipValue('Off', off: true),
+                quality: const DockChipValue('Original'),
+                openMenu: open,
+                onChip: (menu) => did.add('chip ${menu.name}'),
+                onCloseMenu: () => did.add('close'),
+                loop: 'all',
+                onLoop: () => did.add('loop'),
+                shuffle: true,
+                onShuffle: () => did.add('shuffle'),
+                onUpNext: () => did.add('up next'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpWidget(build());
+      final slab = tester.getRect(find.byType(DockSlab));
+      final targets = {
+        'Play': tester.getCenter(find.byIcon(Icons.pause_rounded)),
+        'Back 10': tester.getCenter(find.byIcon(Icons.replay_10_rounded)),
+        'Loop': tester.getCenter(find.byIcon(Icons.repeat_rounded)),
+        'the open chip': tester.getCenter(find.text('English')),
+        'another chip': tester.getCenter(find.text('Original')),
+        'the timeline': tester.getCenter(find.byKey(const Key('timeline'))),
+        "the slab's padding": slab.bottomCenter - const Offset(0, 4),
+      };
+      for (final MapEntry(key: what, value: at) in targets.entries) {
+        did.clear();
+        await tester.tapAt(at);
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(did, ['close'], reason: 'a tap on $what with a menu open');
+      }
+
+      // Closed, the dock works again.
+      open = null;
+      await tester.pumpWidget(build());
+      did.clear();
+      await tester.tap(find.byIcon(Icons.pause_rounded));
+      await tester.tap(find.text('Original'));
+      expect(did, ['play', 'chip quality']);
+    });
+  }
+
   test('chips share a full row: the narrow keep their width, the widest give way equally', () {
     expect(fitChipWidths([70, 120, 80], 300), [70, 120, 80]);
     // Dropping the wide one's icon (22 dp) isn't enough, and the narrow ones' would take them under 64 dp: they keep

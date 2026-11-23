@@ -39,6 +39,7 @@ class PlayerDock extends StatelessWidget {
     this.quality,
     this.openMenu,
     required this.onChip,
+    this.onCloseMenu,
     this.chipKeys = const {},
     required this.loop,
     required this.onLoop,
@@ -68,6 +69,10 @@ class PlayerDock extends StatelessWidget {
   final DockChipValue? quality;
   final DockMenu? openMenu;
   final ValueChanged<DockMenu> onChip;
+
+  /// While a menu is open, a tap anywhere on the dock closes it, as a tap on the picture does; nothing on the dock
+  /// works until then.
+  final VoidCallback? onCloseMenu;
 
   /// Where each chip is, so its menu can open above it.
   final Map<DockMenu, GlobalKey> chipKeys;
@@ -189,7 +194,13 @@ class PlayerDock extends StatelessWidget {
         },
       );
     }
-    return DockSlab(padding: portrait ? const EdgeInsets.fromLTRB(16, 16, 16, 16) : const EdgeInsets.fromLTRB(16, 12, 16, 12), child: content);
+    final slab = DockSlab(padding: portrait ? const EdgeInsets.fromLTRB(16, 16, 16, 16) : const EdgeInsets.fromLTRB(16, 12, 16, 12), child: content);
+    // The tree stays the same with a menu open or not, so the chips' dimming animates and the timeline keeps its state.
+    return GestureDetector(
+      behavior: dim ? HitTestBehavior.opaque : HitTestBehavior.deferToChild,
+      onTap: dim ? onCloseMenu : null,
+      child: IgnorePointer(ignoring: dim, child: slab),
+    );
   }
 
   /// The landscape dock's width, inside its padding, from which the chips fit beside playback.
