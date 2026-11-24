@@ -26,9 +26,10 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   room, takes it back.
   When the PC plays a video of its own library, **Watch here** moves it to the phone: the PC stops and the phone carries
   on from the same moment.
-- **Library.** The PC's Home (Continue watching, suggestions for each kind, a random pick), films, shows and anime as
-  posters, search, and a show's seasons and episodes, with the PC's resume points and watched marks. A title's sheet plays
-  it on the phone (resume or start over) or on the PC.
+- **Library.** The PC's Home (Continue watching, the titles not started yet newest first with See all, suggestions for
+  each kind, a random pick), films, shows and anime as posters, search, and a show's seasons and episodes, with the PC's
+  resume points and watched marks. A title's sheet plays it on the phone (resume or start over) or on the PC, and marks
+  it watched or unwatched; a show's or a season's page marks all its episodes.
 - **Watching on the phone.** The PC sends the video over the same direct link; the phone plays it with libmpv
   (media_kit) through a small HTTP server on `127.0.0.1` that turns the player's byte ranges into reads on the link's
   `media-v1` channel. At home the phone gets the file itself; away from home it asks for a 720p conversion by default

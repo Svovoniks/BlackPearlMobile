@@ -593,7 +593,8 @@ class _RowTitle extends StatelessWidget {
               child: TextButton(
                 onPressed: action.$2,
                 style: TextButton.styleFrom(foregroundColor: Palette.accent, minimumSize: const Size(48, 48), alignment: const Alignment(0, 0.35)),
-                child: Text(action.$1, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                // Read out with the row it belongs to: "See all, Unwatched".
+                child: Text(action.$1, semanticsLabel: '${action.$1}, $text', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
               ),
             ),
           ],
@@ -936,7 +937,7 @@ class _UnwatchedScreenState extends State<UnwatchedScreen> {
             icon: _listing.error == null ? Icons.done_all_rounded : Icons.error_outline_rounded,
             title: _listing.error == null ? 'Nothing left to start' : "Couldn't load the list",
             text: _listing.error ?? 'Every title on the PC has been started or watched.',
-            action: ('Try again', () => unawaited(_listing.load())),
+            action: (_listing.error == null ? 'Refresh' : 'Try again', () => unawaited(_listing.load())),
           );
         }
         return RefreshIndicator(
@@ -1206,7 +1207,9 @@ class _TitleSheetState extends State<_TitleSheet> {
       _busy = true;
       _error = null;
     });
-    final error = await widget.actions.playOnPc(entry);
+    // With the mark as saved from this sheet: the PC starts a title just marked watched from its start, and keeps the
+    // resume point of one just marked unwatched.
+    final error = await widget.actions.playOnPc(entry.withPlayback(positionMs: entry.positionMs, watched: _watched));
     if (!mounted) return;
     if (error == null) {
       // Closed already, when the pages under it closed for the Remote: once more would close those under them.
@@ -1373,7 +1376,7 @@ class _TitleSheetState extends State<_TitleSheet> {
                 height: 46,
                 enabled: link.status.isConnected && !_marking,
                 onTap: _mark,
-                semanticLabel: _watched ? 'Mark as unwatched' : 'Mark as watched',
+                semanticLabel: _marking ? 'Saving the watched mark' : _watched ? 'Mark as unwatched' : 'Mark as watched',
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [

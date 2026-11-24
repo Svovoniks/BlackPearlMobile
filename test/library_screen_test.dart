@@ -397,6 +397,43 @@ void main() {
       expect(find.text('Mark as watched'), findsOneWidget);
     });
 
+    testWidgets('Play on PC after a mark sends the mark as saved, not the one the sheet opened with', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 2.75;
+      addTearDown(tester.view.reset);
+      final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch', 'mark-watched'};
+      link.answer = (type, fields) async => homePage();
+      final played = <String>[];
+      await tester.pumpWidget(MaterialApp(
+        theme: buildTheme(),
+        home: LibraryScreen(
+          link: link,
+          actions: LibraryActions(
+            watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {},
+            playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async {
+              played.add('${entry.id} watched=${entry.watched} at=${entry.positionMs}');
+              return 'kept open';
+            },
+            markWatched: (entry, watched, {String? level, int? season}) async => null,
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      // Stopped at 12:40, then marked watched: the PC hears it is watched, so it starts over rather than clearing the mark.
+      await tester.tap(find.text('Asteroid City'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Mark as watched'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Play on PC'));
+      await tester.pumpAndSettle();
+      expect(played.last, 'film watched=true at=760000');
+      await tester.tap(find.text('Mark as unwatched'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Play on PC'));
+      await tester.pumpAndSettle();
+      expect(played.last, 'film watched=false at=760000');
+    });
+
     testWidgets("a PC from before watched marks doesn't offer them", (tester) async {
       await pump(tester, features: const {'library', 'watch', 'unwatched'});
       await tester.tap(find.text('Paper Moon'));
