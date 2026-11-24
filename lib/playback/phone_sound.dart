@@ -9,6 +9,7 @@ import '../connection/remote_link.dart';
 import '../protocol/library.dart';
 import '../storage/app_settings.dart';
 import 'media_proxy.dart';
+import 'mpv_reads.dart';
 
 /// Where Sound on the phone is: off; asking the PC; on, with nothing to play yet (nothing plays on the PC, or the PC is
 /// getting the sound ready); opening or refilling the sound; playing in step with the PC; or paused with it.
@@ -461,15 +462,14 @@ class PhoneSound extends ChangeNotifier {
       unawaited(subscription.cancel());
     }
     _subscriptions.clear();
+    await MpvReads.instance.release(player);
     await player.dispose();
   }
 
+  // libmpv's own position, read away from the screen's thread; media_kit's while libmpv is too busy to answer.
   Future<int?> _position(Player player) async {
-    final native = player.platform;
-    if (native is NativePlayer) {
-      final value = double.tryParse(await native.getProperty('time-pos', waitForInitialization: false));
-      if (value != null) return (value * 1000).round();
-    }
+    final value = double.tryParse(await MpvReads.instance.read(player, 'time-pos', within: const Duration(milliseconds: 250)) ?? '');
+    if (value != null) return (value * 1000).round();
     return player.state.position.inMilliseconds;
   }
 
