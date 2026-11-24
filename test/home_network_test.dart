@@ -3,12 +3,15 @@ import 'dart:convert';
 
 import 'package:blackpearl_mobile/app_model.dart';
 import 'package:blackpearl_mobile/connection/remote_connection.dart';
+import 'package:blackpearl_mobile/connection/local_network.dart';
 import 'package:blackpearl_mobile/connection/remote_link.dart';
+import 'package:blackpearl_mobile/connection/transport.dart';
 import 'package:blackpearl_mobile/protocol/pair_link.dart';
 import 'package:blackpearl_mobile/protocol/signing.dart';
 import 'package:blackpearl_mobile/storage/paired_pcs.dart';
 import 'package:clock/clock.dart';
 import 'package:fake_async/fake_async.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'connection_test.dart' show FakePeer, FakeSocket, pcId, phoneId, secret, code;
@@ -21,7 +24,7 @@ const roomServer = 'rooms.example.com';
 
 /// Plays the room server and the PC's home-network sockets. Hosts in [unreachable] fail to connect.
 class LanHarness {
-  LanHarness(LinkTarget target) {
+  LanHarness(LinkTarget target, {LocalNetworkAccess? local}) {
     connection = RemoteConnection(
       target: target,
       identity: const PhoneIdentity(appVersion: '1.2.3', device: 'Test phone'),
@@ -38,6 +41,7 @@ class LanHarness {
         return peer;
       },
       onPaired: paired.add,
+      localNetwork: local,
     );
   }
 
@@ -52,10 +56,10 @@ class LanHarness {
   List<Uri> lanUris() => uris.where((u) => u.host != roomServer).toList();
 
   /// The PC's side of its home-network socket: welcomes the phone that asked for it.
-  void greet(String host) {
+  void greet(String host, {Map<String, dynamic> welcome = const {'iceServers': [], 'forceRelay': false}}) {
     final s = socket(host);
     expect(s.sent.first, {'type': 'remote-phone', 'target': pcId, 'number': 1});
-    s.receive({'type': 'remote-welcome', 'target': 'lan:1', 'data': jsonEncode({'iceServers': [], 'forceRelay': false})});
+    s.receive({'type': 'remote-welcome', 'target': 'lan:1', 'data': jsonEncode(welcome)});
     s.receive({'type': 'remote-online'});
   }
 
@@ -356,6 +360,210 @@ void main() {
       model.dispose();
     });
   });
+
+  test("whoever answers at the PC's address can't choose the link's relay servers or force a relay", () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+      h.connection.start();
+      async.flushMicrotasks();
+      // The socket's welcome is unsigned: anything on the network at that address can send it.
+      const hostile = {
+        'iceServers': ['stun:stun.attacker.example:3478', 'turn://user:pass@turn.attacker.example:3478?transport=udp'],
+        'forceRelay': true,
+      };
+      h.greet('192.168.1.20', welcome: hostile);
+      async.flushMicrotasks();
+      expect(h.connection.viaHomeNetwork, isTrue);
+      expect(h.peers.single.iceServers, isEmpty);
+      expect(h.peers.single.forceRelay, isFalse);
+      // Nor can a second welcome on the same socket, before a new offer.
+      final lanSocket = h.socket('192.168.1.20');
+      lanSocket.receive({'type': 'remote-welcome', 'data': jsonEncode(hostile)});
+      lanSocket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      expect(h.peers, hasLength(2));
+      expect(h.peers.last.iceServers, isEmpty);
+      expect(h.peers.last.forceRelay, isFalse);
+      h.connection.dispose();
+    });
+  });
+
+  test('on the home network the offer carries the session id that socket handed out, once', () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+      h.connection.start();
+      async.flushMicrotasks();
+      const handed = '00112233445566778899aabbccddeeff';
+      h.greet('192.168.1.20', welcome: {'iceServers': [], 'forceRelay': false, 'session': handed.toUpperCase()});
+      async.flushMicrotasks();
+      final offer = h.socket('192.168.1.20').signals().firstWhere((s) => s.kind == 'sdp');
+      expect(offer.session, handed);
+      expect(Signing.verify(secret, 'phone', phoneId, handed, 'sdp', offer.payload, offer.auth), isTrue);
+      // A second offer on the socket without a new one handed out can't reuse it.
+      h.socket('192.168.1.20').receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      final offers = h.socket('192.168.1.20').signals().where((s) => s.kind == 'sdp').toList();
+      expect(offers, hasLength(2));
+      expect(offers.last.session, isNot(handed));
+      h.connection.dispose();
+    });
+  });
+
+  test('while the PC stays offline the home network is tried further apart, up to every 5 minutes; a network change or the app coming back starts over', () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add('192.168.1.20');
+      h.connection.start();
+      async.flushMicrotasks();
+      void offline() {
+        h.socket(roomServer).receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+        h.socket(roomServer).receive({'type': 'remote-offline'});
+        async.flushMicrotasks();
+      }
+
+      offline();
+      final tries = <int>[];
+      for (var second = 1; second <= 3600; second++) {
+        final before = h.lanUris().length;
+        async.elapse(const Duration(seconds: 1));
+        if (h.lanUris().length > before) tries.add(second);
+      }
+      expect(tries.take(6), [20, 60, 140, 300, 600, 900], reason: '20 s, then 40, 80, 160, then every 300 s');
+      expect(h.lanUris().length, lessThan(20), reason: 'an hour of waiting tries the home network about 15 times, not 180');
+      expect(h.connection.status.phase, LinkPhase.waitingForPc);
+
+      // Back in the app: at once again, then 20 s later.
+      var before = h.lanUris().length;
+      h.connection.resume();
+      async.flushMicrotasks();
+      offline();
+      expect(h.lanUris().length, before + 1);
+      async.elapse(const Duration(seconds: 21));
+      expect(h.lanUris().length, before + 2);
+      // Another network: at once again too.
+      async.elapse(const Duration(seconds: 30));
+      before = h.lanUris().length;
+      h.connection.networkChanged();
+      async.flushMicrotasks();
+      offline();
+      expect(h.lanUris().length, before + 1);
+      h.connection.dispose();
+    });
+  });
+
+  test("with the room server out of reach, the attempts' own retries don't each try the home network", () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.addAll([roomServer, '192.168.1.20']);
+      h.connection.start();
+      async.elapse(const Duration(seconds: 19));
+      expect(h.uris.where((u) => u.host == roomServer).length, greaterThanOrEqualTo(4), reason: 'the room server is retried at 1, 2, 4 and 8 seconds');
+      expect(h.lanUris(), hasLength(1), reason: 'the home network once, until 20 seconds have passed');
+      async.elapse(const Duration(seconds: 30));
+      expect(h.lanUris(), hasLength(2));
+      expect(h.connection.status.message, "Can't reach the room server. Check your internet connection.");
+      h.connection.dispose();
+    });
+  });
+
+  test('off Wi-Fi the home network is never tried; on it, the sockets open while the phone is bound to the Wi-Fi', () {
+    fakeAsync((async) {
+      final local = _FakeLocalNetwork()..onWifi = false;
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])), local: local)..unreachable.add(roomServer);
+      local.connected = h.uris;
+      h.connection.start();
+      async.flushMicrotasks();
+      expect(h.lanUris(), isEmpty, reason: 'on mobile data the address is not tried');
+      expect(h.connection.status.message, "Can't reach the room server. Check your internet connection.");
+      expect(local.events, isEmpty);
+
+      local.onWifi = true;
+      h.connection.networkChanged();
+      async.flushMicrotasks();
+      expect(local.events, ['bind', 'ws://192.168.1.20:47830/remote'], reason: 'the socket opens while bound to the Wi-Fi');
+      h.greet('192.168.1.20');
+      async.flushMicrotasks();
+      expect(local.events.last, 'unbind', reason: 'and the binding ends once the PC has answered');
+      expect(h.connection.viaHomeNetwork, isTrue);
+      h.connection.dispose();
+    });
+  });
+
+  group('AndroidLocalNetwork', () {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    const channel = MethodChannel('blackpearl/network');
+    final calls = <String>[];
+    var bindAnswer = true;
+    setUp(() {
+      calls.clear();
+      bindAnswer = true;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        return switch (call.method) {
+          'available' => false,
+          'bind' => bindAnswer,
+          _ => null,
+        };
+      });
+    });
+    tearDown(() => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null));
+
+    test('overlapping tries bind once and unbind after the last, also when one fails', () async {
+      final network = AndroidLocalNetwork();
+      final first = Completer<void>();
+      final a = network.run<void>(() async {
+        await first.future;
+        throw StateError('no answer');
+      });
+      await Future<void>.delayed(Duration.zero);
+      expect(await network.run(() async => 'b'), 'b');
+      expect(calls, ['bind'], reason: 'still bound while the first try runs');
+      first.complete();
+      await expectLater(a, throwsStateError);
+      expect(calls, ['bind', 'unbind']);
+      expect(await network.available(), isFalse);
+    });
+
+    test("a binding that wasn't needed isn't undone, and a try after the last binds again", () async {
+      final network = AndroidLocalNetwork();
+      bindAnswer = false;
+      await network.run(() async => 1);
+      expect(calls, ['bind']);
+      bindAnswer = true;
+      await network.run(() async => 2);
+      expect(calls, ['bind', 'bind', 'unbind']);
+    });
+
+    test('without the platform side it neither blocks the try nor fails', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
+      final network = AndroidLocalNetwork();
+      expect(await network.available(), isTrue);
+      expect(await network.run(() async => 'tried'), 'tried');
+    });
+  });
+}
+
+/// The phone's Wi-Fi as a test sets it, recording when sockets open relative to the binding.
+class _FakeLocalNetwork implements LocalNetworkAccess {
+  bool onWifi = true;
+  final List<String> events = [];
+  List<Uri> connected = [];
+
+  @override
+  Future<bool> available() async => onWifi;
+
+  @override
+  Future<T> run<T>(Future<T> Function() attempt) async {
+    events.add('bind');
+    final before = connected.length;
+    final future = attempt();
+    // The sockets the attempt has opened by the time it first waits.
+
+    events.addAll(connected.skip(before).map((u) => u.toString()));
+    try {
+      return await future;
+    } finally {
+      events.add('unbind');
+    }
+  }
 }
 
 extension on LinkTarget {

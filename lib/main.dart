@@ -12,6 +12,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_model.dart';
 import 'background/background_link.dart';
+import 'connection/local_network.dart';
 import 'connection/remote_connection.dart';
 import 'connection/webrtc_peer.dart';
 import 'debug/loopback.dart';
@@ -66,6 +67,8 @@ Future<void> main(List<String> args) async {
       PhoneSound.debugLog = (line) => File(soundLog).writeAsStringSync('${DateTime.now().toIso8601String()} $line\n', mode: FileMode.append);
     }
   }
+  // The home network is tried on Wi-Fi or Ethernet only, and over it even while Android has made mobile data the default.
+  final localNetwork = Platform.isAndroid ? AndroidLocalNetwork() : null;
   final model = AppModel(
     store: store,
     settings: settings,
@@ -77,6 +80,7 @@ Future<void> main(List<String> args) async {
       identity: identity,
       connectSocket: WebSocketSignaling.connect,
       createPeer: WebRtcPeerLink.create,
+      localNetwork: localNetwork,
       onPaired: onPaired,
       onPcName: onPcName,
     ),

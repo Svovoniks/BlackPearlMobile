@@ -84,6 +84,8 @@ class RemoteConnection extends RemoteLink {
     this.pingInterval = const Duration(seconds: 25),
     this.lanTimeout = const Duration(seconds: 4),
     this.lanRetryInterval = const Duration(seconds: 20),
+    this.lanRetryLimit = const Duration(minutes: 5),
+    this.localNetwork,
   }) : _target = target,
        _random = random ?? Random.secure(),
        _pcName = target.pcName;
@@ -108,8 +110,13 @@ class RemoteConnection extends RemoteLink {
   /// How long the PC's home-network addresses have, together, to greet the phone.
   final Duration lanTimeout;
 
-  /// How often the home network is tried again while the room server says the PC is offline.
+  /// How long after a home-network try that found nothing the next may start, doubling each time up to
+  /// [lanRetryLimit].
   final Duration lanRetryInterval;
+  final Duration lanRetryLimit;
+
+  /// The phone's Wi-Fi or Ethernet, where the platform has one to offer; null tries every time, on the default network.
+  final LocalNetworkAccess? localNetwork;
   final Random _random;
 
   LinkTarget _target;
@@ -160,6 +167,8 @@ class RemoteConnection extends RemoteLink {
   (int, Future<bool>)? _lanTry;
   Timer? _lanTimer;
   LanEndpoints? _learnedLan;
+  // The session id the PC's home-network socket handed out for the next offer.
+  String? _lanSession;
 
   /// Where the PC said it listens on its home network, from its last `welcome` that said so; the app stores it.
   LanEndpoints? get learnedLan => _learnedLan;
@@ -264,6 +273,7 @@ class RemoteConnection extends RemoteLink {
   @override
   void retryNow() {
     _halted = false;
+    _lanReset();
     if (!_running) {
       start();
       return;
@@ -276,6 +286,8 @@ class RemoteConnection extends RemoteLink {
   /// for the user.
   void resume() {
     if (_halted) return;
+    // Back in front of the user: the home network is worth a try at once again.
+    _lanReset();
     if (!_running) {
       start();
     } else if (!_status.isConnected || !(_peer?.alive ?? false)) {
@@ -289,6 +301,7 @@ class RemoteConnection extends RemoteLink {
   void networkChanged() {
     if (!_running || _halted) return;
     _failures = 0;
+    _lanReset();
     _attempt();
   }
 
@@ -320,6 +333,7 @@ class RemoteConnection extends RemoteLink {
     if (generation != _generation || !_running) return;
     // Every attempt starts with the room server.
     _viaLan = false;
+    _lanSession = null;
     _setStatus(const LinkStatus(LinkPhase.connecting));
     final Uri uri;
     try {
@@ -386,9 +400,10 @@ class RemoteConnection extends RemoteLink {
 
   /// The room server couldn't introduce the phone to the PC: it can't be reached, refused, or went before the link was
   /// up. A PC whose home-network address the phone knows gets a try there; failing that, [message] stands as before.
+  /// (A pairing session has no address: the PC hasn't said one yet.)
   Future<void> _fallBack(int generation, String message, {bool slow = false}) async {
     if (generation != _generation) return;
-    if (_target.lan == null || _target.isPairing || _viaLan) {
+    if (_target.lan == null || _viaLan) {
       _fail(generation, message, slow: slow);
       return;
     }
@@ -402,19 +417,38 @@ class RemoteConnection extends RemoteLink {
   }
 
   /// The room server says the PC is offline, which it also says of a PC that lost its internet: the home network gets a
-  /// try now and every [lanRetryInterval] while it says so.
+  /// try now, and again while it says so, further apart each time (see [_lanFailed]).
   void _probeWhileOffline(int generation) {
-    if (_viaLan || _target.lan == null || _target.isPairing) return;
+    if (_viaLan || _target.lan == null) return;
     _lanTimer?.cancel();
     unawaited(
       _tryLan(generation).then((adopted) {
         if (adopted || generation != _generation || _status.phase != LinkPhase.waitingForPc) return;
         _lanTimer?.cancel();
-        _lanTimer = Timer(lanRetryInterval, () {
+        final wait = _lanNotBefore.difference(clock.now());
+        _lanTimer = Timer(wait.isNegative ? Duration.zero : wait, () {
           if (generation == _generation && _status.phase == LinkPhase.waitingForPc) _probeWhileOffline(generation);
         });
       }),
     );
+  }
+
+  // Tries on the home network that found nothing, and when the next may start: [lanRetryInterval] after the first,
+  // doubling up to [lanRetryLimit]. A phone left waiting overnight, or away from home on mobile data, then tries a few
+  // times an hour rather than every few seconds. A network change, the app coming back and the user's Try again start
+  // over (see [_lanReset]).
+  int _lanFailures = 0;
+  DateTime _lanNotBefore = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _lanFailed() {
+    _lanFailures++;
+    final seconds = min(lanRetryLimit.inSeconds, lanRetryInterval.inSeconds * pow(2, min(_lanFailures - 1, 16)).toInt());
+    _lanNotBefore = clock.now().add(Duration(seconds: seconds));
+  }
+
+  void _lanReset() {
+    _lanFailures = 0;
+    _lanNotBefore = DateTime.fromMillisecondsSinceEpoch(0);
   }
 
   /// One try at a time per attempt: a second caller waits for the one under way. Completes with whether the attempt now
@@ -435,19 +469,37 @@ class RemoteConnection extends RemoteLink {
   Future<bool> _tryLanOnce(int generation) async {
     final lan = _target.lan;
     if (lan == null || _target.isPairing) return false;
-    final found = await _greetLan(lan, _target.pcId);
-    if (found == null) return false;
+    // Not yet: the last try found nothing a moment ago.
+    if (clock.now().isBefore(_lanNotBefore)) return false;
+    final network = localNetwork;
+    // Only on Wi-Fi or Ethernet: on mobile data the PC's home address can't be reached, and could be someone else's.
+    if (network != null && !await network.available()) {
+      _lanFailed();
+      return false;
+    }
+    if (generation != _generation) return false;
+    final found = network == null ? await _greetLan(lan, _target.pcId) : await network.run(() => _greetLan(lan, _target.pcId));
+    if (found == null) {
+      if (generation == _generation) _lanFailed();
+      return false;
+    }
     // Still wanted: the same attempt, and not linking through the room server meanwhile (the PC came online there).
     final wanted = generation == _generation && _running && !_viaLan && (_socket == null || _status.phase == LinkPhase.waitingForPc);
     if (!wanted) {
       found.discard();
       return false;
     }
+    _lanReset();
     _lanTimer?.cancel();
     _dropSocket(close: true);
     _viaLan = true;
     _listen(generation, found.socket, found.subscription);
-    _readWelcome(found.welcome);
+    // The PC's own socket isn't trusted for anything its signatures don't cover: its welcome is unsigned, so whoever
+    // answers at that address could otherwise point ICE at its own servers, or force a relay that can't connect. On the
+    // home network the two need neither.
+    _iceServers = const [];
+    _forceRelay = false;
+    _lanSession = _welcomeSession(found.welcome);
     unawaited(_startPeer(generation));
     return true;
   }
@@ -600,6 +652,13 @@ class RemoteConnection extends RemoteLink {
   }
 
   void _readWelcome(Object? data) {
+    // On the PC's own socket only the session it hands out counts (see [_tryLanOnce]).
+    if (_viaLan) {
+      _iceServers = const [];
+      _forceRelay = false;
+      _lanSession = _welcomeSession(data);
+      return;
+    }
     if (data is! String) return;
     try {
       final json = jsonDecode(data);
@@ -612,11 +671,26 @@ class RemoteConnection extends RemoteLink {
     }
   }
 
+  /// The session id a PC's home-network welcome hands out (PHONE-REMOTE.md, "On the home network"), or null.
+  static String? _welcomeSession(Object? data) {
+    if (data is! String) return null;
+    try {
+      final json = jsonDecode(data);
+      final session = json is Map ? json['session'] : null;
+      return session is String && Signing.isHex(session, 32) ? session.toLowerCase() : null;
+    } on FormatException {
+      return null;
+    }
+  }
+
   Future<void> _startPeer(int generation) async {
     await _closePeer();
     if (generation != _generation) return;
     _setStatus(const LinkStatus(LinkPhase.linking));
-    final session = Signing.randomHex(16, _random);
+    // On the home network the PC hands out the session id, once per socket: an offer captured there and sent again
+    // carries a session the PC no longer accepts.
+    final session = _lanSession ?? Signing.randomHex(16, _random);
+    _lanSession = null;
     _session = session;
     _sessionPhone = _target.phone;
     _sessionKey = _target.keyHex;
