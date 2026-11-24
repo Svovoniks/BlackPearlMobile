@@ -4,6 +4,7 @@ plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+    id("io.sentry.android.gradle")
 }
 
 // Release signing comes from android/key.properties, which CI writes from repository secrets and which is never
@@ -64,6 +65,49 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+// Sentry's Gradle plugin, for one thing only: R8 renames the release build's Java and Kotlin classes, so the plugin
+// writes a mapping id into the APK (Sentry's Android SDK sends it with each crash) and uploads the R8 mapping under that
+// id, which turns the crash's frames back into the real names. It uploads only where SENTRY_AUTH_TOKEN is set, which
+// only CI's tag build does; elsewhere it just writes the id. Everything else it would do by default is off: it adds no
+// SDK integrations, changes no bytecode, uploads no sources or native symbols and sends no telemetry, so reports stay
+// as lib/diagnostics/crash_reports.dart describes.
+val sentryAuthToken: String? = System.getenv("SENTRY_AUTH_TOKEN")?.takeIf { it.isNotBlank() }
+
+sentry {
+    org.set("svovolabs")
+    projectName.set("blackpearl-mobile")
+    authToken.set(sentryAuthToken)
+    includeProguardMapping.set(true)
+    autoUploadProguardMapping.set(sentryAuthToken != null)
+    uploadNativeSymbols.set(false)
+    includeNativeSources.set(false)
+    includeSourceContext.set(false)
+    includeDependenciesReport.set(false)
+    telemetry.set(false)
+    autoInstallation {
+        enabled.set(false)
+    }
+    tracingInstrumentation {
+        enabled.set(false)
+        features.set(emptySet())
+        logcat {
+            enabled.set(false)
+        }
+    }
+    runtimeOptimizations {
+        enabled.set(false)
+    }
+    sizeAnalysis {
+        enabled.set(false)
+    }
+    distribution {
+        enabled.set(false)
+    }
+    snapshots {
+        enabled.set(false)
+    }
 }
 
 dependencies {

@@ -70,10 +70,14 @@ jobs:
       - run: flutter pub get
       - name: Build the APK
         # Crash reports go to Sentry only from builds given its DSN (see lib/diagnostics/crash_reports.dart).
-        run: flutter build apk --release --dart-define=SENTRY_DSN="$SENTRY_DSN"
+        # SENTRY_AUTH_TOKEN lets Sentry's Gradle plugin upload the R8 mapping (see android/app/build.gradle.kts).
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then echo "::warning::SENTRY_AUTH_TOKEN is missing, so the R8 mapping won't be uploaded to Sentry"; fi
+          flutter build apk --release --dart-define=SENTRY_DSN="$SENTRY_DSN"
         env:
           BLACKPEARL_REQUIRE_SIGNING: '1'
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
       - name: Verify the signature
         env:
           # SHA-256 of the release signing certificate (public; from keytool -list -v on the release keystore).

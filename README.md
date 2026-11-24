@@ -85,7 +85,14 @@ tests send nothing. `--dart-define=SENTRY_ENVIRONMENT=<name>` (default `producti
 production every transaction is sent, in production one in ten. There are no breadcrumbs, screenshots, replays, logs or
 sessions, the user, device and server names are cleared, and `lib/diagnostics/report_text.dart` replaces paths, web and
 network addresses and long ids in error messages, with the desktop app's rules. Android's native crashes (Java and NDK)
-are sent by Sentry's Android SDK and don't pass through that scrubbing.
+are sent by Sentry's Android SDK and don't pass through that scrubbing. That SDK names the user and the device with an
+id it keeps per installation, so before Sentry starts, `LinkEngine.kt` sets that id to the same zeros on every phone.
+
+R8 renames the release build's Java and Kotlin classes. Sentry's Gradle plugin (`android/app/build.gradle.kts`) writes
+a mapping id into each release APK, which the Android SDK sends with its crashes, and when `SENTRY_AUTH_TOKEN` is set
+(CI's tag build passes the repository secret, an organization token) uploads the R8 mapping under that id, so those
+crashes show the real class and method names. Without the token, a release build only writes the id. The plugin's other
+features (added integrations, bytecode instrumentation, source and native symbol uploads, telemetry) are turned off.
 
 Installed releases update themselves from those GitHub releases. On start, and on return after six hours, the app asks
 GitHub for the latest release, and Settings › Check for updates asks right away. When it is newer, a banner offers it. The app downloads the APK, checks its size and the
