@@ -5,6 +5,7 @@ import 'package:media_kit/media_kit.dart';
 
 import '../connection/remote_link.dart';
 import '../connection/transport.dart';
+import '../diagnostics/crash_reports.dart';
 import '../protocol/library.dart';
 import 'media_proxy.dart';
 import 'shuffle_order.dart';
@@ -102,7 +103,10 @@ class PhonePlayback extends ChangeNotifier {
   /// The player of [viewing] was left: a video still waiting to be asked for is no longer asked for, and one already
   /// asked for is let go when its answer comes. One that opened plays on until [stop].
   void cancelOpening(int viewing) {
-    if (viewing == _viewing && _phase == PhonePlaybackPhase.opening && _stream == null) _opening++;
+    if (viewing == _viewing && _phase == PhonePlaybackPhase.opening && _stream == null) {
+      _opening++;
+      _cancelOpenTrace();
+    }
   }
 
   // `watch` requests the PC hasn't answered yet.
@@ -135,6 +139,16 @@ class PhonePlayback extends ChangeNotifier {
     // Another stream of the video on screen (a quality change, a recovery): the old one plays on until the new one is
     // ready, and stays if the new one can't be had.
     final replacing = _stream?.id == id && hadPlayer;
+    // How long it takes until the player shows it; one opening at a time, so an earlier one still going was replaced.
+    _cancelOpenTrace();
+    final trace = _openTrace = PlaybackOpenTrace.start(
+      kind: replacing
+          ? (_recovering ? 'recovery' : 'quality')
+          : hadPlayer
+          ? 'episode'
+          : 'video',
+      network: _network,
+    );
     if (replacing) audio ??= await _playingAudioIndex();
     _handedOver = false;
     _switching = true;
@@ -171,6 +185,7 @@ class PhonePlayback extends ChangeNotifier {
       info = StreamInfo.fromJson(reply);
     } on RemoteRequestException catch (e) {
       if (attempt == _opening) {
+        trace.failed();
         _switching = false;
         _setPending(null);
         if (hadPlayer && _stream != null) {
@@ -191,6 +206,7 @@ class PhonePlayback extends ChangeNotifier {
       return false;
     }
     if (info == null) {
+      trace.failed();
       _switching = false;
       _setPending(null);
       if (hadPlayer && _stream != null) {
@@ -233,6 +249,8 @@ class PhonePlayback extends ChangeNotifier {
     // Another stream of the video on screen plays on only if it was playing: a video paused by hand stays paused through
     // a quality change or a recovery. (A stalled one was playing until its data ran out, unless it was paused before.)
     final play = !replacing || (stalledAt != null ? playedBeforeStall : player.state.playing);
+    // The trace ends when the new stream first says where it is: libmpv has the file and shows it.
+    if (identical(_openTrace, trace)) _awaitingPicture = true;
     await player.open(Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null), play: play && !_inBackground);
     _switching = false;
     // In the background a new video waits to play until the app is back; another stream of this one keeps what going to
@@ -264,6 +282,15 @@ class PhonePlayback extends ChangeNotifier {
 
   // From asking for another stream until it has opened, the old one running out is not the video's end.
   bool _switching = false;
+
+  // How long the latest opening takes, for crash reports; and whether it has opened and waits for the player to show it.
+  PlaybackOpenTrace? _openTrace;
+  bool _awaitingPicture = false;
+
+  void _cancelOpenTrace() {
+    _awaitingPicture = false;
+    _openTrace?.cancelled();
+  }
 
   /// What the player waits on the PC for, to show it.
   final ValueNotifier<PendingSwitch?> pending = ValueNotifier(null);
@@ -450,7 +477,13 @@ class PhonePlayback extends ChangeNotifier {
     _subscriptions.add(player.stream.position.listen((position) {
       // Not the old stream's, while another of this video opens: until the new one has said where it is, the player is at
       // the place it opened at (media_kit reports 0:00 meanwhile).
-      if (position > Duration.zero && identical(player, _player) && !_switching) _positionKnown = true;
+      if (position > Duration.zero && identical(player, _player) && !_switching) {
+        _positionKnown = true;
+        if (_awaitingPicture) {
+          _awaitingPicture = false;
+          _openTrace?.opened();
+        }
+      }
     }));
     _subscriptions.add(player.stream.playing.listen((playing) {
       // A pause is a natural moment to save where the phone is.
@@ -994,6 +1027,7 @@ class PhonePlayback extends ChangeNotifier {
     _endRecovery();
     _endsAt = null;
     _opening++;
+    _cancelOpenTrace();
     _recoveries.clear();
     // The PC plays it now and keeps its own position.
     if (!_handedOver && !stalled) await _report(final_: true);
@@ -1026,6 +1060,8 @@ class PhonePlayback extends ChangeNotifier {
     // what was playing then is still what to resume.
     if (_inBackground) return;
     _inBackground = true;
+    // A video still opening waits, paused, for the app to come back: how long that takes isn't how long opening takes.
+    _cancelOpenTrace();
     final player = _player;
     if (player == null) {
       // Still opening: it starts paused, and plays when the app is back.
@@ -1086,6 +1122,8 @@ class PhonePlayback extends ChangeNotifier {
   }
 
   void _fail(String message) {
+    _awaitingPicture = false;
+    _openTrace?.failed();
     _resumeOnReturn = false;
     _switching = false;
     _endUpNext();
@@ -1127,6 +1165,7 @@ class PhonePlayback extends ChangeNotifier {
   void dispose() {
     _endRecovery();
     _opening++;
+    _cancelOpenTrace();
     final previous = _detachPlayer();
     if (_stream != null) link.tell('stream-stop', {});
     _stream = null;

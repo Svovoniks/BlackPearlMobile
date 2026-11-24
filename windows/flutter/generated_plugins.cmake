@@ -7,6 +7,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   connectivity_plus
   flutter_webrtc
   media_kit_libs_windows_video
+  sentry_flutter
   media_kit_video
 )
 
