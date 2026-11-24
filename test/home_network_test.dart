@@ -556,6 +556,28 @@ void main() {
     });
   });
 
+  test('a socket found just as the time ran out, while the binding was still being undone, is closed', () {
+    fakeAsync((async) {
+      final local = _FakeLocalNetwork()..unbindGate = Completer<void>();
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])), local: local)..unreachable.add(roomServer);
+      local.connected = h.uris;
+      h.connection.start();
+      async.flushMicrotasks();
+      async.elapse(const Duration(milliseconds: 3900));
+      // The address answers at 3.9 s; the try's binding is then undone, slowly.
+      h.greet('192.168.1.20');
+      async.flushMicrotasks();
+      async.elapse(const Duration(milliseconds: 200));
+      expect(h.connection.status.phase, LinkPhase.failed, reason: 'the time ran out first');
+      expect(h.connection.viaHomeNetwork, isFalse);
+      local.unbindGate!.complete();
+      async.flushMicrotasks();
+      expect(h.socket('192.168.1.20').closed, isTrue, reason: 'nothing holds that socket now, so it is closed');
+      expect(h.connection.viaHomeNetwork, isFalse);
+      h.connection.dispose();
+    });
+  });
+
   test('the 4 seconds also cover asking whether the phone is on Wi-Fi', () {
     fakeAsync((async) {
       final local = _FakeLocalNetwork()..availableGate = Completer<void>();
@@ -686,6 +708,10 @@ void main() {
           if (atOnce.contains(name)) {
             expect(at.difference(takenAt), lessThan(const Duration(seconds: 1)), reason: name);
             expect(status.message, "Couldn't connect to the PC on the home network.", reason: name);
+          } else {
+            // Ignored: the try goes on until the phone's own answer time ends it.
+            expect(at.difference(takenAt), greaterThanOrEqualTo(const Duration(seconds: 19)), reason: 'ignored, not ending the try ($name)');
+            expect(status.message, startsWith("Your PC didn't answer."), reason: name);
           }
           expect(status.needsPairing, isFalse, reason: name);
           expect(status.message, anyOf("Couldn't connect to the PC on the home network.", startsWith("Your PC didn't answer.")),
@@ -999,6 +1025,8 @@ class _FakeLocalNetwork implements LocalNetworkAccess {
   Completer<void>? bindGate;
   // Holds the Wi-Fi check the same way.
   Completer<void>? availableGate;
+  // Holds the end of a try after it found its socket, as an unbind still on its way does.
+  Completer<void>? unbindGate;
 
   @override
   Future<bool> available() async {
@@ -1018,6 +1046,7 @@ class _FakeLocalNetwork implements LocalNetworkAccess {
     try {
       return await future;
     } finally {
+      if (unbindGate case final gate?) await gate.future;
       events.add('unbind');
     }
   }

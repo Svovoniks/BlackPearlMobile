@@ -469,6 +469,12 @@ newer one replaces the older. The HTTP request is at most 8 KiB, and it and `rem
 seconds. Messages are at most 64 KiB, at the room server's rate for phones (bursts of 120, 60 a second). A connection
 that hasn't proved itself within 30 seconds is closed, and none lasts more than 6 hours.
 
+The phone, for its part, takes at most 256 KiB from one such socket in all, the HTTP upgrade included, counted before
+any WebSocket frame is read, and the upgrade answer at most 8 KiB of that. It offers no WebSocket extensions and refuses
+an upgrade that names one, so nothing on the socket is compressed. Past the 256 KiB it closes the socket: that ends the
+try, or, with the link already up, only the socket. A real exchange (welcome, `remote-online`, the signed answer and
+candidates, and a `pong` every 25 seconds or so) stays far below it.
+
 **Which path the phone takes.** The room server first, always. The phone tries the home network when it has an address
 for the PC and the room server can't be reached, refuses the connection, closes it before the link is up, or says the PC
 is offline (then again while it waits). It tries only while on Wi-Fi or Ethernet, and on Android opens those sockets on

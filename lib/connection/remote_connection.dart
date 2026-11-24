@@ -74,6 +74,7 @@ class RemoteConnection extends RemoteLink {
     required LinkTarget target,
     required this.identity,
     required this.connectSocket,
+    this.connectLanSocket,
     required this.createPeer,
     this.onPaired,
     this.onPcName,
@@ -92,6 +93,10 @@ class RemoteConnection extends RemoteLink {
 
   final PhoneIdentity identity;
   final SocketConnector connectSocket;
+
+  /// Opens a PC's own home-network socket: [LanSignaling.connect] in the app, which caps what such a socket may send.
+  /// Null uses [connectSocket].
+  final SocketConnector? connectLanSocket;
   final PeerFactory createPeer;
 
   /// Called once the PC has paired this phone; the caller stores it. Later attempts use the new credentials.
@@ -492,7 +497,7 @@ class RemoteConnection extends RemoteLink {
       if (generation == _generation) _lanFailed();
       return false;
     }
-    if (generation != _generation || abort.isCompleted) {
+    if (generation != _generation) {
       limit.cancel();
       if (identical(_lanAbort, abort)) _lanAbort = null;
       return false;
@@ -500,10 +505,7 @@ class RemoteConnection extends RemoteLink {
     final found = network == null
         ? await _greetLan(lan, _target.pcId, abort.future)
         // A binding that took the whole limit opens no sockets after it.
-        : await Future.any([
-            network.run(() => abort.isCompleted ? Future<_LanLink?>.value() : _greetLan(lan, _target.pcId, abort.future)),
-            abort.future.then((_) => null),
-          ]);
+        : await _withinLimit(network.run(() => abort.isCompleted ? Future<_LanLink?>.value() : _greetLan(lan, _target.pcId, abort.future)), abort);
     limit.cancel();
     if (identical(_lanAbort, abort)) _lanAbort = null;
     if (found == null) {
@@ -531,6 +533,16 @@ class RemoteConnection extends RemoteLink {
     // The one offer on this socket, under the session id its first welcome handed out.
     unawaited(_startPeer(generation, handedOut: _welcomeSession(found.welcome)));
     return true;
+  }
+
+  /// [running], or null once [abort] completes first. A link [running] still brings afterwards (an address answered as
+  /// the limit came, while the binding was being undone) is closed: nothing else holds it.
+  static Future<_LanLink?> _withinLimit(Future<_LanLink?> running, Completer<void> abort) {
+    var settled = false;
+    unawaited(running.then((link) {
+      if (settled) link?.discard();
+    }, onError: (Object _) {}));
+    return Future.any([running, abort.future.then((_) => null)]).whenComplete(() => settled = true);
   }
 
   /// Connects to all of the PC's addresses at once and returns the first that greets the phone as that PC's within
@@ -580,7 +592,7 @@ class RemoteConnection extends RemoteLink {
     // Another address answered first.
     unawaited(settled.then((_) => give(null)));
     unawaited(
-      Future.sync(() => connectSocket(uri)).then(
+      Future.sync(() => (connectLanSocket ?? connectSocket)(uri)).then(
         (opened) {
           // Too late: the phone has moved on, and nothing else would close it.
           if (done.isCompleted) {

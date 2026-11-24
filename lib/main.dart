@@ -12,6 +12,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import 'app_model.dart';
 import 'background/background_link.dart';
+import 'connection/lan_socket.dart';
 import 'connection/local_network.dart';
 import 'connection/remote_connection.dart';
 import 'connection/webrtc_peer.dart';
@@ -80,6 +81,8 @@ Future<void> main(List<String> args) async {
       identity: identity,
       connectSocket: WebSocketSignaling.connect,
       createPeer: WebRtcPeerLink.create,
+      // The PC's own home-network socket, with a cap on what it may send (LanSignaling).
+      connectLanSocket: LanSignaling.connect,
       localNetwork: localNetwork,
       onPaired: onPaired,
       onPcName: onPcName,
