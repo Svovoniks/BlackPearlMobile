@@ -76,6 +76,24 @@ must match `version:` in `pubspec.yaml`. Signing uses the repository secrets `AN
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. A local `flutter build apk --release`
 without `android/key.properties` is signed with the debug key, so it can't update an installed release.
 
+### Crash reports
+
+Release APKs send errors, crashes and two timings (app start, and `playback.open`: from asking to play a video until
+the player shows it) to Sentry, unless Settings › Send crash reports is off. Only a build given
+`--dart-define=SENTRY_DSN=<dsn>` starts Sentry; CI passes the repository secret `SENTRY_DSN`, and local builds and
+tests send nothing. `--dart-define=SENTRY_ENVIRONMENT=<name>` (default `production`) names the environment; outside
+production every transaction is sent, in production one in ten. There are no breadcrumbs, screenshots, replays, logs or
+sessions, the user, device and server names are cleared, and `lib/diagnostics/report_text.dart` replaces paths, web and
+network addresses and long ids in error messages, with the desktop app's rules. Android's native crashes (Java and NDK)
+are sent by Sentry's Android SDK and don't pass through that scrubbing. That SDK names the user and the device with an
+id it keeps per installation, so before Sentry starts, `LinkEngine.kt` sets that id to the same zeros on every phone.
+
+R8 renames the release build's Java and Kotlin classes. Sentry's Gradle plugin (`android/app/build.gradle.kts`) writes
+a mapping id into each release APK, which the Android SDK sends with its crashes, and when `SENTRY_AUTH_TOKEN` is set
+(CI's tag build passes the repository secret, an organization token) uploads the R8 mapping under that id, so those
+crashes show the real class and method names. Without the token, a release build only writes the id. The plugin's other
+features (added integrations, bytecode instrumentation, source and native symbol uploads, telemetry) are turned off.
+
 Installed releases update themselves from those GitHub releases. On start, and on return after six hours, the app asks
 GitHub for the latest release, and Settings › Check for updates asks right away. When it is newer, a banner offers it. The app downloads the APK, checks its size and the
 SHA-256 GitHub lists for it, and hands it to Android's installer. Android asks the user once to let the app install

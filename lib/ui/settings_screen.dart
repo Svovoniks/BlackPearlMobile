@@ -11,8 +11,8 @@ import 'home_shell.dart';
 import 'pebbles.dart';
 import 'theme.dart';
 
-/// The Settings tab: the background connection, the quality away from home, how the player turns, the paired PCs, and
-/// app updates.
+/// The Settings tab: the background connection, the quality away from home, how the player turns, the paired PCs, crash
+/// reports, and app updates.
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key, required this.model, required this.link, required this.onChoosePc, this.updater});
   final AppModel model;
@@ -136,6 +136,31 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 12),
                     PebbleButton(label: 'Choose a PC', icon: Icons.devices_rounded, onTap: onChoosePc),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              Slab(
+                padding: const EdgeInsets.fromLTRB(16, 8, 8, 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: settings.crashReports,
+                      onChanged: (value) => settings.setCrashReports(value),
+                      activeThumbColor: Palette.accentInk,
+                      activeTrackColor: Palette.accent,
+                      title: const Text('Send crash reports', style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600)),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.only(right: 8),
+                      child: Text(
+                        "Errors, crashes and how long startup and opening videos take go to BlackPearl's developer through "
+                        'Sentry. File paths, titles, addresses and names are removed first.',
+                        style: TextStyle(color: Palette.muted, fontSize: 13, height: 1.35),
+                      ),
+                    ),
                   ],
                 ),
               ),

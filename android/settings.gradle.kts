@@ -21,6 +21,8 @@ plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "9.3.1" apply false
     id("org.jetbrains.kotlin.android") version "2.4.20" apply false
+    // Uploads the release build's R8 mapping to Sentry (see app/build.gradle.kts).
+    id("io.sentry.android.gradle") version "6.27.0" apply false
 }
 
 include(":app")

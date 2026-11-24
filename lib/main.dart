@@ -18,6 +18,7 @@ import 'connection/remote_connection.dart';
 import 'connection/webrtc_peer.dart';
 import 'debug/loopback.dart';
 import 'debug/preview.dart';
+import 'diagnostics/crash_reports.dart';
 import 'playback/phone_playback.dart';
 import 'playback/phone_sound.dart';
 import 'playback/picture_in_picture.dart';
@@ -34,7 +35,7 @@ import 'update/android_update_platform.dart';
 import 'update/app_update.dart';
 
 Future<void> main(List<String> args) async {
-  WidgetsFlutterBinding.ensureInitialized();
+  CrashReports.ensureBinding();
   // libmpv, for watching the PC's videos on the phone.
   MediaKit.ensureInitialized();
   PictureInPicture.instance.start();
@@ -51,9 +52,11 @@ Future<void> main(List<String> args) async {
       return;
     }
   }
-  final identity = await _identity();
   final settings = AppSettings(PreferencesSettingsStore());
   await settings.load();
+  // Read first, so a user who turned crash reports off sends nothing, not even about this start.
+  await CrashReports.start(settings);
+  final identity = await _identity();
   final store = PairedPcStore(SecureSecretStore());
   // Debug builds only: `--paired-pc=<JSON of a paired PC>` starts already paired, for trying the Windows build against a
   // real PC, which has no camera to scan the code with and keeps nothing between runs.

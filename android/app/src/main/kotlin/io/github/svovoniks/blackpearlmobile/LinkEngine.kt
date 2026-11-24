@@ -21,6 +21,7 @@ object LinkEngine {
     fun get(context: Context): FlutterEngine {
         FlutterEngineCache.getInstance().get(ID)?.let { return it }
         val app = context.applicationContext
+        sameCrashReportIdForEveryone(app)
         // Plugins register themselves with an engine made this way.
         val engine = FlutterEngine(app)
         channel = MethodChannel(engine.dartExecutor.binaryMessenger, "blackpearl/background").apply {
@@ -47,6 +48,24 @@ object LinkEngine {
         FlutterEngineCache.getInstance().put(ID, engine)
         return engine
     }
+
+    /**
+     * Sentry's Android SDK gives each installation a random id, kept in the file `INSTALLATION` in the app's files
+     * folder, and puts it on the crashes it reports itself (Java crashes, ANRs, and through the scope NDK crashes) as
+     * the user's and the device's id. Crash reports promise no such id (lib/diagnostics/crash_reports.dart), so every
+     * installation gets the same one. It runs before the engine starts Dart, and so before Sentry starts and reads the
+     * file.
+     */
+    private fun sameCrashReportIdForEveryone(app: Context) {
+        try {
+            val file = java.io.File(app.filesDir, "INSTALLATION")
+            if (!file.exists() || file.readText() != SHARED_INSTALLATION_ID) file.writeText(SHARED_INSTALLATION_ID)
+        } catch (_: Exception) {
+            // Sentry then makes its own id; Settings › Send crash reports still turns reports off.
+        }
+    }
+
+    private const val SHARED_INSTALLATION_ID = "00000000000000000000000000000000"
 
     /** Tells the app about a notification button: `toggle` or `disconnect`. */
     fun send(action: String) {

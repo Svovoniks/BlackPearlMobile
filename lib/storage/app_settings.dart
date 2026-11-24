@@ -47,6 +47,11 @@ class AppSettings extends ChangeNotifier {
   bool _shuffle = false;
   int _soundDelayMs = 0;
   bool _followPhoneRotation = false;
+  bool _crashReports = true;
+
+  /// Whether errors, crashes and how long startup and opening videos take go to BlackPearl's developer through Sentry,
+  /// with paths, titles, addresses and names removed. On by default.
+  bool get crashReports => _crashReports;
 
   /// Whether the player turns with the phone, as Android's Auto-rotate says. Off by default: each video opens in its
   /// own shape, sideways for a wide video and upright for a tall one, and keeps it however the phone is held.
@@ -85,6 +90,7 @@ class AppSettings extends ChangeNotifier {
       _loopMode = loopModes.contains(loop) ? loop! : 'off';
       _shuffle = await _store.readBool('shuffle') ?? false;
       _followPhoneRotation = await _store.readBool('followPhoneRotation') ?? false;
+      _crashReports = await _store.readBool('crashReports') ?? true;
       _soundDelayMs = (int.tryParse(await _store.readString('soundDelayMs') ?? '') ?? 0).clamp(-soundDelayLimitMs, soundDelayLimitMs);
     } catch (_) {
       // Unreadable preferences leave the defaults.
@@ -125,6 +131,13 @@ class AppSettings extends ChangeNotifier {
     _followPhoneRotation = value;
     notifyListeners();
     await _quietly(_store.writeBool('followPhoneRotation', value));
+  }
+
+  Future<void> setCrashReports(bool value) async {
+    if (value == _crashReports) return;
+    _crashReports = value;
+    notifyListeners();
+    await _quietly(_store.writeBool('crashReports', value));
   }
 
   Future<void> setSoundDelayMs(int value) async {
