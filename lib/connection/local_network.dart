@@ -24,7 +24,7 @@ class AndroidLocalNetwork implements LocalNetworkAccess {
   @override
   Future<bool> available() async {
     final answer = await _call('available');
-    // Can't tell: try, as without this check.
+    // No answer, or none in time: can't tell, so try, as without this check.
     return answer is bool ? answer : true;
   }
 
@@ -43,18 +43,24 @@ class AndroidLocalNetwork implements LocalNetworkAccess {
   // Never fails: a failed call leaves the queue working for the next one.
   Future<void> _settle() => _calls = _calls.then((_) async {
     if (_runs > 0 && _bound == null) {
-      _bound = await _call('bind') == true;
+      final answer = await _call('bind');
+      // A bind that didn't answer in time may still have happened: it is undone like one that did.
+      _bound = answer == true || identical(answer, _noAnswer);
     } else if (_runs == 0 && _bound != null) {
       if (_bound!) await _call('unbind');
       _bound = null;
     }
   }).catchError((Object _) {});
 
-  /// The platform's answer, or null for any failure: the binding only helps, and a try must go on without it.
+  // What [_call] returns for a call that didn't answer within [callTimeout].
+  static const _noAnswer = Object();
+
+  /// The platform's answer, [_noAnswer] for one that took too long, or null for any failure: the binding only helps, and
+  /// a try must go on without it.
   Future<Object?> _call(String method) async {
     try {
       // A platform side that doesn't answer mustn't hold the try, or the calls queued behind it.
-      return await _channel.invokeMethod<Object?>(method).timeout(callTimeout);
+      return await _channel.invokeMethod<Object?>(method).timeout(callTimeout, onTimeout: () => _noAnswer);
     } catch (_) {
       // Android drops a binding when the process ends; nothing else to do.
       return null;

@@ -556,6 +556,176 @@ void main() {
     });
   });
 
+  test('the 4 seconds also cover asking whether the phone is on Wi-Fi', () {
+    fakeAsync((async) {
+      final local = _FakeLocalNetwork()..availableGate = Completer<void>();
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])), local: local)..unreachable.add(roomServer);
+      h.connection.start();
+      async.flushMicrotasks();
+      async.elapse(const Duration(milliseconds: 4100));
+      expect(h.connection.status.phase, LinkPhase.failed);
+      expect(h.connection.status.message, "Can't reach the room server. Check your internet connection.");
+      local.availableGate!.complete();
+      async.flushMicrotasks();
+      expect(h.lanUris(), isEmpty, reason: 'an answer after the limit opens no socket');
+      h.connection.dispose();
+    });
+  });
+
+  // Everything a socket at the PC's address can send before the try takes it. Nothing but a welcome handing out a session
+  // id, then remote-online, gets the phone's offer; everything else ends the try within its 4 seconds, with no offer, and
+  // the phone goes on as without the home network.
+  group('whatever a socket at the address sends before the try takes it', () {
+    final welcomeWithout = jsonEncode({'type': 'remote-welcome', 'data': jsonEncode({'iceServers': [], 'forceRelay': false})});
+    final cases = <String, List<String>>{
+      'error': [jsonEncode({'type': 'error', 'text': 'This phone was removed from the PC. Pair it again.'})],
+      'closed': [jsonEncode({'type': 'closed', 'text': 'Pair again.'})],
+      'remote-offline': [jsonEncode({'type': 'remote-offline'})],
+      'remote-online without a welcome': [jsonEncode({'type': 'remote-online'})],
+      'a welcome without a session id, then remote-online': [welcomeWithout, jsonEncode({'type': 'remote-online'})],
+      'a welcome with a malformed session id, then remote-online': [
+        jsonEncode({'type': 'remote-welcome', 'data': jsonEncode({'session': 'not hex'})}),
+        jsonEncode({'type': 'remote-online'}),
+      ],
+      'an oversized welcome': [jsonEncode({'type': 'remote-welcome', 'data': jsonEncode({'session': handedOut, 'pad': 'x' * 70000})}), jsonEncode({'type': 'remote-online'})],
+      'malformed JSON': ['{not json'],
+      'a type the phone does not know': [jsonEncode({'type': 'paired'})],
+      'an unsigned hint': [jsonEncode({'type': 'signal', 'data': SignedSignal(phone: phoneId, session: handedOut, kind: 'rejected', payload: 'unknown-phone', auth: '').encode()})],
+      'nothing at all': [],
+    };
+    for (final MapEntry(key: name, value: messages) in cases.entries) {
+      test(name, () {
+        fakeAsync((async) {
+          final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+          h.connection.start();
+          async.flushMicrotasks();
+          final socket = h.socket('192.168.1.20');
+          for (final text in messages) {
+            socket.receiveText(text);
+          }
+          async.elapse(const Duration(milliseconds: 4100));
+          expect(socket.signals(), isEmpty, reason: 'no offer ($name)');
+          expect(socket.closed, isTrue, reason: name);
+          expect(h.peers, isEmpty, reason: name);
+          expect(h.connection.viaHomeNetwork, isFalse, reason: name);
+          expect(h.connection.status.message, "Can't reach the room server. Check your internet connection.", reason: name);
+          expect(h.connection.halted, isFalse, reason: name);
+          h.connection.dispose();
+        });
+      });
+    }
+  });
+
+  // Everything the PC's own socket can send once the try has taken it. Only signals are signed, so nothing else may do
+  // more than end that one try with the phone's own words, and nothing may leave the phone waiting without an end: each
+  // case ends with the phone failed, not halted, not asking to pair, and trying again on schedule.
+  group("whatever the PC's own socket sends after the try took it", () {
+    final otherSession = '0f' * 16;
+    String unsignedSignal(String session, String kind, String payload) =>
+        SignedSignal(phone: phoneId, session: session, kind: kind, payload: payload, auth: '').encode();
+    String signedAs(String key, String direction, String session, String kind, String payload) =>
+        SignedSignal(phone: phoneId, session: session, kind: kind, payload: payload, auth: Signing.sign(key, direction, phoneId, session, kind, payload)).encode();
+    const answer = '{"type":"answer","sdp":"v=0"}';
+    final cases = <String, List<String> Function(String session)>{
+      'remote-offline': (_) => [jsonEncode({'type': 'remote-offline'})],
+      'error, with its own words': (_) => [jsonEncode({'type': 'error', 'text': 'This phone was removed from the PC. Pair it again.'})],
+      'closed, with its own words': (_) => [jsonEncode({'type': 'closed', 'text': 'Pair again.'})],
+      'another welcome, then remote-online': (_) => [
+        jsonEncode({'type': 'remote-welcome', 'data': jsonEncode({'iceServers': ['turn://a:b@x.example:3478'], 'forceRelay': true, 'session': '1' * 32})}),
+        jsonEncode({'type': 'remote-online'}),
+      ],
+      'remote-online again': (_) => [jsonEncode({'type': 'remote-online'})],
+      'a type the phone does not know': (_) => [jsonEncode({'type': 'paired', 'phoneId': phoneId, 'secret': secret})],
+      'malformed JSON': (_) => ['{not json'],
+      'a JSON value that is not an object': (_) => ['[1,2,3]'],
+      'an oversized message': (_) => [jsonEncode({'type': 'pong', 'data': 'x' * 70000})],
+      'pongs, every second': (_) => [jsonEncode({'type': 'pong', 'number': 1})],
+      'pings': (_) => [jsonEncode({'type': 'ping', 'number': 1})],
+      'an unsigned removed hint': (session) => [jsonEncode({'type': 'signal', 'data': unsignedSignal(session, 'rejected', 'unknown-phone')})],
+      'an unsigned expired-code hint': (session) => [jsonEncode({'type': 'signal', 'data': unsignedSignal(session, 'rejected', 'pairing-expired')})],
+      'an unsigned hint with other words': (session) => [jsonEncode({'type': 'signal', 'data': unsignedSignal(session, 'rejected', 'anything')})],
+      'an answer signed with another key': (session) => [jsonEncode({'type': 'signal', 'data': signedAs('11' * 32, 'pc-lan', session, 'sdp', answer)})],
+      'an answer signed for the room server': (session) => [jsonEncode({'type': 'signal', 'data': signedAs(secret, 'pc', session, 'sdp', answer)})],
+      'an answer for another session': (_) => [jsonEncode({'type': 'signal', 'data': signedAs(secret, 'pc-lan', otherSession, 'sdp', answer)})],
+      'a signal that is not a signal': (_) => [jsonEncode({'type': 'signal', 'data': 'nonsense'})],
+      'nothing at all, answering pings': (_) => [],
+    };
+    for (final MapEntry(key: name, value: messages) in cases.entries) {
+      test(name, () {
+        fakeAsync((async) {
+          final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+          h.connection.start();
+          async.flushMicrotasks();
+          h.greet('192.168.1.20');
+          async.flushMicrotasks();
+          expect(h.connection.viaHomeNetwork, isTrue);
+          final takenAt = clock.now();
+          final lanSocket = h.socket('192.168.1.20');
+          final session = lanSocket.signals().firstWhere((m) => m.kind == 'sdp').session;
+          // The first failure, when it came, and how many room server attempts there had been.
+          (DateTime, LinkStatus, int)? failure;
+          h.connection.addListener(() {
+            final status = h.connection.status;
+            if (failure == null && status.phase == LinkPhase.failed) failure = (clock.now(), status, h.uris.where((u) => u.host == roomServer).length);
+          });
+          final repeat = name.startsWith('pongs');
+          // Sent all together, before any of it is handled; pongs again every second, as a socket kept alive would.
+          for (var second = 0; second < (repeat ? 25 : 1); second++) {
+            // (Until the phone has closed the socket.)
+            for (final text in lanSocket.closed ? const <String>[] : messages(session)) {
+              lanSocket.receiveText(text);
+            }
+            async.elapse(const Duration(seconds: 1));
+          }
+          async.elapse(const Duration(seconds: 21));
+          expect(failure, isNotNull, reason: 'the try ended ($name)');
+          final (at, status, attempts) = failure!;
+          expect(at.difference(takenAt), lessThanOrEqualTo(const Duration(seconds: 20)), reason: 'within the answer time at most ($name)');
+          // What the PC never sends there ends the try at once; the rest is ignored, and the answer time ends it.
+          const atOnce = {'remote-offline', 'error, with its own words', 'closed, with its own words', 'an oversized message', 'an unsigned removed hint', 'an unsigned expired-code hint', 'an unsigned hint with other words'};
+          if (atOnce.contains(name)) {
+            expect(at.difference(takenAt), lessThan(const Duration(seconds: 1)), reason: name);
+            expect(status.message, "Couldn't connect to the PC on the home network.", reason: name);
+          }
+          expect(status.needsPairing, isFalse, reason: name);
+          expect(status.message, anyOf("Couldn't connect to the PC on the home network.", startsWith("Your PC didn't answer.")),
+              reason: "the phone's own words, never the socket's ($name)");
+          expect(status.retryAt, isNotNull, reason: name);
+          expect(h.connection.halted, isFalse, reason: name);
+          expect(h.peers.first.answer, isNull, reason: 'nothing unsigned or wrongly signed was taken as the answer ($name)');
+          expect(h.peers.first.iceServers, isEmpty);
+          expect(lanSocket.closed, isTrue, reason: 'the socket goes with the try ($name)');
+          // And the phone tries again when the failure said it would: the room server first.
+          final wait = status.retryAt!.difference(at) + const Duration(seconds: 1);
+          if (clock.now().isBefore(at.add(wait))) async.elapse(at.add(wait).difference(clock.now()));
+          expect(h.uris.where((u) => u.host == roomServer).length, greaterThan(attempts), reason: name);
+          h.connection.dispose();
+        });
+      });
+    }
+
+    test('once the link is up, the socket ending or saying anything leaves the link as it is', () {
+      fakeAsync((async) {
+        for (final ending in ['remote-offline', 'error', 'closed']) {
+          final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+          h.connection.start();
+          async.flushMicrotasks();
+          h.greet('192.168.1.20');
+          async.flushMicrotasks();
+          final lanSocket = h.socket('192.168.1.20');
+          h.link(lanSocket);
+          async.flushMicrotasks();
+          expect(h.connection.status.isConnected, isTrue);
+          lanSocket.receive({'type': ending, 'text': 'Pair again.'});
+          async.flushMicrotasks();
+          expect(h.connection.status.isConnected, isTrue, reason: ending);
+          expect(lanSocket.closed, isTrue, reason: 'the link no longer needs the socket ($ending)');
+          h.connection.dispose();
+        }
+      });
+    });
+  });
+
   test("on the home network only the PC's `pc-lan` answer counts: one signed for the room server is ignored", () {
     fakeAsync((async) {
       final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
@@ -791,9 +961,23 @@ void main() {
         final network = AndroidLocalNetwork();
         String? result;
         unawaited(network.run(() async => 'tried').then((value) => result = value));
-        async.elapse(AndroidLocalNetwork.callTimeout + const Duration(milliseconds: 100));
+        async.elapse(AndroidLocalNetwork.callTimeout * 2 + const Duration(milliseconds: 100));
         expect(result, 'tried');
-        expect(calls, ['bind']);
+        expect(calls, ['bind', 'unbind'], reason: 'a bind that never answered may still have happened, so it is undone');
+      });
+    });
+
+    test('a bind that answers after its time is undone all the same', () {
+      fakeAsync((async) {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+          calls.add(call.method);
+          if (call.method == 'bind') await Future<void>.delayed(AndroidLocalNetwork.callTimeout + const Duration(seconds: 1));
+          return call.method == 'bind' ? true : null;
+        });
+        final network = AndroidLocalNetwork();
+        unawaited(network.run(() async => 'tried'));
+        async.elapse(AndroidLocalNetwork.callTimeout * 3);
+        expect(calls, ['bind', 'unbind']);
       });
     });
 
@@ -813,9 +997,14 @@ class _FakeLocalNetwork implements LocalNetworkAccess {
   List<Uri> connected = [];
   // Holds the binding until completed, as a platform side that is slow to answer would.
   Completer<void>? bindGate;
+  // Holds the Wi-Fi check the same way.
+  Completer<void>? availableGate;
 
   @override
-  Future<bool> available() async => onWifi;
+  Future<bool> available() async {
+    if (availableGate case final gate?) await gate.future;
+    return onWifi;
+  }
 
   @override
   Future<T> run<T>(Future<T> Function() attempt) async {

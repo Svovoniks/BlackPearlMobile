@@ -479,18 +479,24 @@ class RemoteConnection extends RemoteLink {
     // Not yet: the last try found nothing a moment ago.
     if (clock.now().isBefore(_lanNotBefore)) return false;
     final network = localNetwork;
-    // Only on Wi-Fi or Ethernet: on mobile data the PC's home address can't be reached, and could be someone else's.
-    if (network != null && !await network.available()) {
-      _lanFailed();
-      return false;
-    }
-    if (generation != _generation) return false;
     _abortLan();
     final abort = _lanAbort = Completer<void>();
-    // The whole try, binding to the Wi-Fi included, ends within [lanTimeout].
+    // The whole try ends within [lanTimeout]: asking whether the phone is on Wi-Fi, binding to it and greeting the PC.
     final limit = Timer(lanTimeout, () {
       if (!abort.isCompleted) abort.complete();
     });
+    // Only on Wi-Fi or Ethernet: on mobile data the PC's home address can't be reached, and could be someone else's.
+    if (network != null && !await Future.any([network.available(), abort.future.then((_) => false)])) {
+      limit.cancel();
+      if (identical(_lanAbort, abort)) _lanAbort = null;
+      if (generation == _generation) _lanFailed();
+      return false;
+    }
+    if (generation != _generation || abort.isCompleted) {
+      limit.cancel();
+      if (identical(_lanAbort, abort)) _lanAbort = null;
+      return false;
+    }
     final found = network == null
         ? await _greetLan(lan, _target.pcId, abort.future)
         // A binding that took the whole limit opens no sockets after it.
@@ -585,6 +591,10 @@ class RemoteConnection extends RemoteLink {
           String? welcome;
           subscription = opened.messages.listen(
             (text) {
+              if (text.length > _lanMessageLimit) {
+                give(null);
+                return;
+              }
               Object? message;
               try {
                 message = jsonDecode(text);
@@ -643,6 +653,10 @@ class RemoteConnection extends RemoteLink {
   void _onSocketMessage(int generation, String text) {
     if (generation != _generation) return;
     _lastSocketMessage = clock.now();
+    if (_viaLan) {
+      _onLanMessage(generation, text);
+      return;
+    }
     final Map<String, dynamic> message;
     try {
       final decoded = jsonDecode(text);
@@ -655,8 +669,6 @@ class RemoteConnection extends RemoteLink {
       case 'remote-welcome':
         _readWelcome(message['data']);
       case 'remote-online':
-        // On the PC's own socket the try took the first one, and made the socket's only offer (see [_tryLanOnce]).
-        if (_viaLan) return;
         if (!_status.isConnected && _status.phase != LinkPhase.pairing) unawaited(_startPeer(generation));
       case 'remote-offline':
         if (!_status.isConnected && _status.phase != LinkPhase.pairing) {
@@ -669,30 +681,61 @@ class RemoteConnection extends RemoteLink {
       case 'error':
         final reason = message['text'];
         final text = reason is String && reason.isNotEmpty ? reason : 'The room server refused the connection.';
-        if (_viaLan) {
-          // Its words aren't shown: anything can be answering at the PC's old address.
-          _fail(generation, _lanFailure);
-        } else {
-          unawaited(_fallBack(generation, text, slow: true));
-        }
+        unawaited(_fallBack(generation, text, slow: true));
       case 'closed':
         final reason = message['text'];
-        if (_viaLan) {
-          if (!_status.isConnected) _fail(generation, _lanFailure);
-        } else if (!_status.isConnected) {
+        if (!_status.isConnected) {
           unawaited(_fallBack(generation, reason is String && reason.isNotEmpty ? reason : 'The room server closed the connection.'));
         }
     }
   }
 
-  void _readWelcome(Object? data) {
-    // On the PC's own socket only its first welcome counts, read as the try took it (see [_tryLanOnce]): a later one
-    // hands out no new session id, and no relay servers.
-    if (_viaLan) {
-      _iceServers = const [];
-      _forceRelay = false;
+  /// A message on the PC's own home-network socket, after the try took it. Nothing on it is signed but the signals, so
+  /// nothing else on it may do more than end this try, with the phone's own words and the usual retries: no state of
+  /// its own (offline, removed, paired) and no waiting without an end. What keeps a try from waiting forever is the
+  /// answer timer [_startPeer] sets; nothing here stops it. (PHONE-REMOTE.md, "On the home network".)
+  void _onLanMessage(int generation, String text) {
+    // Larger than any message the PC sends there.
+    if (text.length > _lanMessageLimit) {
+      _endLanTry(generation);
       return;
     }
+    final Object? message;
+    try {
+      message = jsonDecode(text);
+    } on FormatException {
+      return;
+    }
+    if (message is! Map) return;
+    switch (message['type']) {
+      // Checked and signed (see [_onSignal]); an unsigned hint there ends the try.
+      case 'signal':
+        _onSignal(generation, message['data']);
+      // The PC never sends these there: whatever does, ends this try.
+      case 'error' || 'closed' || 'remote-offline':
+        _endLanTry(generation);
+      // The try already took the first welcome and remote-online, and made the socket's only offer; pong only keeps
+      // the socket alive, as do any other types, which the phone doesn't know.
+      default:
+        break;
+    }
+  }
+
+  /// Ends the try on the PC's own socket. A link already up doesn't need that socket, which just goes.
+  void _endLanTry(int generation) {
+    if (_status.isConnected) {
+      _dropSocket(close: true);
+    } else {
+      _fail(generation, _lanFailure);
+    }
+  }
+
+  // The largest message taken on the PC's own socket: the room server's limit.
+  static const _lanMessageLimit = 65536;
+
+  /// The room server's welcome: its STUN and TURN servers. (The PC's own socket's welcome is read by the try, and only
+  /// for its session id: see [_tryLanOnce].)
+  void _readWelcome(Object? data) {
     if (data is! String) return;
     try {
       final json = jsonDecode(data);
