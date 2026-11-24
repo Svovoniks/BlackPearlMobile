@@ -253,6 +253,9 @@ class PhonePlayback extends ChangeNotifier {
     if (identical(_openTrace, trace)) _awaitingPicture = true;
     await player.open(Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null), play: play && !_inBackground);
     _switching = false;
+    // Opened paused (another stream of a paused video, or in the background), it may not say where it is until it plays,
+    // so that opening isn't timed rather than timed out.
+    if (!(play && !_inBackground) && identical(_openTrace, trace)) _cancelOpenTrace();
     // In the background a new video waits to play until the app is back; another stream of this one keeps what going to
     // the background decided.
     if (_inBackground && !replacing) _resumeOnReturn = true;

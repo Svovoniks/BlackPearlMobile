@@ -1,3 +1,4 @@
+import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/diagnostics/crash_reports.dart';
 import 'package:blackpearl_mobile/diagnostics/report_text.dart';
 import 'package:blackpearl_mobile/storage/app_settings.dart';
@@ -105,6 +106,35 @@ void main() {
       expect(scrubbed.exceptions!.single.type, 'StateError');
       expect(scrubbed.exceptions!.single.stackTrace!.frames.single.absPath, '<url>');
       expect(scrubbed.contexts['flutter_error_details'], {'context': 'thrown building Text'});
+    });
+
+    test("keeps only the kind of the PC's refusal, the first line of a FormatException, and no boot time or sizes", () {
+      const refusal = RemoteRequestException('busy', 'Anna is playing the video Some Film (2020) in the room.');
+      const badJson = FormatException('Unexpected character', '{"title":"Some Film (2020)"', 1);
+      final event = SentryEvent(
+        exceptions: [
+          SentryException(type: 'RemoteRequestException', value: refusal.toString(), throwable: refusal),
+          SentryException(type: 'FormatException', value: badJson.toString(), throwable: badJson),
+        ],
+        contexts: Contexts(
+          device: SentryDevice.fromJson({
+            'model': 'Pixel 9',
+            'boot_time': '2026-11-24T08:12:59.267Z',
+            'memory_size': 2592604160,
+            'free_memory': 1180749824,
+            'storage_size': 6228115456,
+            'free_storage': 3600461824,
+            'screen_dpi': 420,
+          }),
+        ),
+      );
+      expect(badJson.toString(), contains('Some Film'));
+
+      final scrubbed = CrashReports.scrubEvent(event);
+
+      expect(scrubbed.exceptions![0].value, 'The PC refused the request: busy');
+      expect(scrubbed.exceptions![1].value, 'FormatException: Unexpected character (at character 2)');
+      expect(scrubbed.contexts.device!.toJson(), {'model': 'Pixel 9', 'screen_dpi': 420});
     });
 
     test('a build without a DSN starts nothing', () async {

@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart' show WidgetsFlutterBinding;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
 
+import '../connection/remote_link.dart' show RemoteRequestException;
 import '../storage/app_settings.dart';
 import 'report_text.dart';
 
@@ -98,6 +99,19 @@ abstract final class CrashReports {
       ..onErrorSampleRate = 0;
   }
 
+  static const _deviceKeysLeftOut = {
+    'name',
+    'id',
+    'boot_time',
+    'memory_size',
+    'free_memory',
+    'usable_memory',
+    'storage_size',
+    'free_storage',
+    'external_storage_size',
+    'external_free_storage',
+  };
+
   // Off in Settings: nothing more goes, even before Sentry has closed.
   static bool get _sending => _settings?.crashReports ?? true;
 
@@ -112,13 +126,10 @@ abstract final class CrashReports {
       ..transaction = ReportText.scrubOrNull(event.transaction)
       ..culprit = ReportText.scrubOrNull(event.culprit);
     // The device's name, and the id Sentry's Android SDK gives the installation (which Dart keeps among unknown keys).
+    // Also when it last started and its exact memory and storage: together they tell one phone's reports apart.
     final device = event.contexts.device;
     if (device != null) {
-      event.contexts.device = SentryDevice.fromJson(
-        device.toJson()
-          ..remove('name')
-          ..remove('id'),
-      );
+      event.contexts.device = SentryDevice.fromJson(device.toJson()..removeWhere((key, _) => _deviceKeysLeftOut.contains(key)));
     }
     final message = event.message;
     if (message != null) {
@@ -128,7 +139,13 @@ abstract final class CrashReports {
         ..params = message.params?.map((p) => p is String ? ReportText.scrub(p) : p).toList();
     }
     for (final exception in event.exceptions ?? const <SentryException>[]) {
-      exception.value = ReportText.scrubOrNull(exception.value);
+      exception.value = ReportText.scrubOrNull(switch (exception.throwable) {
+        // The PC's own words, which can name a title or whoever plays the video: only what kind of refusal it was.
+        RemoteRequestException(:final code) => 'The PC refused the request: $code',
+        // Its message quotes the text it couldn't read, which can be a message from the PC: only the first line stays.
+        FormatException() => exception.value?.split('\n').first,
+        _ => exception.value,
+      });
       _scrubFrames(exception.stackTrace);
     }
     for (final thread in event.threads ?? const <SentryThread>[]) {
@@ -163,7 +180,7 @@ abstract final class CrashReports {
 }
 
 /// How long a video takes to open on the phone: from the request to play it until the player shows it (`ok`), it
-/// fails (`internal_error`), something else replaces it (`cancelled`), or nothing happens for two minutes
+/// fails (`internal_error`), something else replaces it or it opens paused (`cancelled`), or nothing happens for two minutes
 /// (`deadline_exceeded`). It carries how it was opened, never what.
 class PlaybackOpenTrace {
   PlaybackOpenTrace._(this._span) {
