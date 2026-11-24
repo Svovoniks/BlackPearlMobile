@@ -294,4 +294,127 @@ void main() {
     expect(shown('f'), isTrue, reason: 'the title just watched leads the row, and the row shows it');
     expect(tester.getRect(find.text('Title f')).left, lessThan(screen.width / 2));
   });
+
+  group('Unwatched and watched marks', () {
+    Map<String, dynamic> page(String location, List<Map<String, dynamic>> entries, {int? total}) =>
+        {'type': 'page', 'total': total ?? entries.length, 'page': 0, 'pageSize': 40, 'location': location, 'entries': entries};
+    final fresh = {'id': 'new', 'title': 'Paper Moon', 'caption': 'Movie · 1973', 'level': 'movie', 'kind': 'Movie', 'homeSection': 'unwatched', 'playable': true};
+    final show = {'id': 'ep1', 'title': 'Night Signal', 'caption': 'Show · 2021', 'level': 'series', 'kind': 'Show', 'homeSection': 'unwatched', 'playable': false};
+
+    Future<(FakeRemoteLink, List<String>)> pump(WidgetTester tester, {Set<String> features = const {'library', 'watch', 'unwatched', 'mark-watched'}}) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 2.75;
+      addTearDown(tester.view.reset);
+      final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = features;
+      link.answer = (type, fields) async {
+        if (type != 'browse') return {'type': 'done'};
+        if (fields['unwatched'] == true) return page('Unwatched', [fresh, show], total: 2);
+        if (fields['parentId'] == 'ep1') {
+          return page('Night Signal', [
+            {'id': 'ep1', 'title': 'Episode 1', 'level': 'episode', 'kind': 'Show', 'season': 1, 'episode': 1, 'playable': true},
+          ]);
+        }
+        return {...homePage(), 'total': 5, 'entries': [...homePage()['entries'] as List, fresh, show]};
+      };
+      final marks = <String>[];
+      await tester.pumpWidget(MaterialApp(
+        theme: buildTheme(),
+        home: LibraryScreen(
+          link: link,
+          actions: LibraryActions(
+            watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {},
+            playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null,
+            markWatched: (entry, watched, {String? level, int? season}) async {
+              marks.add('${entry.id} ${level ?? entry.level} $watched${season == null ? '' : ' s$season'}');
+              return null;
+            },
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      return (link, marks);
+    }
+
+    testWidgets("Home's Unwatched row lists what the PC sends, and See all lists every title newest first", (tester) async {
+      final (link, _) = await pump(tester);
+      expect(find.text('Unwatched'), findsOneWidget);
+      expect(find.text('Paper Moon'), findsOneWidget);
+      expect(tester.getTopLeft(find.text('Unwatched')).dy, greaterThan(tester.getTopLeft(find.text('Continue watching')).dy));
+      expect(tester.getTopLeft(find.text('Unwatched')).dy, lessThan(tester.getTopLeft(find.text('Shows to start')).dy), reason: 'it follows Continue watching');
+      await tester.tap(find.text('See all'));
+      await tester.pumpAndSettle();
+      expect(link.asked.last.$2['unwatched'], isTrue);
+      expect(find.text('2 titles not started · newest first'), findsOneWidget);
+      expect(find.text('Night Signal'), findsOneWidget);
+      await tester.tap(find.text('Night Signal'));
+      await tester.pumpAndSettle();
+      expect(link.asked.last.$2['parentId'], 'ep1', reason: 'a show opens its page from the list');
+    });
+
+    testWidgets('a PC from before the full list shows the row without See all', (tester) async {
+      await pump(tester, features: const {'library', 'watch'});
+      expect(find.text('Paper Moon'), findsOneWidget);
+      expect(find.text('See all'), findsNothing);
+    });
+
+    testWidgets("a title's sheet marks it watched and unwatched", (tester) async {
+      final (_, marks) = await pump(tester);
+      await tester.tap(find.text('Paper Moon'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Mark as watched'));
+      await tester.pumpAndSettle();
+      expect(marks, ['new movie true']);
+      expect(find.text('Watched'), findsOneWidget);
+      await tester.tap(find.text('Mark as unwatched'));
+      await tester.pumpAndSettle();
+      expect(marks.last, 'new movie false');
+      expect(find.text('Mark as watched'), findsOneWidget);
+    });
+
+    testWidgets("a mark the PC refuses says why, and the sheet keeps the title's mark", (tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 2.75;
+      addTearDown(tester.view.reset);
+      final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch', 'mark-watched'};
+      link.answer = (type, fields) async => homePage();
+      await tester.pumpWidget(MaterialApp(
+        theme: buildTheme(),
+        home: LibraryScreen(
+          link: link,
+          actions: LibraryActions(
+            watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {},
+            playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null,
+            markWatched: (entry, watched, {String? level, int? season}) async => "That title is no longer in the PC's library.",
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Asteroid City'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Mark as watched'));
+      await tester.pumpAndSettle();
+      expect(find.text("That title is no longer in the PC's library."), findsOneWidget);
+      expect(find.text('Mark as watched'), findsOneWidget);
+    });
+
+    testWidgets("a PC from before watched marks doesn't offer them", (tester) async {
+      await pump(tester, features: const {'library', 'watch', 'unwatched'});
+      await tester.tap(find.text('Paper Moon'));
+      await tester.pumpAndSettle();
+      expect(find.text('Mark as watched'), findsNothing);
+    });
+
+    testWidgets("a show's page marks every episode", (tester) async {
+      final (_, marks) = await pump(tester);
+      await tester.ensureVisible(find.text('Night Signal').first);
+      await tester.tap(find.text('Night Signal').first);
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Mark the show'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Mark show as watched'));
+      await tester.pumpAndSettle();
+      expect(marks, ['ep1 series true']);
+      expect(find.text('Every episode is marked watched.'), findsOneWidget);
+    });
+  });
 }
