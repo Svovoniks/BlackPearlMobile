@@ -482,6 +482,80 @@ void main() {
     });
   });
 
+  test("the socket's first welcome is the one that counts, also when more messages arrive at once", () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+      h.connection.start();
+      async.flushMicrotasks();
+      final s = h.socket('192.168.1.20');
+      const first = '11111111111111111111111111111111', second = '22222222222222222222222222222222';
+      // All sent before any of them is handled.
+      s.receive({'type': 'remote-welcome', 'data': jsonEncode({'iceServers': [], 'forceRelay': false, 'session': first})});
+      s.receive({'type': 'remote-welcome', 'data': jsonEncode({'iceServers': [], 'forceRelay': false, 'session': second})});
+      s.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      final offers = s.signals().where((m) => m.kind == 'sdp').toList();
+      expect(offers.map((m) => m.session), [first]);
+      h.connection.dispose();
+    });
+  });
+
+  test('a remote-online arriving right behind the one the try took makes no second offer', () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+      h.connection.start();
+      async.flushMicrotasks();
+      final s = h.socket('192.168.1.20');
+      s.receive({'type': 'remote-welcome', 'data': jsonEncode({'iceServers': [], 'forceRelay': false, 'session': handedOut})});
+      s.receive({'type': 'remote-online'});
+      s.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      expect(h.peers, hasLength(1));
+      expect(s.signals().where((m) => m.kind == 'sdp').map((m) => m.session), [handedOut]);
+      h.connection.dispose();
+    });
+  });
+
+  test("what the PC's own socket says when it ends a try isn't shown: a fixed message is", () {
+    fakeAsync((async) {
+      for (final ending in [
+        {'type': 'error', 'text': 'This phone was removed from the PC. Pair it again.'},
+        {'type': 'closed', 'text': 'This phone was removed from the PC. Pair it again.'},
+      ]) {
+        final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+        h.connection.start();
+        async.flushMicrotasks();
+        h.greet('192.168.1.20');
+        async.flushMicrotasks();
+        h.socket('192.168.1.20').receive(ending);
+        async.flushMicrotasks();
+        expect(h.connection.status.phase, LinkPhase.failed);
+        expect(h.connection.status.message, "Couldn't connect to the PC on the home network.", reason: '${ending['type']}');
+        expect(h.connection.halted, isFalse);
+        expect(h.connection.status.needsPairing, isFalse);
+        h.connection.dispose();
+      }
+    });
+  });
+
+  test('a binding to the Wi-Fi that never comes back still ends the try within its 4 seconds', () {
+    fakeAsync((async) {
+      final local = _FakeLocalNetwork()..bindGate = Completer<void>();
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])), local: local)..unreachable.add(roomServer);
+      h.connection.start();
+      async.flushMicrotasks();
+      expect(h.connection.status.phase, LinkPhase.connecting);
+      async.elapse(const Duration(milliseconds: 4100));
+      expect(h.connection.status.phase, LinkPhase.failed);
+      expect(h.connection.status.message, "Can't reach the room server. Check your internet connection.");
+      // The binding answering late opens no socket.
+      local.bindGate!.complete();
+      async.flushMicrotasks();
+      expect(h.lanUris(), isEmpty);
+      h.connection.dispose();
+    });
+  });
+
   test("on the home network only the PC's `pc-lan` answer counts: one signed for the room server is ignored", () {
     fakeAsync((async) {
       final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
@@ -708,6 +782,21 @@ void main() {
       expect(broken.calls.skip(broken.calls.length - 2), ['bind', 'unbind'], reason: 'the queue still works after the failure');
     });
 
+    test("a platform side that never answers counts as no answer after a moment, and doesn't hold the try", () {
+      fakeAsync((async) {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) {
+          calls.add(call.method);
+          return Completer<Object?>().future;
+        });
+        final network = AndroidLocalNetwork();
+        String? result;
+        unawaited(network.run(() async => 'tried').then((value) => result = value));
+        async.elapse(AndroidLocalNetwork.callTimeout + const Duration(milliseconds: 100));
+        expect(result, 'tried');
+        expect(calls, ['bind']);
+      });
+    });
+
     test('without the platform side it neither blocks the try nor fails', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
       final network = AndroidLocalNetwork();
@@ -722,6 +811,8 @@ class _FakeLocalNetwork implements LocalNetworkAccess {
   bool onWifi = true;
   final List<String> events = [];
   List<Uri> connected = [];
+  // Holds the binding until completed, as a platform side that is slow to answer would.
+  Completer<void>? bindGate;
 
   @override
   Future<bool> available() async => onWifi;
@@ -729,6 +820,7 @@ class _FakeLocalNetwork implements LocalNetworkAccess {
   @override
   Future<T> run<T>(Future<T> Function() attempt) async {
     events.add('bind');
+    if (bindGate case final gate?) await gate.future;
     final before = connected.length;
     final future = attempt();
     // The sockets the attempt has opened by the time it first waits.

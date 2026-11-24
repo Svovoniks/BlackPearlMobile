@@ -10,6 +10,9 @@ class AndroidLocalNetwork implements LocalNetworkAccess {
 
   final MethodChannel _channel;
 
+  /// How long one platform call may take before it counts as unanswered.
+  static const callTimeout = Duration(seconds: 2);
+
   // Tries under way. Tries that overlap (the PC in use and one kept during a pairing attempt) share one binding, undone
   // once the last has finished. The platform calls go one after another, each deciding from the tries under way when
   // it runs, so an unbind can't overtake a newer try's bind.
@@ -50,7 +53,8 @@ class AndroidLocalNetwork implements LocalNetworkAccess {
   /// The platform's answer, or null for any failure: the binding only helps, and a try must go on without it.
   Future<Object?> _call(String method) async {
     try {
-      return await _channel.invokeMethod<Object?>(method);
+      // A platform side that doesn't answer mustn't hold the try, or the calls queued behind it.
+      return await _channel.invokeMethod<Object?>(method).timeout(callTimeout);
     } catch (_) {
       // Android drops a binding when the process ends; nothing else to do.
       return null;

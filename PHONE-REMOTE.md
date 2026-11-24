@@ -445,15 +445,16 @@ a restart). Through the room server the PC also refuses an offer under a session
 (or pairing code) since it started; the phone makes a new one for every attempt.
 
 **What a device at the address can do.** The phone tries the PC's stored addresses on whatever Wi-Fi it is on, so another
-device may answer there: on another network, the same private address can be anyone's. Such a device sees the phone's id,
-its offer (the phone's own addresses on that network and its DTLS fingerprint) and candidates, signed under `phone-lan`
-and a session id the device chose. It can't use them: the PC refuses `phone-lan` signals through the room server, and on
-its own socket refuses any session id but the one it handed out. It can't answer as the PC, which takes the phone secret,
-so the phone never opens a link to it and sends it no commands or requests, and it can't learn the phone secret or the
-pairing code. What it can do is make that try fail, whatever it sends or doesn't: an unsigned `rejected` hint, an
-`error`, a closed socket or silence all end the try as one that didn't link up. Nothing on that socket stops the phone,
-or asks for pairing again; the phone goes on with its usual retries, starting with the room server, and comes back to
-the address further apart each time (up to every 5 minutes while it is still there).
+device may answer there: on another network, the same private address can be anyone's. Such a device learns the PC's id
+(the phone asks for it by id) and the phone's id, and sees the phone's offer (its own addresses on that network and its
+DTLS fingerprint) and candidates, signed under `phone-lan` and a session id the device chose. It can't use them: the PC
+refuses `phone-lan` signals through the room server, and on its own socket refuses any session id but the one it handed
+out. It can't answer as the PC, which takes the phone secret, so the phone never opens a link to it and sends it no
+commands or requests, and it can't learn the phone secret or the pairing code. What it can do is make that try fail,
+whatever it sends or doesn't: an unsigned `rejected` hint, an `error`, a closed socket or silence all end the try as one
+that didn't link up, and the phone shows its own words for it, never the socket's. Nothing on that socket stops the
+phone or asks for pairing again; the phone goes on with its usual retries, starting with the room server, and comes back
+to the address further apart each time (up to every 5 minutes while it is still there).
 
 On this path neither side uses STUN or TURN servers: ICE finds the direct path with the two devices' own addresses. The
 phone ignores `iceServers` and `forceRelay` from this socket's unsigned welcome, so whatever answers at the address can't

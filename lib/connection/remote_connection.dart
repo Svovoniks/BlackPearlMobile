@@ -169,13 +169,14 @@ class RemoteConnection extends RemoteLink {
   LanEndpoints? _learnedLan;
   // Ends the home-network try under way, when a new attempt starts.
   Completer<void>? _lanAbort;
+  // What the phone shows when the PC's own socket ends a try, whatever that socket said.
+  static const _lanFailure = "Couldn't connect to the PC on the home network.";
+
   void _abortLan() {
     final abort = _lanAbort;
     _lanAbort = null;
     if (abort != null && !abort.isCompleted) abort.complete();
   }
-  // The session id the PC's home-network socket handed out for the next offer.
-  String? _lanSession;
 
   /// Where the PC said it listens on its home network, from its last `welcome` that said so; the app stores it.
   LanEndpoints? get learnedLan => _learnedLan;
@@ -340,7 +341,6 @@ class RemoteConnection extends RemoteLink {
     if (generation != _generation || !_running) return;
     // Every attempt starts with the room server.
     _viaLan = false;
-    _lanSession = null;
     _setStatus(const LinkStatus(LinkPhase.connecting));
     final Uri uri;
     try {
@@ -487,7 +487,18 @@ class RemoteConnection extends RemoteLink {
     if (generation != _generation) return false;
     _abortLan();
     final abort = _lanAbort = Completer<void>();
-    final found = network == null ? await _greetLan(lan, _target.pcId, abort.future) : await network.run(() => _greetLan(lan, _target.pcId, abort.future));
+    // The whole try, binding to the Wi-Fi included, ends within [lanTimeout].
+    final limit = Timer(lanTimeout, () {
+      if (!abort.isCompleted) abort.complete();
+    });
+    final found = network == null
+        ? await _greetLan(lan, _target.pcId, abort.future)
+        // A binding that took the whole limit opens no sockets after it.
+        : await Future.any([
+            network.run(() => abort.isCompleted ? Future<_LanLink?>.value() : _greetLan(lan, _target.pcId, abort.future)),
+            abort.future.then((_) => null),
+          ]);
+    limit.cancel();
     if (identical(_lanAbort, abort)) _lanAbort = null;
     if (found == null) {
       if (generation == _generation) _lanFailed();
@@ -511,8 +522,8 @@ class RemoteConnection extends RemoteLink {
     // home network the two need neither.
     _iceServers = const [];
     _forceRelay = false;
-    _lanSession = _welcomeSession(found.welcome);
-    unawaited(_startPeer(generation));
+    // The one offer on this socket, under the session id its first welcome handed out.
+    unawaited(_startPeer(generation, handedOut: _welcomeSession(found.welcome)));
     return true;
   }
 
@@ -582,8 +593,9 @@ class RemoteConnection extends RemoteLink {
               }
               if (message is! Map) return;
               switch (message['type']) {
+                // The first welcome is the socket's; a later one changes nothing.
                 case 'remote-welcome':
-                  welcome = message['data'] is String ? message['data'] as String : '{}';
+                  welcome ??= message['data'] is String ? message['data'] as String : '{}';
                 // Only a PC's own socket hands out the session id to offer under; anything else gets no offer.
                 case 'remote-online' when welcome != null && _welcomeSession(welcome) != null:
                   give(_LanLink(opened, subscription!, welcome!));
@@ -643,8 +655,8 @@ class RemoteConnection extends RemoteLink {
       case 'remote-welcome':
         _readWelcome(message['data']);
       case 'remote-online':
-        // On the PC's own socket, one offer per session id it handed out: no new offer without a new one.
-        if (_viaLan && _lanSession == null) return;
+        // On the PC's own socket the try took the first one, and made the socket's only offer (see [_tryLanOnce]).
+        if (_viaLan) return;
         if (!_status.isConnected && _status.phase != LinkPhase.pairing) unawaited(_startPeer(generation));
       case 'remote-offline':
         if (!_status.isConnected && _status.phase != LinkPhase.pairing) {
@@ -658,13 +670,16 @@ class RemoteConnection extends RemoteLink {
         final reason = message['text'];
         final text = reason is String && reason.isNotEmpty ? reason : 'The room server refused the connection.';
         if (_viaLan) {
-          _fail(generation, text, slow: true);
+          // Its words aren't shown: anything can be answering at the PC's old address.
+          _fail(generation, _lanFailure);
         } else {
           unawaited(_fallBack(generation, text, slow: true));
         }
       case 'closed':
         final reason = message['text'];
-        if (!_status.isConnected) {
+        if (_viaLan) {
+          if (!_status.isConnected) _fail(generation, _lanFailure);
+        } else if (!_status.isConnected) {
           unawaited(_fallBack(generation, reason is String && reason.isNotEmpty ? reason : 'The room server closed the connection.'));
         }
     }
@@ -702,14 +717,13 @@ class RemoteConnection extends RemoteLink {
     }
   }
 
-  Future<void> _startPeer(int generation) async {
+  Future<void> _startPeer(int generation, {String? handedOut}) async {
     await _closePeer();
     if (generation != _generation) return;
     _setStatus(const LinkStatus(LinkPhase.linking));
     // On the home network the PC hands out the session id, once per socket: an offer captured there and sent again
     // carries a session the PC no longer accepts.
-    final session = _lanSession ?? Signing.randomHex(16, _random);
-    _lanSession = null;
+    final session = handedOut ?? Signing.randomHex(16, _random);
     _session = session;
     _sessionPhone = _target.phone;
     _sessionKey = _target.keyHex;
@@ -824,7 +838,7 @@ class RemoteConnection extends RemoteLink {
       // On the home network anything can be answering at the PC's old address, and the PC sends no hints there: one
       // there is a failed try, never a reason to stop. A phone that was really removed hears so through the room server.
       if (_viaLan) {
-        _fail(generation, "Couldn't connect to the PC on the home network.");
+        _fail(generation, _lanFailure);
         return;
       }
       if (signal.payload == 'unknown-phone') {
