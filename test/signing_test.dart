@@ -8,8 +8,9 @@ void main() {
     // Read from the protocol file, so a change there that this app doesn't follow fails here.
     final vectors = readSpecVectors();
 
-    test('the spec has both vectors', () {
-      expect(vectors, hasLength(2));
+    test('the spec has its four vectors: through the room server, and on the home network', () {
+      expect(vectors, hasLength(4));
+      expect(vectors.map((v) => v.parts[1]), ['phone', 'pc', 'phone-lan', 'pc-lan']);
       expect(vectors[0].keyHex, hexOf(List.generate(32, (i) => i)), reason: 'a 32-byte phone secret');
       expect(vectors[1].keyHex, hexOf(List.generate(16, (i) => 255 - 17 * i)), reason: 'a 16-byte pairing code');
     });
@@ -27,14 +28,11 @@ void main() {
           reason: 'hex keys compare case-insensitively',
         );
         final signal = SignedSignal(phone: phone, session: session, kind: kind, payload: payload, auth: vector.auth);
-        expect(
-          direction == 'pc' ? signal.verifyFromPc(vector.keyHex) : !signal.verifyFromPc(vector.keyHex),
-          isTrue,
-          reason: 'only the PC direction verifies as from the PC',
-        );
-        if (direction == 'phone') {
+        expect(signal.verifyFromPc(vector.keyHex), direction == 'pc', reason: 'only the PC direction verifies as from the PC');
+        expect(signal.verifyFromPc(vector.keyHex, lan: true), direction == 'pc-lan', reason: "and on the home network only the PC's home-network direction");
+        if (direction == 'phone' || direction == 'phone-lan') {
           expect(
-            SignedSignal.fromPhone(keyHex: vector.keyHex, phone: phone, session: session, kind: kind, payload: payload).auth,
+            SignedSignal.fromPhone(keyHex: vector.keyHex, phone: phone, session: session, kind: kind, payload: payload, lan: direction == 'phone-lan').auth,
             vector.auth,
           );
         }

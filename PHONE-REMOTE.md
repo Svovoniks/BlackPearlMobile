@@ -89,7 +89,8 @@ Limits: 8 phone connections per PC at a time, and the same message rate limits a
   bp-remote-v1\n<direction>\n<phone>\n<session>\n<kind>\n<payload>
   ```
 
-  where `<direction>` is `phone` for messages the phone sends and `pc` for the PC's, `\n` is a single line feed, and
+  where `<direction>` is `phone` for messages the phone sends and `pc` for the PC's (`phone-lan` and `pc-lan` on the PC's
+  home-network socket, see "On the home network"), `\n` is a single line feed, and
   `<payload>` is the payload string exactly as sent.
 - Both sides drop a signal whose `auth` doesn't verify, without answering, except for one case: when the PC doesn't
   know the phone id, or its pairing code has expired or been used, it answers once per session with an
@@ -98,7 +99,9 @@ Limits: 8 phone connections per PC at a time, and the same message rate limits a
   PC's) gets `pairing-expired` too, from PCs after 0.3.144; earlier ones answer it with nothing. The phone shows
   "This phone was removed from the PC. Pair it again." or "That code has expired". It is a hint only: it can't grant
   anything. A pairing offer that gets no answer at all within 20 seconds is not tried again either (the phone asks for
-  a new code), as an older PC's silence about a replaced code looks the same.
+  a new code), as an older PC's silence about a replaced code looks the same. The hint goes through the room server
+  only: a PC sends none on its home-network socket, and a phone counts one arriving there as a failed try, never as
+  a reason to stop (see "On the home network").
 
 Test vectors:
 
@@ -106,6 +109,8 @@ Test vectors:
 | --- | --- | --- |
 | `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` | `bp-remote-v1⏎phone⏎a1b2c3d4e5f60718a1b2c3d4e5f60718⏎0123456789abcdef0123456789abcdef⏎sdp⏎{"type":"offer","sdp":"v=0"}` | `AHCUPPyOcWPNmRtEBJ6D5PQUJwF9CV5-GHlhUpfTkX8` |
 | `ffeeddccbbaa99887766554433221100` | `bp-remote-v1⏎pc⏎pair⏎0123456789abcdef0123456789abcdef⏎ice⏎{"candidate":"candidate:1 1 UDP 2122317823 192.168.1.20 50000 typ host","mid":"0"}` | `bIGb4K6s3ztFQAOUL2Q3Oof397tsk3TiGq_W2ZB3I_I` |
+| `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` | `bp-remote-v1⏎phone-lan⏎a1b2c3d4e5f60718a1b2c3d4e5f60718⏎0011223344556677d1e4a9c03b5f7e28⏎sdp⏎{"type":"offer","sdp":"v=0"}` | `GdkJyJCxBUGJpiHHL2urH73n_M2RuZIlVaNTYTYwyhU` |
+| `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` | `bp-remote-v1⏎pc-lan⏎a1b2c3d4e5f60718a1b2c3d4e5f60718⏎0011223344556677d1e4a9c03b5f7e28⏎sdp⏎{"type":"answer","sdp":"v=0"}` | `8PfaZ2C-qbq-HCuNntwQO9rtwXUkaGyZa_cDuwxK3EI` |
 
 (⏎ is a line feed.)
 
@@ -118,7 +123,8 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>"}`
 2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","shuffle","tracks","sound"]}`.
    `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"); a PC from
-   before them sends none.
+   before them sends none. A PC that listens for phones on the home network adds where:
+   `"lan":{"port":47830,"addresses":["192.168.1.20"]}` (see "On the home network").
    If the PC can't speak the phone's protocol it sends `{"type":"error","code":"protocol","message":"…"}` saying which
    app to update, and closes.
 3. While pairing (the session was signed with a pairing code), the phone then sends
@@ -402,6 +408,109 @@ doesn't start the host when it closes to install an update or as Windows signs o
 `BLACKPEARL_PHONE_HOST=off` (as `scripts/dev-launch.ps1` does unless `-PhoneHost`) never starts it or changes the
 sign-in entry.
 
+## On the home network
+
+When the room server can't introduce a phone to its PC (the server or the internet is down, or the server says the PC is
+offline because the PC has lost its internet), a phone on the same network as the PC can still reach it. PCs after
+0.3.146 listen for phones on a port of their own and speak the room server's `/remote` protocol there, for their own PC
+id only. Nothing on it is trusted more than the room server is: the same signed signals, checked the same way.
+
+**Where.** TCP port 47830, or, when another program has it, the next free one up to 47839. The PC tries the port it used
+last first. Its `welcome` (see "Opening") says where it listens: `"lan":{"port":47830,"addresses":["192.168.1.20"]}`, its
+IPv4 addresses on adapters that are up, those with a gateway on wired or wireless adapters first, at most eight. `lan` is
+left out while the PC isn't listening (every port taken, or one BlackPearl process handing the port to the other), and a
+phone then keeps what it knew. The phone stores it per PC and replaces it from every `welcome` that has one. There is no
+discovery: a PC whose address changed while the room server was down is found again once the server is back.
+
+**The socket.** `ws://<address>:<port>/remote`, a plain WebSocket. As with the room server, the socket isn't trusted;
+the signals are signed. The phone sends `{"type":"remote-phone","target":"<PC id>","number":1}`, and the PC answers
+`{"type":"remote-welcome","target":"<this connection's id>","data":"{\"iceServers\":[],\"forceRelay\":false,\"session\":\"<32 hex>\"}"}`
+and `{"type":"remote-online"}` at once. A target that isn't this PC's id gets `{"type":"error","text":"This is another PC."}`
+and the connection closes, and a `number` other than 1 an error saying which side to update. Then `signal` goes both
+ways as through the room server (the PC's carry no `sender`), and `ping` is answered with `pong`. There is never a
+`remote-offline`. Any other HTTP request is answered 404.
+
+**Its signatures and session.** Anyone on the network can see what the socket carries, and a signature says nothing
+about when it was made. So signals on this socket are signed for it: with the direction `phone-lan` for the phone's and
+`pc-lan` for the PC's (see "Signed signals"), never `phone` or `pc`. The PC takes only `phone-lan` signals on its socket
+and only `phone` ones through the room server, and the phone checks the PC's under `pc-lan` here and `pc` there: a signal
+made for one path is worthless on the other. And each connection hands its phone the session id to use: `session` in its
+`remote-welcome`. The phone makes its one offer on that socket under it, and only the socket's first `remote-welcome`
+counts: a welcome without a session id gets no offer, and a later welcome or `remote-online` on the same socket gets none
+either. The PC takes on that connection only signals of that session: offers and candidates
+seen elsewhere and sent again carry another session id and are ignored. The id is 8 random bytes followed by the first 8
+bytes of HMAC-SHA256, keyed with the UTF-8 bytes of the host key, over `bp-remote-lan\n` and those 8 bytes, as 32
+lower-case hex characters, so the PC also knows one when it comes through the room server (refused there too, also after
+a restart). Through the room server the PC also refuses an offer under a session id it has already seen from that phone
+(or pairing code) since it started; the phone makes a new one for every attempt.
+
+**What a device at the address can do.** The phone tries the PC's stored addresses on whatever Wi-Fi it is on, so another
+device may answer there: on another network, the same private address can be anyone's. Such a device learns the PC's id
+(the phone asks for it by id) and the phone's id, and sees the phone's offer (its own addresses on that network and its
+DTLS fingerprint) and candidates, signed under `phone-lan` and a session id the device chose. It can't use them: the PC
+refuses `phone-lan` signals through the room server, and on its own socket refuses any session id but the one it handed
+out. It can't answer as the PC, which takes the phone secret, so the phone never opens a link to it and sends it no
+commands or requests, and it can't learn the phone secret or the pairing code. What it can do is make that try fail,
+whatever it sends or doesn't: an unsigned `rejected` hint, an `error`, a closed socket or silence all end the try as one
+that didn't link up, and the phone shows its own words for it, never the socket's. Nothing on that socket stops the
+phone or asks for pairing again; the phone goes on with its usual retries, starting with the room server, and comes back
+to the address further apart each time (up to every 5 minutes while it is still there).
+
+On this path neither side uses STUN or TURN servers: ICE finds the direct path with the two devices' own addresses. The
+phone ignores `iceServers` and `forceRelay` from this socket's unsigned welcome, so whatever answers at the address can't
+choose its relay or force one. A room server's `forceRelay` can't be kept without a relay; the PC's log notes
+`relayIgnored`.
+
+**Limits.** At most 8 connections, and at most 4 from one address that haven't proved themselves. A connection proves
+itself with a signal of its handed-out session that verifies as `phone-lan` with a phone's secret or the live pairing code, and that
+opens a session or belongs to the live one. When full, the longest-waiting unproven connection of the address holding
+the most makes room; when every one has proved itself, the new one is closed. A phone keeps one proven connection: its
+newer one replaces the older. The HTTP request is at most 8 KiB, and it and `remote-phone` must arrive within 10
+seconds. Messages are at most 64 KiB, at the room server's rate for phones (bursts of 120, 60 a second). A connection
+that hasn't proved itself within 30 seconds is closed, and none lasts more than 6 hours.
+
+The phone, for its part, takes at most 256 KiB from one such socket in all, the HTTP upgrade included. It counts each
+read from the operating system before any WebSocket frame is parsed, and a read that would go past the 256 KiB isn't
+taken: it is dropped unparsed and the socket closed. Such a read can itself be larger than what is left, by at most what
+the socket's receive buffer holds; the phone asks for 64 KiB (Linux, and so Android, doubles that). The upgrade answer,
+up to and including its blank line, may be at most 8 KiB. The phone offers no WebSocket extensions and refuses an
+upgrade that names one, so nothing on the socket is compressed. Past the 256 KiB during the upgrade, the connection is
+refused; after it, the socket closes, which ends the try, or, with the link already up, only the socket. A real exchange
+stays far below it: the upgrade, welcome and `remote-online` together take under 500 bytes, the signed answer and
+candidates a few kilobytes, and a `pong` (about 90 bytes) every 25 seconds or so would take some 19 hours, while the PC
+ends a connection after 6.
+
+**Which path the phone takes.** The room server first, always. The phone tries the home network when it has an address
+for the PC and the room server can't be reached, refuses the connection, closes it before the link is up, or says the PC
+is offline (then again while it waits). It tries only while on Wi-Fi or Ethernet, and on Android opens those sockets on
+the Wi-Fi even when Android has made mobile data the default because the Wi-Fi has no internet. It connects to every
+address at once and keeps the first that greets it as the right PC within 4 seconds; when none does, it shows the room
+server's failure as before. After a try that didn't end in a link (no address answered, or the one that did never linked
+up) it waits 20 seconds before the next, then twice as long each time up to 5 minutes, whatever the room server does meanwhile; a network change, the app coming back to the screen, or
+Try again start that over. Once the link is up, which path introduced it doesn't matter, and the next attempt starts with
+the room server again. Pairing uses the room server only: a pairing code comes with the server's address and nothing
+else.
+
+**Firewall.** Windows asks once, when BlackPearl first listens, whether to let it accept connections; its installer is
+per-user and can't add a rule. The phone host is the same program, so the same answer covers it. Settings › Profile ›
+Phone remote reads Windows Firewall's settings and rules for BlackPearl, without changing them, and says whether they
+let phones in on the network the PC is on, and how to allow it when they don't. It can't see other firewalls' rules,
+and says so when Windows lists one.
+
+**Handing over.** One BlackPearl process of a library listens at a time, the one that also holds its room server
+connection (see "While BlackPearl is closed"). BlackPearl lets go of the port as it closes, before it starts the phone
+host, and the phone host as it ends. The process taking over waits for the port, up to 30 seconds, rather than moving
+to another, so phones find it where they knew it. A phone's link drops as they hand over, as it does through the room
+server, and the phone reconnects.
+
+**Older versions.** PCs up to 0.3.146 don't listen and send no `lan`. A phone that knows no address for a PC never tries
+the home network, so with those PCs, and with PCs it hasn't connected to since they gained this, it behaves as before.
+BlackPearl Mobile up to 0.8.2 ignores `lan` and connects only through the room server.
+
+Development builds started with `BLACKPEARL_PHONE_LAN=off` don't listen; with `=loopback` (as `scripts/dev-launch.ps1`
+starts them unless `-PhoneLan`, and as the checks do) they listen on 127.0.0.1 only and say so in `lan`: a build in a
+new folder listening on the network would raise Windows Firewall's question each time.
+
 ## Diagnostics
 
 The PC writes the phone remote's progress to its diagnostics log, `logs/diagnostics.jsonl` in the app's data folder
@@ -412,10 +521,11 @@ session and a phone by the first 8 characters of their random ids, and never hol
 | --- | --- |
 | `remote-start`, `remote-stop`, `remote-off` | The link to the room server starts or stops, or the phone remote is turned off |
 | `remote-server` | The room server link changes state: `ready` (with the attempts that failed before it), `lost`, `unreachable` (with the error), `refused`, `replaced`, `outdated-server`, `invalid-address`. A state that repeats is written once. |
-| `remote-signal-refused` | A signal the PC turned away, once per session and reason: `unknown-phone`, `pairing-expired`, `bad-signature`, `too-many-sessions` |
-| `remote-session-opened` | A phone's offer starts a session: whether it pairs, replaces an earlier session, and how many STUN and TURN servers it may use |
+| `remote-signal-refused` | A signal the PC turned away, once per session and reason: `unknown-phone`, `pairing-expired`, `bad-signature`, `too-many-sessions`, and for signals sent again `wrong-session` (on the home network, not the session its connection handed out), `lan-session` (through the room server, a session handed out on the home network), `repeated-offer` (an offer seen before) |
+| `remote-session-opened` | A phone's offer starts a session: whether it pairs, replaces an earlier session, how many STUN and TURN servers it may use, and `via` (`server` or `lan`), with `relayIgnored` on the home network when the room server asks for relay only |
 | `remote-session-state` | The connection's state changes, with the candidates gathered on each side by type, and `direct` or `relay` once connected |
 | `remote-session-channel`, `remote-session-greeted`, `remote-session-paired` | The data channel opens, the phone's `hello` is accepted (with its app version), pairing completes |
 | `remote-session-refused` | `protocol` (with the phone's protocol), `pairing-expired`, `already-paired` |
-| `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`), its age, and its path |
+| `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`), its age, its path, and `via` |
+| `remote-lan` | The home-network listener: `started` (its port, whether it moved from the one it tried first, `any` or `loopback`, how many addresses it gives phones), `waiting` (for the other BlackPearl process to let go of the port), `busy` (every port taken), `stopped`; `opened` and `closed` for each connection (a short random id, the reason, whether it proved itself); `refused`, once per reason a minute (`too-many-connections`, `too-many-from-address`, `bad-request`, `wrong-pc`, `protocol`, `too-large`, `rate`, `unproven`), with `evicted` and `superseded` among the reasons connections close; `port-not-saved` when the port couldn't be remembered; and `firewall` when what Windows Firewall decided changes (`allowed`, `off`, `blocked`, `undecided`, `unknown`, the network's category, and other firewalls Windows lists). No addresses. |
 | `phone-read-failed`, `phone-resource-missing` | A read on `media-v1` failed, with the kind of resource; and why the PC had nothing for it (`no-video`, `other-video`, `not-converted`, `other-stream`, `no-such-piece`, `no-such-sound-piece`, `unknown-picture`, `missing-file`, `unreadable:<error>`, `malformed`) |

@@ -39,6 +39,7 @@ class FakeSocket implements SignalingSocket {
   }
 
   void receive(Map<String, dynamic> message) => _incoming.add(jsonEncode(message));
+  void receiveText(String text) => _incoming.add(text);
   void drop() => _incoming.close();
 
   Iterable<SignedSignal> signals() => sent.where((m) => m['type'] == 'signal').map((m) => SignedSignal.tryParse(m['data'] as String)!);
