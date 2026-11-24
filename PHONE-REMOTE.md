@@ -99,7 +99,9 @@ Limits: 8 phone connections per PC at a time, and the same message rate limits a
   PC's) gets `pairing-expired` too, from PCs after 0.3.144; earlier ones answer it with nothing. The phone shows
   "This phone was removed from the PC. Pair it again." or "That code has expired". It is a hint only: it can't grant
   anything. A pairing offer that gets no answer at all within 20 seconds is not tried again either (the phone asks for
-  a new code), as an older PC's silence about a replaced code looks the same.
+  a new code), as an older PC's silence about a replaced code looks the same. The hint goes through the room server
+  only: a PC sends none on its home-network socket, and a phone counts one arriving there as a failed try, never as
+  a reason to stop (see "On the home network").
 
 Test vectors:
 
@@ -433,8 +435,9 @@ about when it was made. So signals on this socket are signed for it: with the di
 `pc-lan` for the PC's (see "Signed signals"), never `phone` or `pc`. The PC takes only `phone-lan` signals on its socket
 and only `phone` ones through the room server, and the phone checks the PC's under `pc-lan` here and `pc` there: a signal
 made for one path is worthless on the other. And each connection hands its phone the session id to use: `session` in its
-`remote-welcome`. The phone makes its one offer on that socket under it; a welcome without one, or a second `remote-online`
-on the same socket, gets no offer. The PC takes on that connection only signals of that session: offers and candidates
+`remote-welcome`. The phone makes its one offer on that socket under it, and only the socket's first `remote-welcome`
+counts: a welcome without a session id gets no offer, and a later welcome or `remote-online` on the same socket gets none
+either. The PC takes on that connection only signals of that session: offers and candidates
 seen elsewhere and sent again carry another session id and are ignored. The id is 8 random bytes followed by the first 8
 bytes of HMAC-SHA256, keyed with the UTF-8 bytes of the host key, over `bp-remote-lan\n` and those 8 bytes, as 32
 lower-case hex characters, so the PC also knows one when it comes through the room server (refused there too, also after
@@ -446,8 +449,11 @@ device may answer there: on another network, the same private address can be any
 its offer (the phone's own addresses on that network and its DTLS fingerprint) and candidates, signed under `phone-lan`
 and a session id the device chose. It can't use them: the PC refuses `phone-lan` signals through the room server, and on
 its own socket refuses any session id but the one it handed out. It can't answer as the PC, which takes the phone secret,
-so the phone never opens a link to it and sends it no commands or requests; it only keeps that try from succeeding, and
-the phone tries again later, further apart each time. It can't learn the phone secret or the pairing code.
+so the phone never opens a link to it and sends it no commands or requests, and it can't learn the phone secret or the
+pairing code. What it can do is make that try fail, whatever it sends or doesn't: an unsigned `rejected` hint, an
+`error`, a closed socket or silence all end the try as one that didn't link up. Nothing on that socket stops the phone,
+or asks for pairing again; the phone goes on with its usual retries, starting with the room server, and comes back to
+the address further apart each time (up to every 5 minutes while it is still there).
 
 On this path neither side uses STUN or TURN servers: ICE finds the direct path with the two devices' own addresses. The
 phone ignores `iceServers` and `forceRelay` from this socket's unsigned welcome, so whatever answers at the address can't
@@ -467,8 +473,8 @@ for the PC and the room server can't be reached, refuses the connection, closes 
 is offline (then again while it waits). It tries only while on Wi-Fi or Ethernet, and on Android opens those sockets on
 the Wi-Fi even when Android has made mobile data the default because the Wi-Fi has no internet. It connects to every
 address at once and keeps the first that greets it as the right PC within 4 seconds; when none does, it shows the room
-server's failure as before. After a try that found nothing it waits 20 seconds before the next, then twice as long each
-time up to 5 minutes, whatever the room server does meanwhile; a network change, the app coming back to the screen, or
+server's failure as before. After a try that didn't end in a link (no address answered, or the one that did never linked
+up) it waits 20 seconds before the next, then twice as long each time up to 5 minutes, whatever the room server does meanwhile; a network change, the app coming back to the screen, or
 Try again start that over. Once the link is up, which path introduced it doesn't matter, and the next attempt starts with
 the room server again. Pairing uses the room server only: a pairing code comes with the server's address and nothing
 else.

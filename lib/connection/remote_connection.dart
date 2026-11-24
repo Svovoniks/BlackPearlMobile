@@ -499,7 +499,9 @@ class RemoteConnection extends RemoteLink {
       found.discard();
       return false;
     }
-    _lanReset();
+    // Counted as a try that found nothing until the link is up (see [_connected]): a device at the address that answers
+    // but never links up then gets the phone back further apart each time, not on every attempt.
+    _lanFailed();
     _lanTimer?.cancel();
     _dropSocket(close: true);
     _viaLan = true;
@@ -669,11 +671,11 @@ class RemoteConnection extends RemoteLink {
   }
 
   void _readWelcome(Object? data) {
-    // On the PC's own socket only the session it hands out counts (see [_tryLanOnce]).
+    // On the PC's own socket only its first welcome counts, read as the try took it (see [_tryLanOnce]): a later one
+    // hands out no new session id, and no relay servers.
     if (_viaLan) {
       _iceServers = const [];
       _forceRelay = false;
-      _lanSession = _welcomeSession(data);
       return;
     }
     if (data is! String) return;
@@ -819,6 +821,12 @@ class RemoteConnection extends RemoteLink {
       // Unsigned, so only a hint: it can't grant anything, and it only stops automatic retries.
       if (_rejectedHandled || _answered) return;
       _rejectedHandled = true;
+      // On the home network anything can be answering at the PC's old address, and the PC sends no hints there: one
+      // there is a failed try, never a reason to stop. A phone that was really removed hears so through the room server.
+      if (_viaLan) {
+        _fail(generation, "Couldn't connect to the PC on the home network.");
+        return;
+      }
       if (signal.payload == 'unknown-phone') {
         _fail(generation, 'This phone was removed from the PC. Pair it again.', permanent: true, needsPairing: true);
       } else if (signal.payload == 'pairing-expired') {
@@ -960,6 +968,7 @@ class RemoteConnection extends RemoteLink {
   }
 
   void _connected() {
+    if (_viaLan) _lanReset();
     _failures = 0;
     _setStatus(LinkStatus(LinkPhase.connected, path: _status.path));
     _checkPath();

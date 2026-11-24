@@ -380,14 +380,14 @@ void main() {
       expect(h.connection.viaHomeNetwork, isTrue);
       expect(h.peers.single.iceServers, isEmpty);
       expect(h.peers.single.forceRelay, isFalse);
-      // Nor can a second welcome on the same socket, before a new offer.
+      // A second welcome on the same socket changes nothing: no new session id, so no new offer.
       final lanSocket = h.socket('192.168.1.20');
       lanSocket.receive({'type': 'remote-welcome', 'data': jsonEncode({...hostile, 'session': '99887766554433221100ffeeddccbbaa'})});
       lanSocket.receive({'type': 'remote-online'});
       async.flushMicrotasks();
-      expect(h.peers, hasLength(2));
-      expect(h.peers.last.iceServers, isEmpty);
-      expect(h.peers.last.forceRelay, isFalse);
+      expect(h.peers, hasLength(1));
+      expect(lanSocket.signals().where((s) => s.kind == 'sdp'), hasLength(1));
+      expect(lanSocket.signals().any((s) => s.session == '99887766554433221100ffeeddccbbaa'), isFalse);
       h.connection.dispose();
     });
   });
@@ -426,6 +426,58 @@ void main() {
       expect(h.socket('192.168.1.20').closed, isTrue);
       expect(h.peers, isEmpty);
       expect(h.connection.status.message, "Can't reach the room server. Check your internet connection.");
+      h.connection.dispose();
+    });
+  });
+
+  test("an unsigned 'removed' hint on the home network is a failed try: the phone keeps trying, and doesn't ask to pair again", () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+      h.connection.start();
+      async.flushMicrotasks();
+      h.greet('192.168.1.20');
+      async.flushMicrotasks();
+      final lanSocket = h.socket('192.168.1.20');
+      final offer = lanSocket.signals().firstWhere((s) => s.kind == 'sdp');
+      // Anything at the address can send this: it is unsigned.
+      lanSocket.receive({
+        'type': 'signal',
+        'data': SignedSignal(phone: phoneId, session: offer.session, kind: 'rejected', payload: 'unknown-phone', auth: '').encode(),
+      });
+      async.flushMicrotasks();
+      expect(h.connection.halted, isFalse);
+      expect(h.connection.status.needsPairing, isFalse);
+      expect(h.connection.status.phase, LinkPhase.failed);
+      expect(h.connection.status.retryAt, isNotNull, reason: 'retried as after any failure');
+      // The next attempts start at the room server, and the address that only answered waits its turn.
+      final tried = h.lanUris().length;
+      async.elapse(const Duration(seconds: 8));
+      expect(h.uris.where((u) => u.host == roomServer).length, greaterThanOrEqualTo(3));
+      expect(h.lanUris(), hasLength(tried), reason: 'a socket that answered but gave no link counts as a try that found nothing');
+      // The attempts' own retries come at about 15 and 30 seconds; the one at 30 tries the address again.
+      async.elapse(const Duration(seconds: 25));
+      expect(h.lanUris().length, greaterThan(tried));
+      h.connection.dispose();
+    });
+  });
+
+  test("through the room server the same hint still says the phone was removed", () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: null));
+      h.connection.start();
+      async.flushMicrotasks();
+      final server = h.socket(roomServer);
+      server.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+      server.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      final offer = server.signals().firstWhere((s) => s.kind == 'sdp');
+      server.receive({
+        'type': 'signal',
+        'data': SignedSignal(phone: phoneId, session: offer.session, kind: 'rejected', payload: 'unknown-phone', auth: '').encode(),
+      });
+      async.flushMicrotasks();
+      expect(h.connection.halted, isTrue);
+      expect(h.connection.status.needsPairing, isTrue);
       h.connection.dispose();
     });
   });
