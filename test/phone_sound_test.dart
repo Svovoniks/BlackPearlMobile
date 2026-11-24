@@ -46,6 +46,21 @@ void main() {
     });
   });
 
+  group('where the sound is', () {
+    test("libmpv's answer counts", () {
+      expect(PhoneSound.soundPosition(fromLibmpv: true, read: '12.5', reported: const Duration(seconds: 3)), 12500);
+    });
+
+    test("a libmpv too busy to answer skips the round instead of using media_kit's stale position", () {
+      expect(PhoneSound.soundPosition(fromLibmpv: true, read: null, reported: const Duration(seconds: 3)), isNull);
+      expect(PhoneSound.soundPosition(fromLibmpv: true, read: '', reported: const Duration(seconds: 3)), isNull);
+    });
+
+    test("a player that isn't libmpv's reports its own position", () {
+      expect(PhoneSound.soundPosition(fromLibmpv: false, read: null, reported: const Duration(seconds: 3)), 3000);
+    });
+  });
+
   group('closing the gap', () {
     test('a large gap seeks', () {
       expect(soundCorrection(900, 1.0).seek, isTrue);
