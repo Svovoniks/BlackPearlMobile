@@ -97,6 +97,23 @@ class _HomeShellState extends State<HomeShell> {
       _playbackChanged.value++;
       return null;
     },
+    markWatched: (entry, watched, {String? level, int? season}) async {
+      // Continue watching names the episode to resume, whatever its card's level: the mark is that file's.
+      final file = entry.playable && level == null;
+      try {
+        await link.ask('mark-watched', {
+          'id': entry.id,
+          'level': level ?? (file ? (entry.level == 'movie' ? 'movie' : 'episode') : entry.level),
+          if ((level ?? entry.level) == 'season') 'season': season ?? entry.season,
+          'watched': watched,
+        });
+      } on RemoteRequestException catch (e) {
+        return e.message;
+      }
+      // Every list shown loads again, so Home, the show's page and the cards show the new marks.
+      _playbackChanged.value++;
+      return null;
+    },
   );
 
   @override

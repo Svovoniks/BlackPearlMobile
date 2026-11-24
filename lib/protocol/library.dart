@@ -25,6 +25,7 @@ class BrowseRequest {
     this.seed = 0,
     this.queue,
     this.episodesOf,
+    this.unwatched = false,
   });
 
   final bool home;
@@ -41,6 +42,9 @@ class BrowseRequest {
   /// The episodes of the show [episodesOf] (an entry id) belongs to, in the order Previous and Next follow.
   final String? episodesOf;
 
+  /// Every title not started yet, newest first, instead of a library listing (PCs that offer `unwatched`).
+  final bool unwatched;
+
   BrowseRequest nextPage() => BrowseRequest(
     home: home,
     category: category,
@@ -51,6 +55,7 @@ class BrowseRequest {
     seed: seed,
     queue: queue,
     episodesOf: episodesOf,
+    unwatched: unwatched,
   );
 
   Map<String, dynamic> toJson() => {
@@ -63,6 +68,7 @@ class BrowseRequest {
     'seed': seed,
     'queue': ?queue,
     'episodesOf': ?episodesOf,
+    if (unwatched) 'unwatched': true,
   };
 
   @override
@@ -76,9 +82,10 @@ class BrowseRequest {
       other.page == page &&
       other.seed == seed &&
       other.queue == queue &&
-      other.episodesOf == episodesOf;
+      other.episodesOf == episodesOf &&
+      other.unwatched == unwatched;
   @override
-  int get hashCode => Object.hash(home, category, query, parentId, season, page, seed, queue, episodesOf);
+  int get hashCode => Object.hash(home, category, query, parentId, season, page, seed, queue, episodesOf, unwatched);
 }
 
 /// One card in a library page.
@@ -121,7 +128,7 @@ class LibraryEntry {
   final int? year;
   final int episodes;
 
-  /// `continue`, `suggestions` or `mystery` on Home.
+  /// `continue`, `suggestions`, `mystery` or `unwatched` on Home.
   final String? homeSection;
 
   /// The PC's resume point for a playable entry.

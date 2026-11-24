@@ -14,7 +14,7 @@ import 'theme.dart';
 
 /// What the library screens do with a title: play it here, or start it on the PC.
 class LibraryActions {
-  const LibraryActions({required this.watchHere, required this.playOnPc});
+  const LibraryActions({required this.watchHere, required this.playOnPc, this.markWatched});
 
   /// Plays [entry] on the phone. [fromStart] ignores the resume point; [queue] plays it as part of a saved queue.
   final Future<void> Function(LibraryEntry entry, {bool fromStart, QueueRef? queue}) watchHere;
@@ -22,10 +22,16 @@ class LibraryActions {
   /// Starts [entry] on the PC, as part of [queue] when given; returns why it couldn't, or null.
   final Future<String?> Function(LibraryEntry entry, {bool fromStart, QueueRef? queue}) playOnPc;
 
+  /// Marks [entry] watched or unwatched on the PC: a film or an episode, or all of a show's or a season's episodes when
+  /// [level] says so (`series` or `season`, with [season]). Returns why it couldn't, or null. Null where the lists can't
+  /// show the change.
+  final Future<String?> Function(LibraryEntry entry, bool watched, {String? level, int? season})? markWatched;
+
   /// The same actions, playing each listed video as part of [list] at the video's place.
   LibraryActions inQueue(QueueRef list) => LibraryActions(
     watchHere: (entry, {bool fromStart = false, QueueRef? queue}) => watchHere(entry, fromStart: fromStart, queue: queue ?? list.at(entry.index)),
     playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) => playOnPc(entry, fromStart: fromStart, queue: queue ?? list.at(entry.index)),
+    markWatched: markWatched,
   );
 }
 
@@ -324,6 +330,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
     await showTitleSheet(context, link: link, entry: entry, actions: widget.actions);
   }
 
+  void _openUnwatched() => unawaited(Navigator.of(context).push(MaterialPageRoute<void>(
+    builder: (_) => UnwatchedScreen(link: link, actions: widget.actions, changed: widget.changed),
+  )));
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -464,6 +474,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       });
     }
     final continuing = listing.entries.where((e) => e.homeSection == 'continue').toList();
+    final unwatched = listing.entries.where((e) => e.homeSection == 'unwatched').toList();
     final pick = listing.entries.where((e) => e.homeSection == 'mystery').firstOrNull;
     final suggestions = <String, List<LibraryEntry>>{};
     for (final entry in listing.entries.where((e) => e.homeSection == 'suggestions')) {
@@ -489,6 +500,20 @@ class _LibraryScreenState extends State<LibraryScreen> {
               itemCount: continuing.length,
               separatorBuilder: (_, _) => const SizedBox(width: 12),
               itemBuilder: (context, index) => _ContinueCard(link: link, entry: continuing[index], onOpen: _openEntry),
+            ),
+          ),
+        ],
+        // Titles not started yet, the ones that came to the PC last first.
+        if (unwatched.isNotEmpty) ...[
+          _RowTitle('Unwatched', action: link.features.contains('unwatched') ? ('See all', _openUnwatched) : null),
+          SizedBox(
+            height: math.max(214, 112 * 3 / 2 + cardCaptionHeight(context)).ceilToDouble(),
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              itemCount: unwatched.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 12),
+              itemBuilder: (context, index) => SizedBox(width: 112, child: PosterCard(link: link, entry: unwatched[index], onOpen: _openEntry)),
             ),
           ),
         ],
@@ -543,13 +568,40 @@ class ListingFooter extends StatelessWidget {
 }
 
 class _RowTitle extends StatelessWidget {
-  const _RowTitle(this.text);
+  const _RowTitle(this.text, {this.action});
   final String text;
+
+  /// A link at the end of the row's title, such as See all.
+  final (String, VoidCallback)? action;
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 18, 16, 10),
-    child: Text(text, style: display(19)),
-  );
+  Widget build(BuildContext context) {
+    final title = Text(text, style: display(19));
+    final action = this.action;
+    if (action == null) return Padding(padding: const EdgeInsets.fromLTRB(16, 18, 16, 10), child: title);
+    // The title stays where the other rows have theirs (18 above it, 10 below). The link keeps a full finger's height
+    // within that room, its label lowered to the title's middle; its own padding stands in for the row's on the right.
+    return Padding(
+      padding: const EdgeInsets.only(left: 16, right: 4),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 48),
+        child: Stack(
+          children: [
+            Padding(padding: const EdgeInsets.fromLTRB(0, 18, 96, 10), child: title),
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: TextButton(
+                onPressed: action.$2,
+                style: TextButton.styleFrom(foregroundColor: Palette.accent, minimumSize: const Size(48, 48), alignment: const Alignment(0, 0.35)),
+                // Read out with the row it belongs to: "See all, Unwatched".
+                child: Text(action.$1, semanticsLabel: '${action.$1}, $text', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _Message extends StatelessWidget {
@@ -815,6 +867,91 @@ class _PickCard extends StatelessWidget {
   );
 }
 
+/// Home's Unwatched in full: every title not started yet, newest first.
+class UnwatchedScreen extends StatefulWidget {
+  const UnwatchedScreen({super.key, required this.link, required this.actions, this.changed});
+  final RemoteLink link;
+  final LibraryActions actions;
+  final Listenable? changed;
+
+  @override
+  State<UnwatchedScreen> createState() => _UnwatchedScreenState();
+}
+
+class _UnwatchedScreenState extends State<UnwatchedScreen> {
+  late final LibraryListing _listing = LibraryListing(widget.link, const BrowseRequest(unwatched: true));
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_listing.load());
+    widget.changed?.addListener(_reload);
+  }
+
+  void _reload() => unawaited(_listing.reload());
+
+  @override
+  void dispose() {
+    widget.changed?.removeListener(_reload);
+    _listing.dispose();
+    super.dispose();
+  }
+
+  Future<void> _open(LibraryEntry entry) async {
+    if (entry.opensList) {
+      await Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => ShowScreen(link: widget.link, show: entry, actions: widget.actions, changed: widget.changed),
+      ));
+      return;
+    }
+    await showTitleSheet(context, link: widget.link, entry: entry, actions: widget.actions);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      backgroundColor: Palette.canvas,
+      surfaceTintColor: Colors.transparent,
+      title: ListenableBuilder(
+        listenable: _listing,
+        builder: (context, _) => Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Unwatched', style: display(20)),
+            Text(
+              _listing.entries.isNotEmpty
+                  ? '${_listing.total == 1 ? '1 title' : '${_listing.total} titles'} not started · newest first'
+                  : 'Newest first',
+              style: const TextStyle(fontSize: 12.5, color: Palette.muted),
+            ),
+          ],
+        ),
+      ),
+    ),
+    body: ListenableBuilder(
+      listenable: _listing,
+      builder: (context, _) {
+        if (_listing.entries.isEmpty) {
+          if (_listing.loading || !_listing.started) return const Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5));
+          return _Message(
+            icon: _listing.error == null ? Icons.done_all_rounded : Icons.error_outline_rounded,
+            title: _listing.error == null ? 'Nothing left to start' : "Couldn't load the list",
+            text: _listing.error ?? 'Every title on the PC has been started or watched.',
+            action: (_listing.error == null ? 'Refresh' : 'Try again', () => unawaited(_listing.load())),
+          );
+        }
+        return RefreshIndicator(
+          color: Palette.accent,
+          backgroundColor: Palette.elevated,
+          onRefresh: _listing.reload,
+          // Clear of the system's navigation buttons, which this page draws under.
+          child: SafeArea(top: false, child: PosterGrid(link: widget.link, listing: _listing, onOpen: _open)),
+        );
+      },
+    ),
+  );
+}
+
 /// A show's seasons, or one season's episodes.
 class ShowScreen extends StatefulWidget {
   const ShowScreen({super.key, required this.link, required this.show, required this.actions, this.season, this.changed});
@@ -867,15 +1004,53 @@ class _ShowScreenState extends State<ShowScreen> {
     if (mounted) unawaited(Future<void>.delayed(const Duration(milliseconds: 600), () => mounted ? _listing.reload() : null));
   }
 
+  // Marks every episode of the show, or of the season this page lists, as the PC's own check mark on its card does.
+  bool _marking = false;
+  Future<void> _markAll(bool watched) async {
+    final mark = widget.actions.markWatched;
+    if (mark == null || _marking) return;
+    final season = widget.show.level == 'season' ? widget.show : widget.season;
+    setState(() => _marking = true);
+    final error = await mark(season ?? widget.show, watched, level: season == null ? 'series' : 'season', season: season?.season);
+    if (!mounted) return;
+    setState(() => _marking = false);
+    final what = season == null ? 'Every episode' : 'This season';
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(error ?? '$what is marked ${watched ? 'watched' : 'unwatched'}.'), duration: const Duration(seconds: 3)));
+    // The pages that listen for changes load again on their own.
+    if (error == null && widget.changed == null) unawaited(_listing.reload());
+  }
+
   @override
   Widget build(BuildContext context) {
     final season = widget.season;
     final title = season == null ? widget.show.title : season.title;
+    final link = widget.link;
+    final canMark = widget.actions.markWatched != null && link.features.contains('mark-watched');
+    final whole = season == null && widget.show.level != 'season' ? 'show' : 'season';
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Palette.canvas,
         surfaceTintColor: Colors.transparent,
         title: Text(title, style: display(20), overflow: TextOverflow.ellipsis),
+        actions: [
+          if (canMark)
+            ListenableBuilder(
+              listenable: link,
+              builder: (context, _) => PopupMenuButton<bool>(
+                tooltip: 'Mark the $whole',
+                icon: const Icon(Icons.done_all_rounded),
+                enabled: link.status.isConnected && !_marking,
+                color: Palette.elevated,
+                onSelected: (watched) => unawaited(_markAll(watched)),
+                itemBuilder: (context) => [
+                  PopupMenuItem(value: true, child: Text('Mark $whole as watched')),
+                  PopupMenuItem(value: false, child: Text('Mark $whole as unwatched')),
+                ],
+              ),
+            ),
+        ],
       ),
       body: ListenableBuilder(
         listenable: _listing,
@@ -999,6 +1174,10 @@ class _TitleSheetState extends State<_TitleSheet> {
   bool _busy = false;
   String? _error;
 
+  // The watched mark as last saved from here; the lists under the sheet load it again.
+  late bool _watched = widget.entry.watched;
+  bool _marking = false;
+
   LibraryEntry get entry => widget.entry;
 
   // The buttons follow the link: Play on PC greys out while it is down, and comes back with it.
@@ -1028,7 +1207,9 @@ class _TitleSheetState extends State<_TitleSheet> {
       _busy = true;
       _error = null;
     });
-    final error = await widget.actions.playOnPc(entry);
+    // With the mark as saved from this sheet: the PC starts a title just marked watched from its start, and keeps the
+    // resume point of one just marked unwatched.
+    final error = await widget.actions.playOnPc(entry.withPlayback(positionMs: entry.positionMs, watched: _watched));
     if (!mounted) return;
     if (error == null) {
       // Closed already, when the pages under it closed for the Remote: once more would close those under them.
@@ -1041,12 +1222,35 @@ class _TitleSheetState extends State<_TitleSheet> {
     }
   }
 
+  Future<void> _mark() async {
+    final mark = widget.actions.markWatched;
+    if (mark == null) return;
+    final watched = !_watched;
+    setState(() {
+      _marking = true;
+      _error = null;
+    });
+    final error = await mark(entry, watched);
+    if (!mounted) return;
+    setState(() {
+      _marking = false;
+      if (error == null) {
+        _watched = watched;
+      } else {
+        _error = error;
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final link = widget.link;
     final canWatch = link.features.contains('watch') && entry.playable;
-    final resume = entry.playable && !entry.watched && entry.positionMs >= 10000;
-    final progress = entry.progress;
+    final resume = entry.playable && !_watched && entry.positionMs >= 10000;
+    final progress = _watched ? null : entry.withPlayback(positionMs: entry.positionMs, watched: false).progress;
+    // A film or an episode (songs keep no marks); a PC from before phones could mark them doesn't offer it.
+    final canMark = widget.actions.markWatched != null && link.features.contains('mark-watched') && entry.kind != 'Music' &&
+        (entry.level == 'movie' || entry.level == 'episode' || entry.playable);
     return SafeArea(
       top: false,
       child: SingleChildScrollView(
@@ -1074,7 +1278,7 @@ class _TitleSheetState extends State<_TitleSheet> {
                         [entry.caption, if (entry.runtimeMinutes != null && entry.runtimeMinutes! > 0) '${entry.runtimeMinutes} min'].where((s) => s.isNotEmpty).join(' · '),
                         style: const TextStyle(color: Palette.muted, fontSize: 13),
                       ),
-                      if (entry.watched) ...[
+                      if (_watched) ...[
                         const SizedBox(height: 8),
                         const Row(children: [Icon(Icons.check_circle_rounded, size: 16, color: Palette.accent), SizedBox(width: 6), Text('Watched', style: TextStyle(fontSize: 13))]),
                         // A title without a known length has no bar, but its resume point still shows.
@@ -1165,10 +1369,33 @@ class _TitleSheetState extends State<_TitleSheet> {
                   padding: EdgeInsets.only(top: 8),
                   child: Text("The PC doesn't let phones start videos. It's a setting in BlackPearl's Settings › Profile.", style: TextStyle(color: Palette.muted, fontSize: 12.5)),
                 ),
-              if (_error != null) ...[
-                const SizedBox(height: 10),
-                Text(_error!, style: const TextStyle(color: Palette.danger, fontSize: 13)),
-              ],
+            ],
+            if (canMark) ...[
+              const SizedBox(height: 10),
+              Pebble(
+                height: 46,
+                enabled: link.status.isConnected && !_marking,
+                onTap: _mark,
+                semanticLabel: _marking ? 'Saving the watched mark' : _watched ? 'Mark as unwatched' : 'Mark as watched',
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(_watched ? Icons.remove_done_rounded : Icons.check_rounded, size: 18),
+                    const SizedBox(width: 7),
+                    Flexible(
+                      child: Text(
+                        _marking ? 'Saving…' : _watched ? 'Mark as unwatched' : 'Mark as watched',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            if (_error != null) ...[
+              const SizedBox(height: 10),
+              Text(_error!, style: const TextStyle(color: Palette.danger, fontSize: 13)),
             ],
           ],
         ),

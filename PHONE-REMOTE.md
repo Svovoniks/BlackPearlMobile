@@ -121,7 +121,7 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 ### Opening
 
 1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>"}`
-2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","shuffle","tracks","sound"]}`.
+2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","unwatched","mark-watched","shuffle","tracks","sound"]}`.
    `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"); a PC from
    before them sends none. A PC that listens for phones on the home network adds where:
    `"lan":{"port":47830,"addresses":["192.168.1.20"]}` (see "On the home network").
@@ -224,7 +224,9 @@ channel the phone opens beside it.
 Phone → PC: `{"type":"browse","request":<n>,"home":false,"category":0,"query":"","parentId":null,"season":null,"page":0,"seed":0}`.
 `category` is 0 for all videos, 1 films, 2 shows, 3 anime, 6 music. `parentId` with a show's entry id lists its
 seasons; with a `season` as well, that season's episodes. `home` true lists Home instead: Continue watching, then
-suggestions for each kind (shuffled by `seed`), then one random pick.
+suggestions for each kind (shuffled by `seed`), then one random pick, then (PCs that list `unwatched`) up to 30 titles
+not started yet, newest first. `"unwatched":true` lists every title not started yet, newest first, in pages, with
+location `Unwatched`; a PC that doesn't list `unwatched` answers it as an ordinary browse.
 
 PC → phone:
 
@@ -232,7 +234,7 @@ PC → phone:
 {"type":"page","request":7,"total":53,"page":0,"pageSize":40,"location":"All titles",
  "entries":[{"id":"…","title":"Night Signal","caption":"Show · 2021","level":"series|season|episode|movie",
    "season":null,"episode":null,"overview":"…","kind":"Movie|Show|Anime|Music","runtimeMinutes":48,"year":2021,
-   "episodes":10,"homeSection":"continue|suggestions|mystery|null","positionMs":0,"watched":false,
+   "episodes":10,"homeSection":"continue|suggestions|mystery|unwatched|null","positionMs":0,"watched":false,
    "artwork":"<token or null>","playable":false}]}
 ```
 
@@ -241,7 +243,7 @@ PC → phone:
 resume point and watched mark. A failure is an `error` with code `browse` and the `request`.
 
 BlackPearl's window starts the phone remote before it has read its library. After 0.3.144 a library request (`browse`,
-`queues`, `watch`, `play`, `progress`) that arrives meanwhile waits for it, up to 15 seconds, and past that is an
+`queues`, `watch`, `play`, `progress`, `mark-watched`) that arrives meanwhile waits for it, up to 15 seconds, and past that is an
 `error` with code `loading` and the `request` (a `progress` is dropped). Earlier PCs answered from an empty library,
 so a phone that connected that early got an empty Home; the phone loads an empty list again whenever the link comes
 back.
@@ -304,6 +306,16 @@ Phone → PC: `{"type":"play","request":<n>,"id":"…","positionMs":1180000}` pl
 position, and answers `{"type":"done","request":<n>}` once it has started. It needs `canStart`; a refusal is an
 `error` with code `not-allowed`, `in-room` (the PC is in a room), `gone`, or `opening` (BlackPearl is starting on the PC: ask again once the phone has reconnected to it). The PC ends the phone's stream before it
 answers: the phone is no longer watching, and an answer queued behind video it still reads can take seconds to arrive.
+
+### Marking watched
+
+A PC whose welcome lists `mark-watched` takes the phone's watched marks. Phone → PC:
+`{"type":"mark-watched","request":<n>,"id":"…","level":"movie|episode|series|season","season":2,"watched":true}`,
+with an entry's `id`, `level` and (for a season) `season` from a library page. The PC marks it as its own check mark
+does: a film or an episode marks its file (clearing it also clears the other copies of that film or episode), and a show
+or a season marks all its episodes. It answers `{"type":"done","request":<n>}` once saved, or an `error` with code
+`invalid` (an unknown level, or no `watched`) or `gone` (the title left the library), and the `request`. It needs no
+`canStart`: the phone changes the library's marks, not what plays.
 
 ### Queues
 
@@ -396,8 +408,8 @@ again. A phone that comes back asks with `listen` again. Joining or hosting a ro
 With **Phones can browse and watch while BlackPearl is closed** on (Settings › Profile › Phone remote, on by default),
 BlackPearl starts a small process of itself with no window, `BlackPearl.exe --phone-host`, once it has closed, and
 optionally at Windows sign-in (`--phone-host --signed-in`, from a `Run` entry named `BlackPearl phone access`). It
-connects for phones with the same key, so to a phone it is the same PC: its `welcome` offers `library` and `watch`,
-its state says nothing is playing, and the remote's commands get `error` `nothing-playing`. Browsing, watching and
+connects for phones with the same key, so to a phone it is the same PC: its `welcome` offers `library`, `watch`, `queues`, `unwatched` and `mark-watched`,
+its state says nothing is playing, and the remote's commands get `error` `nothing-playing`. Browsing, watching, watched marks and
 progress work as with the app. Continuing on the PC opens BlackPearl with the video (`--play-id <id>`), which plays it
 from the position the host saved once its library has loaded.
 
