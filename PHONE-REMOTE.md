@@ -89,7 +89,8 @@ Limits: 8 phone connections per PC at a time, and the same message rate limits a
   bp-remote-v1\n<direction>\n<phone>\n<session>\n<kind>\n<payload>
   ```
 
-  where `<direction>` is `phone` for messages the phone sends and `pc` for the PC's, `\n` is a single line feed, and
+  where `<direction>` is `phone` for messages the phone sends and `pc` for the PC's (`phone-lan` and `pc-lan` on the PC's
+  home-network socket, see "On the home network"), `\n` is a single line feed, and
   `<payload>` is the payload string exactly as sent.
 - Both sides drop a signal whose `auth` doesn't verify, without answering, except for one case: when the PC doesn't
   know the phone id, or its pairing code has expired or been used, it answers once per session with an
@@ -106,6 +107,8 @@ Test vectors:
 | --- | --- | --- |
 | `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` | `bp-remote-v1⏎phone⏎a1b2c3d4e5f60718a1b2c3d4e5f60718⏎0123456789abcdef0123456789abcdef⏎sdp⏎{"type":"offer","sdp":"v=0"}` | `AHCUPPyOcWPNmRtEBJ6D5PQUJwF9CV5-GHlhUpfTkX8` |
 | `ffeeddccbbaa99887766554433221100` | `bp-remote-v1⏎pc⏎pair⏎0123456789abcdef0123456789abcdef⏎ice⏎{"candidate":"candidate:1 1 UDP 2122317823 192.168.1.20 50000 typ host","mid":"0"}` | `bIGb4K6s3ztFQAOUL2Q3Oof397tsk3TiGq_W2ZB3I_I` |
+| `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` | `bp-remote-v1⏎phone-lan⏎a1b2c3d4e5f60718a1b2c3d4e5f60718⏎0011223344556677d1e4a9c03b5f7e28⏎sdp⏎{"type":"offer","sdp":"v=0"}` | `GdkJyJCxBUGJpiHHL2urH73n_M2RuZIlVaNTYTYwyhU` |
+| `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f` | `bp-remote-v1⏎pc-lan⏎a1b2c3d4e5f60718a1b2c3d4e5f60718⏎0011223344556677d1e4a9c03b5f7e28⏎sdp⏎{"type":"answer","sdp":"v=0"}` | `8PfaZ2C-qbq-HCuNntwQO9rtwXUkaGyZa_cDuwxK3EI` |
 
 (⏎ is a line feed.)
 
@@ -425,15 +428,26 @@ and the connection closes, and a `number` other than 1 an error saying which sid
 ways as through the room server (the PC's carry no `sender`), and `ping` is answered with `pong`. There is never a
 `remote-offline`. Any other HTTP request is answered 404.
 
-**Its session.** Anyone on the network can see what the socket carries, and a signature says nothing about when it was
-made, so each connection hands its phone the session id to use: `session` in its `remote-welcome`. The phone's offer on
-that socket uses it, once (a second offer on the same socket gets a session id of its own, and is refused). The PC takes
-on that connection only signals of that session: offers and candidates seen elsewhere and sent again carry another
-session id and are ignored. The id is 8 random bytes followed by the first 8 bytes of HMAC-SHA256, keyed with the UTF-8
-bytes of the host key, over `bp-remote-lan\n` and those 8 bytes, as 32 lower-case hex characters. Only the PC can make
-one, and it knows one when it sees one: through the room server, the PC refuses an offer under such a session id, also
-after a restart. Through the room server it also refuses an offer under a session id it has already seen from that
-phone (or pairing code) since it started; the phone makes a new one for every attempt.
+**Its signatures and session.** Anyone on the network can see what the socket carries, and a signature says nothing
+about when it was made. So signals on this socket are signed for it: with the direction `phone-lan` for the phone's and
+`pc-lan` for the PC's (see "Signed signals"), never `phone` or `pc`. The PC takes only `phone-lan` signals on its socket
+and only `phone` ones through the room server, and the phone checks the PC's under `pc-lan` here and `pc` there: a signal
+made for one path is worthless on the other. And each connection hands its phone the session id to use: `session` in its
+`remote-welcome`. The phone makes its one offer on that socket under it; a welcome without one, or a second `remote-online`
+on the same socket, gets no offer. The PC takes on that connection only signals of that session: offers and candidates
+seen elsewhere and sent again carry another session id and are ignored. The id is 8 random bytes followed by the first 8
+bytes of HMAC-SHA256, keyed with the UTF-8 bytes of the host key, over `bp-remote-lan\n` and those 8 bytes, as 32
+lower-case hex characters, so the PC also knows one when it comes through the room server (refused there too, also after
+a restart). Through the room server the PC also refuses an offer under a session id it has already seen from that phone
+(or pairing code) since it started; the phone makes a new one for every attempt.
+
+**What a device at the address can do.** The phone tries the PC's stored addresses on whatever Wi-Fi it is on, so another
+device may answer there: on another network, the same private address can be anyone's. Such a device sees the phone's id,
+its offer (the phone's own addresses on that network and its DTLS fingerprint) and candidates, signed under `phone-lan`
+and a session id the device chose. It can't use them: the PC refuses `phone-lan` signals through the room server, and on
+its own socket refuses any session id but the one it handed out. It can't answer as the PC, which takes the phone secret,
+so the phone never opens a link to it and sends it no commands or requests; it only keeps that try from succeeding, and
+the phone tries again later, further apart each time. It can't learn the phone secret or the pairing code.
 
 On this path neither side uses STUN or TURN servers: ICE finds the direct path with the two devices' own addresses. The
 phone ignores `iceServers` and `forceRelay` from this socket's unsigned welcome, so whatever answers at the address can't
@@ -441,7 +455,7 @@ choose its relay or force one. A room server's `forceRelay` can't be kept withou
 `relayIgnored`.
 
 **Limits.** At most 8 connections, and at most 4 from one address that haven't proved themselves. A connection proves
-itself with a signal of its handed-out session that verifies with a phone's secret or the live pairing code, and that
+itself with a signal of its handed-out session that verifies as `phone-lan` with a phone's secret or the live pairing code, and that
 opens a session or belongs to the live one. When full, the longest-waiting unproven connection of the address holding
 the most makes room; when every one has proved itself, the new one is closed. A phone keeps one proven connection: its
 newer one replaces the older. The HTTP request is at most 8 KiB, and it and `remote-phone` must arrive within 10

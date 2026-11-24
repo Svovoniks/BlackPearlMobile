@@ -167,6 +167,13 @@ class RemoteConnection extends RemoteLink {
   (int, Future<bool>)? _lanTry;
   Timer? _lanTimer;
   LanEndpoints? _learnedLan;
+  // Ends the home-network try under way, when a new attempt starts.
+  Completer<void>? _lanAbort;
+  void _abortLan() {
+    final abort = _lanAbort;
+    _lanAbort = null;
+    if (abort != null && !abort.isCompleted) abort.complete();
+  }
   // The session id the PC's home-network socket handed out for the next offer.
   String? _lanSession;
 
@@ -478,7 +485,10 @@ class RemoteConnection extends RemoteLink {
       return false;
     }
     if (generation != _generation) return false;
-    final found = network == null ? await _greetLan(lan, _target.pcId) : await network.run(() => _greetLan(lan, _target.pcId));
+    _abortLan();
+    final abort = _lanAbort = Completer<void>();
+    final found = network == null ? await _greetLan(lan, _target.pcId, abort.future) : await network.run(() => _greetLan(lan, _target.pcId, abort.future));
+    if (identical(_lanAbort, abort)) _lanAbort = null;
     if (found == null) {
       if (generation == _generation) _lanFailed();
       return false;
@@ -506,8 +516,10 @@ class RemoteConnection extends RemoteLink {
 
   /// Connects to all of the PC's addresses at once and returns the first that greets the phone as that PC's within
   /// [lanTimeout], closing the others; null when none does.
-  Future<_LanLink?> _greetLan(LanEndpoints lan, String pcId) {
+  Future<_LanLink?> _greetLan(LanEndpoints lan, String pcId, Future<void> abort) {
     final result = Completer<_LanLink?>();
+    // A new attempt started: the try ends at once, and with it the binding to the Wi-Fi (see [localNetwork]).
+    unawaited(abort.then((_) { if (!result.isCompleted) result.complete(null); }));
     var left = lan.addresses.length;
     for (final address in lan.addresses) {
       unawaited(
@@ -570,8 +582,11 @@ class RemoteConnection extends RemoteLink {
               switch (message['type']) {
                 case 'remote-welcome':
                   welcome = message['data'] is String ? message['data'] as String : '{}';
-                case 'remote-online' when welcome != null:
+                // Only a PC's own socket hands out the session id to offer under; anything else gets no offer.
+                case 'remote-online' when welcome != null && _welcomeSession(welcome) != null:
                   give(_LanLink(opened, subscription!, welcome!));
+                case 'remote-online':
+                  give(null);
                 case 'error' || 'remote-offline' || 'closed':
                   give(null);
               }
@@ -626,6 +641,8 @@ class RemoteConnection extends RemoteLink {
       case 'remote-welcome':
         _readWelcome(message['data']);
       case 'remote-online':
+        // On the PC's own socket, one offer per session id it handed out: no new offer without a new one.
+        if (_viaLan && _lanSession == null) return;
         if (!_status.isConnected && _status.phase != LinkPhase.pairing) unawaited(_startPeer(generation));
       case 'remote-offline':
         if (!_status.isConnected && _status.phase != LinkPhase.pairing) {
@@ -789,7 +806,7 @@ class RemoteConnection extends RemoteLink {
   void _signal(String kind, String payload) {
     final session = _session;
     if (session == null) return;
-    final signal = SignedSignal.fromPhone(keyHex: _sessionKey, phone: _sessionPhone, session: session, kind: kind, payload: payload);
+    final signal = SignedSignal.fromPhone(keyHex: _sessionKey, phone: _sessionPhone, session: session, kind: kind, payload: payload, lan: _viaLan);
     _send({'type': 'signal', 'data': signal.encode()});
   }
 
@@ -809,7 +826,7 @@ class RemoteConnection extends RemoteLink {
       }
       return;
     }
-    if (!signal.verifyFromPc(_sessionKey)) return;
+    if (!signal.verifyFromPc(_sessionKey, lan: _viaLan)) return;
     final peer = _peer;
     if (peer == null) return;
     try {
@@ -998,6 +1015,7 @@ class RemoteConnection extends RemoteLink {
 
   Future<void> _teardown() async {
     _lanTimer?.cancel();
+    _abortLan();
     _dropSocket(close: true);
     await _closePeer();
   }

@@ -20,21 +20,16 @@ class AndroidLocalNetwork implements LocalNetworkAccess {
 
   @override
   Future<bool> available() async {
-    try {
-      return await _channel.invokeMethod<bool>('available') ?? true;
-    } on PlatformException {
-      // Can't tell: try, as without this check.
-      return true;
-    } on MissingPluginException {
-      return true;
-    }
+    final answer = await _call('available');
+    // Can't tell: try, as without this check.
+    return answer is bool ? answer : true;
   }
 
   @override
   Future<T> run<T>(Future<T> Function() attempt) async {
-    _runs++;
-    await _settle();
     try {
+      _runs++;
+      await _settle();
       return await attempt();
     } finally {
       _runs--;
@@ -42,6 +37,7 @@ class AndroidLocalNetwork implements LocalNetworkAccess {
     }
   }
 
+  // Never fails: a failed call leaves the queue working for the next one.
   Future<void> _settle() => _calls = _calls.then((_) async {
     if (_runs > 0 && _bound == null) {
       _bound = await _call('bind') == true;
@@ -49,14 +45,13 @@ class AndroidLocalNetwork implements LocalNetworkAccess {
       if (_bound!) await _call('unbind');
       _bound = null;
     }
-  });
+  }).catchError((Object _) {});
 
+  /// The platform's answer, or null for any failure: the binding only helps, and a try must go on without it.
   Future<Object?> _call(String method) async {
     try {
       return await _channel.invokeMethod<Object?>(method);
-    } on PlatformException {
-      return null;
-    } on MissingPluginException {
+    } catch (_) {
       // Android drops a binding when the process ends; nothing else to do.
       return null;
     }

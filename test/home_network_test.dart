@@ -20,6 +20,8 @@ import 'connection_test.dart' show FakePeer, FakeSocket, pcId, phoneId, secret, 
 // socket when the server can't introduce the two; nothing new for a PC whose address the phone doesn't know.
 
 const home = LanEndpoints(port: 47830, addresses: ['192.168.1.20', '10.0.0.5']);
+// The session id the PC's home-network socket hands out in these tests.
+const handedOut = 'aabbccddeeff00112233445566778899';
 const roomServer = 'rooms.example.com';
 
 /// Plays the room server and the PC's home-network sockets. Hosts in [unreachable] fail to connect.
@@ -56,7 +58,7 @@ class LanHarness {
   List<Uri> lanUris() => uris.where((u) => u.host != roomServer).toList();
 
   /// The PC's side of its home-network socket: welcomes the phone that asked for it.
-  void greet(String host, {Map<String, dynamic> welcome = const {'iceServers': [], 'forceRelay': false}}) {
+  void greet(String host, {Map<String, dynamic> welcome = const {'iceServers': [], 'forceRelay': false, 'session': handedOut}}) {
     final s = socket(host);
     expect(s.sent.first, {'type': 'remote-phone', 'target': pcId, 'number': 1});
     s.receive({'type': 'remote-welcome', 'target': 'lan:1', 'data': jsonEncode(welcome)});
@@ -65,6 +67,8 @@ class LanHarness {
 
   /// Answers the phone's offer on [via] and finishes the link, as the PC would.
   void link(FakeSocket via, {Map<String, dynamic>? lan}) {
+    // The PC signs on its own socket as `pc-lan`, through the room server as `pc`.
+    final onLan = sockets.entries.any((e) => e.key != roomServer && e.value.contains(via));
     final offer = via.signals().firstWhere((s) => s.kind == 'sdp');
     final payload = jsonEncode({'type': 'answer', 'sdp': 'v=0'});
     final signal = SignedSignal(
@@ -72,7 +76,7 @@ class LanHarness {
       session: offer.session,
       kind: 'sdp',
       payload: payload,
-      auth: Signing.sign(secret, 'pc', phoneId, offer.session, 'sdp', payload),
+      auth: Signing.sign(secret, onLan ? 'pc-lan' : 'pc', phoneId, offer.session, 'sdp', payload),
     );
     via.receive({'type': 'signal', 'data': signal.encode()});
     peers.last.open();
@@ -130,7 +134,7 @@ void main() {
     });
   });
 
-  test('the room server says the PC is offline: the home network is tried now and every 20 seconds while it says so', () {
+  test('the room server says the PC is offline: the home network is tried now, and again 20 seconds after a try that found nothing', () {
     fakeAsync((async) {
       final h = LanHarness(target(lan: const LanEndpoints(port: 47831, addresses: ['192.168.1.20'])));
       h.connection.start();
@@ -371,14 +375,14 @@ void main() {
         'iceServers': ['stun:stun.attacker.example:3478', 'turn://user:pass@turn.attacker.example:3478?transport=udp'],
         'forceRelay': true,
       };
-      h.greet('192.168.1.20', welcome: hostile);
+      h.greet('192.168.1.20', welcome: {...hostile, 'session': handedOut});
       async.flushMicrotasks();
       expect(h.connection.viaHomeNetwork, isTrue);
       expect(h.peers.single.iceServers, isEmpty);
       expect(h.peers.single.forceRelay, isFalse);
       // Nor can a second welcome on the same socket, before a new offer.
       final lanSocket = h.socket('192.168.1.20');
-      lanSocket.receive({'type': 'remote-welcome', 'data': jsonEncode(hostile)});
+      lanSocket.receive({'type': 'remote-welcome', 'data': jsonEncode({...hostile, 'session': '99887766554433221100ffeeddccbbaa'})});
       lanSocket.receive({'type': 'remote-online'});
       async.flushMicrotasks();
       expect(h.peers, hasLength(2));
@@ -398,13 +402,103 @@ void main() {
       async.flushMicrotasks();
       final offer = h.socket('192.168.1.20').signals().firstWhere((s) => s.kind == 'sdp');
       expect(offer.session, handed);
-      expect(Signing.verify(secret, 'phone', phoneId, handed, 'sdp', offer.payload, offer.auth), isTrue);
-      // A second offer on the socket without a new one handed out can't reuse it.
+      // Signed for the home network only: as `phone-lan`, which the PC never takes through the room server.
+      expect(Signing.verify(secret, 'phone-lan', phoneId, handed, 'sdp', offer.payload, offer.auth), isTrue);
+      expect(Signing.verify(secret, 'phone', phoneId, handed, 'sdp', offer.payload, offer.auth), isFalse);
+      expect(h.socket('192.168.1.20').signals().where((s) => s.kind == 'ice').every((s) => Signing.verify(secret, 'phone-lan', phoneId, handed, 'ice', s.payload, s.auth)), isTrue);
+      // No second offer on the socket without a new session id handed out.
       h.socket('192.168.1.20').receive({'type': 'remote-online'});
       async.flushMicrotasks();
-      final offers = h.socket('192.168.1.20').signals().where((s) => s.kind == 'sdp').toList();
-      expect(offers, hasLength(2));
-      expect(offers.last.session, isNot(handed));
+      expect(h.socket('192.168.1.20').signals().where((s) => s.kind == 'sdp'), hasLength(1));
+      expect(h.peers, hasLength(1));
+      h.connection.dispose();
+    });
+  });
+
+  test("a device at the PC's address that hands out no session id gets no offer; the try counts as failed", () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+      h.connection.start();
+      async.flushMicrotasks();
+      h.greet('192.168.1.20', welcome: {'iceServers': [], 'forceRelay': false});
+      async.flushMicrotasks();
+      expect(h.socket('192.168.1.20').signals(), isEmpty);
+      expect(h.socket('192.168.1.20').closed, isTrue);
+      expect(h.peers, isEmpty);
+      expect(h.connection.status.message, "Can't reach the room server. Check your internet connection.");
+      h.connection.dispose();
+    });
+  });
+
+  test("on the home network only the PC's `pc-lan` answer counts: one signed for the room server is ignored", () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])))..unreachable.add(roomServer);
+      h.connection.start();
+      async.flushMicrotasks();
+      h.greet('192.168.1.20');
+      async.flushMicrotasks();
+      final lanSocket = h.socket('192.168.1.20');
+      final offer = lanSocket.signals().firstWhere((s) => s.kind == 'sdp');
+      final payload = jsonEncode({'type': 'answer', 'sdp': 'v=0'});
+      String answer(String direction) =>
+          SignedSignal(phone: phoneId, session: offer.session, kind: 'sdp', payload: payload, auth: Signing.sign(secret, direction, phoneId, offer.session, 'sdp', payload)).encode();
+      lanSocket.receive({'type': 'signal', 'data': answer('pc')});
+      async.flushMicrotasks();
+      expect(h.peers.single.answer, isNull);
+      lanSocket.receive({'type': 'signal', 'data': answer('pc-lan')});
+      async.flushMicrotasks();
+      expect(h.peers.single.answer, 'v=0');
+      h.connection.dispose();
+    });
+  });
+
+  test('a new attempt ends the home-network try under way, and with it the binding to the Wi-Fi', () {
+    fakeAsync((async) {
+      final local = _FakeLocalNetwork();
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])), local: local)..unreachable.add(roomServer);
+      local.connected = h.uris;
+      h.connection.start();
+      async.flushMicrotasks();
+      expect(local.events, ['bind', 'ws://192.168.1.20:47830/remote']);
+      // The PC hasn't answered yet; the network changes.
+      h.connection.networkChanged();
+      async.flushMicrotasks();
+      expect(local.events.skip(2).first, 'unbind', reason: 'the old try ends at once, not 4 seconds later');
+      expect(h.sockets['192.168.1.20']!.first.closed, isTrue);
+      h.connection.dispose();
+    });
+  });
+
+  test('a link made on the home network starts the spacing over: the next try that finds nothing waits 20 seconds again', () {
+    fakeAsync((async) {
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])));
+      h.connection.start();
+      async.flushMicrotasks();
+      void offline() {
+        h.socket(roomServer).receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+        h.socket(roomServer).receive({'type': 'remote-offline'});
+        async.flushMicrotasks();
+      }
+
+      offline();
+      h.socket('192.168.1.20').receive({'type': 'error', 'text': 'This is another PC.'});
+      async.flushMicrotasks();
+      async.elapse(const Duration(seconds: 21));
+      expect(h.lanUris(), hasLength(2));
+      h.greet('192.168.1.20');
+      async.flushMicrotasks();
+      h.link(h.socket('192.168.1.20'));
+      async.flushMicrotasks();
+      expect(h.connection.status.isConnected, isTrue);
+      h.peers.last.lose();
+      async.elapse(const Duration(seconds: 2));
+      offline();
+      expect(h.lanUris(), hasLength(3), reason: 'the new attempt tries at once');
+      h.socket('192.168.1.20').receive({'type': 'error', 'text': 'This is another PC.'});
+      async.flushMicrotasks();
+      final failedAt = h.lanUris().length;
+      async.elapse(const Duration(seconds: 21));
+      expect(h.lanUris(), hasLength(failedAt + 1), reason: '20 seconds, not the 40 the earlier failure would have led to');
       h.connection.dispose();
     });
   });
@@ -532,6 +626,36 @@ void main() {
       expect(calls, ['bind', 'bind', 'unbind']);
     });
 
+    test('an unbind still on its way when a newer try starts is followed by that try\'s bind', () async {
+      final network = AndroidLocalNetwork();
+      final unbinding = Completer<void>();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
+        calls.add(call.method);
+        if (call.method == 'unbind' && !unbinding.isCompleted) await unbinding.future;
+        return call.method == 'bind' ? true : null;
+      });
+      await network.run(() async => 1).timeout(Duration.zero, onTimeout: () => 0);
+      // The first try's unbind is held; a second try starts meanwhile.
+      final second = network.run(() async {
+        expect(calls, ['bind', 'unbind', 'bind'], reason: 'the second try runs bound, after the first one\'s unbind');
+        return 2;
+      });
+      await Future<void>.delayed(Duration.zero);
+      unbinding.complete();
+      expect(await second, 2);
+      expect(calls, ['bind', 'unbind', 'bind', 'unbind']);
+    });
+
+    test('a platform call failing in an unexpected way neither stops the try nor breaks the next ones', () async {
+      final broken = _ThrowingChannel();
+      final network = AndroidLocalNetwork(channel: broken);
+      expect(await network.run(() async => 'first'), 'first');
+      expect(await network.available(), isTrue);
+      broken.fail = false;
+      expect(await network.run(() async => 'second'), 'second');
+      expect(broken.calls.skip(broken.calls.length - 2), ['bind', 'unbind'], reason: 'the queue still works after the failure');
+    });
+
     test('without the platform side it neither blocks the try nor fails', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(channel, null);
       final network = AndroidLocalNetwork();
@@ -585,5 +709,19 @@ class _CountingStore extends PairedPcStore {
   Future<void> save(List<PairedPc> pcs) {
     wrote();
     return super.save(pcs);
+  }
+}
+
+/// A platform channel that fails with something other than a PlatformException.
+class _ThrowingChannel extends MethodChannel {
+  _ThrowingChannel() : super('blackpearl/network-test');
+  bool fail = true;
+  final List<String> calls = [];
+
+  @override
+  Future<T?> invokeMethod<T>(String method, [dynamic arguments]) async {
+    calls.add(method);
+    if (fail) throw StateError('broken channel');
+    return (method == 'bind' ? true : null) as T?;
   }
 }
