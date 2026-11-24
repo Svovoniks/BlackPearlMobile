@@ -248,4 +248,50 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Continue watching'), findsOneWidget, reason: 'the first page stays');
   });
+
+  testWidgets('after watching, Continue watching shows its start, where the title just watched now is', (tester) async {
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    Map<String, dynamic> home(List<String> order) => {
+      'type': 'page',
+      'total': order.length,
+      'page': 0,
+      'pageSize': 40,
+      'location': 'Home',
+      'entries': [
+        for (final id in order)
+          {'id': id, 'title': 'Title $id', 'caption': 'Movie', 'level': 'movie', 'kind': 'Movie', 'homeSection': 'continue', 'positionMs': 60000, 'playable': true},
+      ],
+    };
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch'};
+    var order = ['a', 'b', 'c', 'd', 'e', 'f'];
+    link.answer = (type, fields) async => home(order);
+    final changed = ValueNotifier(0);
+    addTearDown(changed.dispose);
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(),
+      home: LibraryScreen(
+        link: link,
+        changed: changed,
+        actions: LibraryActions(watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {}, playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    // The user scrolls the row to a title further along and watches it on the phone.
+    await tester.drag(find.text('Title a'), const Offset(-2000, 0));
+    await tester.pumpAndSettle();
+    final screen = tester.getRect(find.byType(LibraryScreen));
+    bool shown(String id) {
+      final text = find.text('Title $id');
+      return text.evaluate().isNotEmpty && screen.overlaps(tester.getRect(text));
+    }
+    expect(shown('a'), isFalse);
+    expect(shown('f'), isTrue);
+    order = ['f', 'a', 'b', 'c', 'd', 'e'];
+    changed.value++;
+    await tester.pumpAndSettle();
+    expect(shown('f'), isTrue, reason: 'the title just watched leads the row, and the row shows it');
+    expect(tester.getRect(find.text('Title f')).left, lessThan(screen.width / 2));
+  });
 }

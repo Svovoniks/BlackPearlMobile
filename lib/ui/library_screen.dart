@@ -182,9 +182,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
     if (_wasConnected && _available) _open();
   }
 
+  // Continue watching on Home: it goes back to its start once playback changed, where the title just watched now is.
+  // Left where it was scrolled to, the row showed the titles after it, so it looked as if nothing had changed.
+  final ScrollController _continueRow = ScrollController();
+
   void _playbackChanged() {
     final listing = _listing;
-    if (listing != null && listing.started) unawaited(listing.reload());
+    if (listing == null || !listing.started) return;
+    unawaited(listing.reload().then((_) {
+      if (!mounted || !identical(_listing, listing) || !_continueRow.hasClients || _continueRow.offset <= 0) return;
+      unawaited(_continueRow.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOutCubic));
+    }));
   }
 
   @override
@@ -207,6 +215,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     _searchDebounce?.cancel();
     _search.dispose();
     _searchFocus.dispose();
+    _continueRow.dispose();
     _listing?.dispose();
     super.dispose();
   }
@@ -474,6 +483,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           SizedBox(
             height: math.max(182, 130 + cardCaptionHeight(context)).ceilToDouble(),
             child: ListView.separated(
+              controller: _continueRow,
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: continuing.length,
