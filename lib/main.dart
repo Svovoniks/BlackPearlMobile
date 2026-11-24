@@ -121,6 +121,8 @@ Future<void> _runLoopback(List<String> args) async {
       target: target,
       identity: identity,
       connectSocket: WebSocketSignaling.connect,
+      // As the app does: the PC's own home-network socket with its cap on what it may send.
+      connectLanSocket: LanSignaling.connect,
       createPeer: WebRtcPeerLink.create,
       onPaired: onPaired,
       onPcName: onPcName,

@@ -469,11 +469,16 @@ newer one replaces the older. The HTTP request is at most 8 KiB, and it and `rem
 seconds. Messages are at most 64 KiB, at the room server's rate for phones (bursts of 120, 60 a second). A connection
 that hasn't proved itself within 30 seconds is closed, and none lasts more than 6 hours.
 
-The phone, for its part, takes at most 256 KiB from one such socket in all, the HTTP upgrade included, counted before
-any WebSocket frame is read, and the upgrade answer at most 8 KiB of that. It offers no WebSocket extensions and refuses
-an upgrade that names one, so nothing on the socket is compressed. Past the 256 KiB it closes the socket: that ends the
-try, or, with the link already up, only the socket. A real exchange (welcome, `remote-online`, the signed answer and
-candidates, and a `pong` every 25 seconds or so) stays far below it.
+The phone, for its part, takes at most 256 KiB from one such socket in all, the HTTP upgrade included. It counts each
+read from the operating system before any WebSocket frame is parsed, and a read that would go past the 256 KiB isn't
+taken: it is dropped unparsed and the socket closed. Such a read can itself be larger than what is left, by at most what
+the socket's receive buffer holds; the phone asks for 64 KiB (Linux, and so Android, doubles that). The upgrade answer,
+up to and including its blank line, may be at most 8 KiB. The phone offers no WebSocket extensions and refuses an
+upgrade that names one, so nothing on the socket is compressed. Past the 256 KiB during the upgrade, the connection is
+refused; after it, the socket closes, which ends the try, or, with the link already up, only the socket. A real exchange
+stays far below it: the upgrade, welcome and `remote-online` together take under 500 bytes, the signed answer and
+candidates a few kilobytes, and a `pong` (about 90 bytes) every 25 seconds or so would take some 19 hours, while the PC
+ends a connection after 6.
 
 **Which path the phone takes.** The room server first, always. The phone tries the home network when it has an address
 for the PC and the room server can't be reached, refuses the connection, closes it before the link is up, or says the PC
