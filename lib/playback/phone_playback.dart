@@ -8,6 +8,7 @@ import '../connection/transport.dart';
 import '../diagnostics/crash_reports.dart';
 import '../protocol/library.dart';
 import 'media_proxy.dart';
+import 'mpv_reads.dart';
 import 'shuffle_order.dart';
 import 'track_languages.dart';
 
@@ -836,18 +837,16 @@ class PhonePlayback extends ChangeNotifier {
   }
 
   /// The audio and subtitle tracks playing now, by id; a null subtitle is none. media_kit reports `auto` until a track
-  /// is chosen, so libmpv itself is asked.
+  /// is chosen, so libmpv itself is asked, away from the screen's thread: a busy libmpv answers late.
   Future<({String? audio, String? subtitle})> selectedTracks() async {
     final player = _player;
     if (player == null) return (audio: null, subtitle: null);
-    String? audio = player.state.track.audio.id, subtitle = player.state.track.subtitle.id;
-    final native = player.platform;
-    if (native is NativePlayer) {
-      try {
-        audio = await native.getProperty('aid');
-        subtitle = await native.getProperty('sid');
-      } catch (_) {}
-    }
+    const within = Duration(seconds: 1);
+    final (aid, sid) = await (
+      MpvReads.instance.read(player, 'aid', within: within),
+      MpvReads.instance.read(player, 'sid', within: within),
+    ).wait;
+    final audio = aid ?? player.state.track.audio.id, subtitle = sid ?? player.state.track.subtitle.id;
     String? id(String? value) => value == null || value == 'no' || value == 'auto' || value.isEmpty ? null : value;
     // A conversion carries one of the file's tracks: the one the PC converted with.
     final stream = _stream;
@@ -1160,6 +1159,7 @@ class PhonePlayback extends ChangeNotifier {
     final (player, address) = previous;
     if (address != null) proxy.close(address);
     try {
+      await MpvReads.instance.release(player);
       await player.dispose();
     } catch (_) {}
   }

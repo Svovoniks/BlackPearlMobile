@@ -9,6 +9,7 @@ import '../connection/remote_link.dart';
 import '../protocol/library.dart';
 import '../storage/app_settings.dart';
 import 'media_proxy.dart';
+import 'mpv_reads.dart';
 
 /// Where Sound on the phone is: off; asking the PC; on, with nothing to play yet (nothing plays on the PC, or the PC is
 /// getting the sound ready); opening or refilling the sound; playing in step with the PC; or paused with it.
@@ -461,16 +462,26 @@ class PhoneSound extends ChangeNotifier {
       unawaited(subscription.cancel());
     }
     _subscriptions.clear();
+    await MpvReads.instance.release(player);
     await player.dispose();
   }
 
+  // libmpv's own position, read away from the screen's thread.
   Future<int?> _position(Player player) async {
-    final native = player.platform;
-    if (native is NativePlayer) {
-      final value = double.tryParse(await native.getProperty('time-pos', waitForInitialization: false));
-      if (value != null) return (value * 1000).round();
-    }
-    return player.state.position.inMilliseconds;
+    final native = player.platform is NativePlayer;
+    final read = native ? await MpvReads.instance.read(player, 'time-pos', within: const Duration(milliseconds: 250)) : null;
+    return soundPosition(fromLibmpv: native, read: read, reported: player.state.position);
+  }
+
+  /// Where the sound is, in milliseconds, from libmpv's [read] of `time-pos`, or media_kit's [reported] position for a
+  /// player that isn't libmpv's. Null when libmpv doesn't answer in time: the tick then skips a round. media_kit's
+  /// position stops while libmpv is busy, and the tick counts the whole wait as time that passed, so acting on it
+  /// would see the sound that much behind and seek for nothing.
+  @visibleForTesting
+  static int? soundPosition({required bool fromLibmpv, required String? read, required Duration reported}) {
+    if (!fromLibmpv) return reported.inMilliseconds;
+    final value = double.tryParse(read ?? '');
+    return value == null ? null : (value * 1000).round();
   }
 
   Future<void> _seek(Player player, int toMs) async {
