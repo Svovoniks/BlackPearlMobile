@@ -99,3 +99,7 @@ Uri remoteSocketUri(String server) {
     path: '$path/remote',
   );
 }
+
+/// A PC's own `/remote` WebSocket on its home network (PHONE-REMOTE.md, "On the home network"): plain `ws`, as the
+/// signals on it are signed.
+Uri remoteLanUri(String address, int port) => Uri(scheme: 'ws', host: address, port: port, path: '/remote');
