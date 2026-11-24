@@ -227,6 +227,7 @@ class AppModel extends ChangeNotifier {
     _sound = createSound?.call(connection, settings, background)?..addListener(_soundChanged);
     connection.addListener(_syncBackground);
     connection.addListener(_pairingChanged);
+    connection.addListener(_lanLearned);
     if (start) connection.start();
     _syncBackground();
   }
@@ -235,6 +236,7 @@ class AppModel extends ChangeNotifier {
     final connection = _connection;
     connection?.removeListener(_syncBackground);
     connection?.removeListener(_pairingChanged);
+    connection?.removeListener(_lanLearned);
     // Before the connection goes: it tells the PC to play its sound again.
     _sound?.removeListener(_soundChanged);
     _sound?.dispose();
@@ -371,6 +373,19 @@ class AppModel extends ChangeNotifier {
     // The new name comes again on the next connection; a failed save here isn't worth a message.
     unawaited(_quietly(_write()));
     notifyListeners();
+  }
+
+  /// The PC said where it listens on its home network (PHONE-REMOTE.md, "On the home network"): kept with it, for when
+  /// the room server can't introduce the two. A pairing session's comes with the paired PC instead.
+  void _lanLearned() {
+    final connection = _connection;
+    final lan = connection?.learnedLan;
+    if (connection == null || lan == null || connection.target.isPairing) return;
+    final index = _pcs.indexWhere((p) => p.pcId == connection.target.pcId);
+    if (index < 0 || _pcs[index].lan == lan) return;
+    _pcs = [..._pcs]..[index] = _pcs[index].withLan(lan);
+    // It comes again on the next connection; a failed save here isn't worth a message.
+    unawaited(_quietly(_write()));
   }
 
   /// Writes the paired PCs. While the stored list couldn't be read, nothing is written: the list in memory then holds only

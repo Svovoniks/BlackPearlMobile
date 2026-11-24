@@ -111,3 +111,15 @@ String? midForMLineIndex(String? sdp, int? index) {
   }
   return null;
 }
+
+/// The phone's Wi-Fi or Ethernet network, for reaching the PC on its home network (PHONE-REMOTE.md, "On the home
+/// network").
+abstract class LocalNetworkAccess {
+  /// Whether the phone is on Wi-Fi or Ethernet now.
+  Future<bool> available();
+
+  /// Runs [attempt] with the sockets it opens going out on that network, also while Android has made mobile data the
+  /// default because the Wi-Fi has no internet (which is when the room server can't introduce the two). Sockets opened
+  /// in it stay on that network afterwards.
+  Future<T> run<T>(Future<T> Function() attempt);
+}

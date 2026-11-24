@@ -39,6 +39,7 @@ object LinkEngine {
                 }
             }
         }
+        LocalNetwork.register(app, engine.dartExecutor.binaryMessenger)
         // Debug builds take launch arguments from the opening activity, as FlutterActivity does for its own engine
         // (`am start --esal dart_entrypoint_args ...`).
         val debuggable = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0

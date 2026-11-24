@@ -83,23 +83,25 @@ class SignedSignal {
   final String payload;
   final String auth;
 
-  /// Builds and signs a signal the phone sends.
+  /// Builds and signs a signal the phone sends. [lan]: on the PC's home-network socket, where signals are signed for
+  /// that socket only (`phone-lan`), so none made there is any use through the room server, or the other way round.
   factory SignedSignal.fromPhone({
     required String keyHex,
     required String phone,
     required String session,
     required String kind,
     required String payload,
+    bool lan = false,
   }) => SignedSignal(
     phone: phone,
     session: session,
     kind: kind,
     payload: payload,
-    auth: Signing.sign(keyHex, 'phone', phone, session, kind, payload),
+    auth: Signing.sign(keyHex, lan ? 'phone-lan' : 'phone', phone, session, kind, payload),
   );
 
-  /// Whether the PC signed this with [keyHex].
-  bool verifyFromPc(String keyHex) => Signing.verify(keyHex, 'pc', phone, session, kind, payload, auth);
+  /// Whether the PC signed this with [keyHex]: as `pc-lan` when [lan] (its home-network socket), else as `pc`.
+  bool verifyFromPc(String keyHex, {bool lan = false}) => Signing.verify(keyHex, lan ? 'pc-lan' : 'pc', phone, session, kind, payload, auth);
 
   Map<String, dynamic> toJson() => {'phone': phone, 'session': session, 'kind': kind, 'payload': payload, 'auth': auth};
 
