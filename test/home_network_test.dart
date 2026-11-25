@@ -38,7 +38,7 @@ class LanHarness {
         return socket;
       },
       createPeer: (servers, relay) async {
-        final peer = FakePeer(servers, relay);
+        final peer = FakePeer(servers, relay)..offering = onOffer;
         peers.add(peer);
         return peer;
       },
@@ -52,6 +52,9 @@ class LanHarness {
   final Set<String> unreachable = {};
   final Map<String, List<FakeSocket>> sockets = {};
   final List<FakePeer> peers = [];
+
+  /// Called as each peer makes its offer.
+  void Function()? onOffer;
   final List<PairedPc> paired = [];
 
   FakeSocket socket(String host) => sockets[host]!.last;
@@ -899,6 +902,37 @@ void main() {
       async.flushMicrotasks();
       expect(local.events.last, 'unbind', reason: 'and the binding ends once the PC has answered');
       expect(h.connection.viaHomeNetwork, isTrue);
+      h.connection.dispose();
+    });
+  });
+
+  test("on the home network the offer, which opens the link's ICE sockets, is made while bound to the Wi-Fi too", () {
+    fakeAsync((async) {
+      final local = _FakeLocalNetwork();
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])), local: local)..unreachable.add(roomServer);
+      local.connected = h.uris;
+      h.onOffer = () => local.events.add('offer');
+      h.connection.start();
+      async.flushMicrotasks();
+      h.greet('192.168.1.20');
+      async.flushMicrotasks();
+      expect(local.events, ['bind', 'ws://192.168.1.20:47830/remote', 'unbind', 'bind', 'offer', 'unbind']);
+      h.connection.dispose();
+    });
+  });
+
+  test('through the room server the offer is made without binding to the Wi-Fi', () {
+    fakeAsync((async) {
+      final local = _FakeLocalNetwork();
+      final h = LanHarness(target(lan: const LanEndpoints(port: 47830, addresses: ['192.168.1.20'])), local: local);
+      h.onOffer = () => local.events.add('offer');
+      h.connection.start();
+      async.flushMicrotasks();
+      h.socket(roomServer)
+        ..receive({'type': 'remote-welcome', 'target': 'conn1', 'data': '{"iceServers":[]}'})
+        ..receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      expect(local.events, ['offer']);
       h.connection.dispose();
     });
   });

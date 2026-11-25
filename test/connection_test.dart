@@ -47,7 +47,7 @@ class FakeSocket implements SignalingSocket {
 
 class FakePeer extends PeerLink {
   FakePeer(this.iceServers, this.forceRelay);
-  final List<Map<String, dynamic>> iceServers;
+  final List<String> iceServers;
   final bool forceRelay;
   String? answer;
   final List<(String, String?)> remoteCandidates = [];
@@ -57,8 +57,13 @@ class FakePeer extends PeerLink {
 
   @override
   bool get alive => !closed;
+
+  /// Called as the offer is made.
+  void Function()? offering;
+
   @override
   Future<String> createOffer() async {
+    offering?.call();
     // Candidates can arrive before the offer is out; they must wait for it.
     onLocalCandidate?.call('candidate:1 1 UDP 2122317823 192.168.1.30 50000 typ host', '0');
     return 'v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\n';
@@ -169,10 +174,7 @@ void main() {
       async.flushMicrotasks();
 
       expect(h.connection.status.phase, LinkPhase.linking);
-      expect(h.peer.iceServers, [
-        {'urls': 'stun:stun.example.com:3478'},
-        {'urls': 'turn:turn.example.com:3478?transport=udp', 'username': 'us:er', 'credential': 'p@ss'},
-      ]);
+      expect(h.peer.iceServers, ['stun:stun.example.com:3478', 'turn:us%3Aer:p%40ss@turn.example.com:3478?transport=udp']);
       final signals = h.socket.signals().toList();
       expect(signals.map((s) => s.kind), ['sdp', 'ice'], reason: 'the offer goes first, then the candidates found meanwhile');
       final offer = signals.first;

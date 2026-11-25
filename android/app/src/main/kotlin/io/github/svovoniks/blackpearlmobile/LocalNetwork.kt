@@ -14,8 +14,8 @@ import io.flutter.plugin.common.MethodChannel
  * When the home internet is down, Android finds the Wi-Fi has no internet and makes mobile data the default network.
  * Sockets the app opens go out on the default network, so the PC's home address would be tried over mobile data and
  * never answer. While the app opens its sockets to the PC, `bind` makes the Wi-Fi this process's network, and `unbind`
- * gives the choice back to Android; sockets opened meanwhile stay on the Wi-Fi. WebRTC binds its own sockets to each
- * network it gathers candidates on, so the link set up afterwards finds the Wi-Fi path by itself.
+ * gives the choice back to Android; sockets opened meanwhile stay on the Wi-Fi. The app's sockets to the PC are the
+ * home-network socket and then the link's ICE sockets, which libdatachannel opens as the offer is made.
  */
 object LocalNetwork {
     fun register(context: Context, messenger: BinaryMessenger) {

@@ -72,6 +72,15 @@ flutter test
 flutter build apk --debug
 ```
 
+The link to the PC runs on [libdatachannel](https://github.com/paullouisageneau/libdatachannel), as the desktop app's
+side does, with data channels only and Mbed TLS: `packages/blackpearl_datachannel` builds it from source with each
+platform's toolchain (the NDK and its CMake on Android), downloading the pinned sources the first time each ABI is
+built. A debug APK builds it for every ABI, so the first debug build takes a few minutes longer.
+
+Scanning the pairing code uses the barcode scanner of Google Play services rather than a copy of ML Kit in the APK
+(`android/gradle.properties`). On a phone without Play services the camera can't read the code; pasting the link on
+the pairing screen still works.
+
 Release APKs are built and signed by CI when a `v*` tag is pushed, and attached to that tag's GitHub release: one per
 ABI, `BlackPearl-v<version>.apk` for 64-bit ARM (nearly every phone) and `BlackPearl-v<version>-armeabi-v7a.apk` for
 32-bit ARM. None is built for x86_64. Their native libraries are compressed, which halves the download; Android unpacks
@@ -119,7 +128,7 @@ Screens: `remote`, `away`, `relay`, `cant-control`, `nothing`, `waiting`, `conne
 `update-permission`, `update-downloading`, `update-ready` and `update-failed`. Release builds ignore the flag.
 
 `--preview=loopback` runs the real app against a room server and a stand-in PC inside the same process: it pairs,
-sets up the WebRTC link with flutter_webrtc on both ends, and the stand-in answers commands with a made-up state.
+sets up the WebRTC link with libdatachannel on both ends, and the stand-in answers commands with a made-up state.
 `--loopback-log=<file>` writes each connection change and the commands the stand-in received. It follows
 PHONE-REMOTE.md but is not the desktop app.
 

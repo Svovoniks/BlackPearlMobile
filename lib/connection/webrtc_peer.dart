@@ -1,7 +1,7 @@
 import 'dart:async';
 
+import 'package:blackpearl_datachannel/blackpearl_datachannel.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'transport.dart';
@@ -9,77 +9,69 @@ import 'transport.dart';
 const String channelLabel = 'remote-v1';
 const String mediaLabel = 'media-v1';
 
-/// [PeerLink] over flutter_webrtc.
+/// [PeerLink] over libdatachannel (packages/blackpearl_datachannel), as the desktop app's side is.
 class WebRtcPeerLink extends PeerLink {
   WebRtcPeerLink._(this._pc, this._channel, this._media) {
-    _media.onDataChannelState = (state) {
-      if (state == RTCDataChannelState.RTCDataChannelOpen) {
-        _mediaOpen = true;
-        onMediaOpen?.call();
-      } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
-        _mediaOpen = false;
-        onMediaClosed?.call();
-      }
+    _media.onOpen = () {
+      onMediaOpen?.call();
     };
-    _media.onMessage = (message) {
-      if (message.isBinary) {
-        onMediaBinary?.call(message.binary);
-      } else {
-        onMediaText?.call(message.text);
-      }
+    _media.onClosed = () {
+      onMediaClosed?.call();
     };
-    _pc.onIceCandidate = (candidate) {
-      var line = candidate.candidate;
-      if (line == null || line.isEmpty) return; // end of candidates
-      if (line.startsWith('a=')) line = line.substring(2);
-      final mid = candidate.sdpMid ?? midForMLineIndex(_localSdp, candidate.sdpMLineIndex) ?? '0';
-      onLocalCandidate?.call(line, mid);
+    _media.onBinary = (data) => onMediaBinary?.call(data);
+    _media.onText = (text) => onMediaText?.call(text);
+    _pc.onCandidate = (candidate, mid) {
+      final line = candidate.startsWith('a=') ? candidate.substring(2) : candidate;
+      if (line.isEmpty) return;
+      onLocalCandidate?.call(line, mid.isEmpty ? '0' : mid);
     };
-    _pc.onConnectionState = (state) {
+    _pc.onDescription = (sdp, type) {
+      final waiting = _description;
+      if (waiting != null && !waiting.isCompleted) waiting.complete(sdp);
+    };
+    _pc.onState = (state) {
       switch (state) {
-        case RTCPeerConnectionState.RTCPeerConnectionStateFailed:
+        case RtcState.failed:
           _finish('The connection to the PC failed.');
-        case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
+        case RtcState.closed:
           _finish('The connection to the PC closed.');
-        case RTCPeerConnectionState.RTCPeerConnectionStateDisconnected:
+        case RtcState.disconnected:
           // ICE often recovers from a short gap by itself; give it a moment before calling the link lost.
           _disconnectTimer ??= Timer(const Duration(seconds: 6), () => _finish('Lost the connection to the PC.'));
-        case RTCPeerConnectionState.RTCPeerConnectionStateConnected:
+        case RtcState.connected:
           _disconnectTimer?.cancel();
           _disconnectTimer = null;
         default:
           break;
       }
     };
-    _channel.onDataChannelState = (state) {
-      if (state == RTCDataChannelState.RTCDataChannelOpen) {
-        _open = true;
-        onOpen?.call();
-      } else if (state == RTCDataChannelState.RTCDataChannelClosed) {
-        _finish('The PC closed the connection.');
-      }
+    _channel.onOpen = () {
+      _open = true;
+      onOpen?.call();
     };
-    _channel.onMessage = (message) {
-      if (!message.isBinary) onMessage?.call(message.text);
-    };
+    _channel.onClosed = () => _finish('The PC closed the connection.');
+    _channel.onText = (text) => onMessage?.call(text);
   }
 
-  static Future<PeerLink> create(List<Map<String, dynamic>> iceServers, bool forceRelay) async {
-    final pc = await createPeerConnection({
-      'iceServers': iceServers,
-      'iceTransportPolicy': forceRelay ? 'relay' : 'all',
-      'sdpSemantics': 'unified-plan',
-    });
-    final channel = await pc.createDataChannel(channelLabel, RTCDataChannelInit()..ordered = true);
-    final media = await pc.createDataChannel(mediaLabel, RTCDataChannelInit()..ordered = true);
-    return WebRtcPeerLink._(pc, channel, media);
+  static Future<PeerLink> create(List<String> iceServers, bool forceRelay) async {
+    final pc = RtcPeer.create(iceServers: iceServers, relayOnly: forceRelay);
+    try {
+      final channel = pc.createChannel(channelLabel);
+      final media = pc.createChannel(mediaLabel);
+      return WebRtcPeerLink._(pc, channel, media);
+    } catch (_) {
+      unawaited(pc.close());
+      rethrow;
+    }
   }
 
-  final RTCPeerConnection _pc;
-  final RTCDataChannel _channel;
-  final RTCDataChannel _media;
-  bool _mediaOpen = false;
-  String? _localSdp, _remoteSdp;
+  /// How long making the offer may take.
+  static const offerTimeout = Duration(seconds: 10);
+
+  final RtcPeer _pc;
+  final RtcChannel _channel;
+  final RtcChannel _media;
+  Completer<String>? _description;
   Timer? _disconnectTimer;
   bool _open = false, _finished = false;
 
@@ -91,77 +83,40 @@ class WebRtcPeerLink extends PeerLink {
   }
 
   @override
-  bool get alive {
-    if (_finished) return false;
-    final state = _pc.connectionState;
-    return state != RTCPeerConnectionState.RTCPeerConnectionStateFailed && state != RTCPeerConnectionState.RTCPeerConnectionStateClosed;
-  }
+  bool get alive => !_finished && !_pc.closed && _pc.state != RtcState.failed && _pc.state != RtcState.closed;
 
   @override
   Future<String> createOffer() async {
-    final offer = await _pc.createOffer({});
-    await _pc.setLocalDescription(offer);
-    _localSdp = offer.sdp;
-    return offer.sdp ?? '';
+    final description = _description = Completer<String>();
+    // The description comes as an event while this runs, and the ICE sockets are open once it returns.
+    await _pc.setLocalDescription('offer');
+    return description.future.timeout(offerTimeout);
   }
 
   @override
-  Future<void> setAnswer(String sdp) async {
-    await _pc.setRemoteDescription(RTCSessionDescription(sdp, 'answer'));
-    _remoteSdp = sdp;
-  }
+  Future<void> setAnswer(String sdp) => _pc.setRemoteDescription(sdp, 'answer');
 
   @override
-  Future<void> addRemoteCandidate(String candidate, String? mid) async {
-    final line = candidate.startsWith('a=') ? candidate.substring(2) : candidate;
-    // The protocol carries only the media id. Android's flutter_webrtc also wants the m-line index, so take it from the
-    // PC's answer.
-    final effectiveMid = mid ?? midForMLineIndex(_remoteSdp, 0) ?? '0';
-    await _pc.addCandidate(RTCIceCandidate(line, effectiveMid, mLineIndexForMid(_remoteSdp, effectiveMid)));
-  }
+  Future<void> addRemoteCandidate(String candidate, String? mid) =>
+      _pc.addRemoteCandidate(candidate.startsWith('a=') ? candidate.substring(2) : candidate, mid);
 
   @override
   void send(String text) {
-    if (_open && !_finished) _channel.send(RTCDataChannelMessage(text));
+    if (_open && !_finished) _channel.sendText(text);
   }
 
   @override
   void sendMedia(String text) {
-    if (_mediaOpen && !_finished) _media.send(RTCDataChannelMessage(text));
+    if (!_finished) _media.sendText(text);
   }
 
   @override
   Future<NetworkPath> path() async {
     try {
-      final reports = await _pc.getStats();
-      final byId = {for (final report in reports) report.id: report};
-      String? pairId;
-      for (final report in reports) {
-        if (report.type == 'transport' && report.values['selectedCandidatePairId'] is String) {
-          pairId = report.values['selectedCandidatePairId'] as String;
-        }
-      }
-      StatsReport? pair = pairId == null ? null : byId[pairId];
-      if (pair == null) {
-        for (final report in reports) {
-          if (report.type != 'candidate-pair') continue;
-          final values = report.values;
-          if (values['selected'] == true || (values['state'] == 'succeeded' && values['nominated'] == true)) {
-            pair = report;
-            break;
-          }
-        }
-      }
+      final pair = await _pc.selectedPair();
       if (pair == null) return NetworkPath.unknown;
-      final local = byId[pair.values['localCandidateId']];
-      final remote = byId[pair.values['remoteCandidateId']];
-      String? text(StatsReport? report, String key) => report?.values[key] is String ? report!.values[key] as String : null;
-      return classifyPath(
-        text(local, 'candidateType'),
-        text(remote, 'candidateType'),
-        localAddress: text(local, 'address') ?? text(local, 'ip'),
-        remoteAddress: text(remote, 'address') ?? text(remote, 'ip'),
-      );
+      final local = parseCandidate(pair.local), remote = parseCandidate(pair.remote);
+      return classifyPath(local?.type, remote?.type, localAddress: local?.address, remoteAddress: remote?.address);
     } catch (_) {
       return NetworkPath.unknown;
     }
@@ -180,20 +135,10 @@ class WebRtcPeerLink extends PeerLink {
     onMediaText = null;
     onMediaClosed = null;
     try {
-      await _media.close();
-    } catch (_) {}
-    try {
-      await _channel.close();
-    } catch (_) {}
-    try {
       await _pc.close();
-    } catch (_) {}
-    try {
-      await _pc.dispose();
     } catch (_) {}
   }
 }
-
 /// [SignalingSocket] over web_socket_channel.
 class WebSocketSignaling implements SignalingSocket {
   WebSocketSignaling._(this._channel) : messages = _channel.stream.where((frame) => frame is String).cast<String>();
