@@ -10,6 +10,7 @@ import '../playback/phone_playback.dart';
 import '../protocol/library.dart';
 import '../update/app_update.dart';
 import 'library_screen.dart';
+import 'mini_remote_bar.dart';
 import 'player_screen.dart';
 import 'remote_screen.dart';
 import 'settings_screen.dart';
@@ -37,10 +38,20 @@ class _HomeShellState extends State<HomeShell> {
   /// Bumped when the phone's player closes or the PC starts a title, so the Library shows the new resume points.
   final ValueNotifier<int> _playbackChanged = ValueNotifier(0);
 
+  /// Bumped when the Library tab is tapped while it shows: its list goes back to the top.
+  final ValueNotifier<int> _libraryTop = ValueNotifier(0);
+
   @override
   void dispose() {
     _playbackChanged.dispose();
+    _libraryTop.dispose();
     super.dispose();
+  }
+
+  // The Remote, over whatever page is open above the tabs.
+  void _showRemote() {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    setState(() => _tab = 0);
   }
 
   RemoteLink get link => widget.connection;
@@ -77,9 +88,15 @@ class _HomeShellState extends State<HomeShell> {
   }
 
   late final LibraryActions _actions = LibraryActions(
-    watchHere: (entry, {bool fromStart = false, QueueRef? queue}) =>
-        _openPlayer((playback) => playback.watch(entry.id, startAt: fromStart ? 0 : null, queue: queue)),
+    openRemote: _showRemote,
+    // Where a video was started last is where the play buttons on lists start the next one.
+    prefersPc: () => widget.model.settings.playOnPc,
+    watchHere: (entry, {bool fromStart = false, QueueRef? queue}) {
+      unawaited(widget.model.settings.setPlayOnPc(false));
+      return _openPlayer((playback) => playback.watch(entry.id, startAt: fromStart ? 0 : null, queue: queue));
+    },
     playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async {
+      unawaited(widget.model.settings.setPlayOnPc(true));
       try {
         await link.ask('play', {
           'id': entry.id,
@@ -125,13 +142,31 @@ class _HomeShellState extends State<HomeShell> {
         onChoosePc: widget.onChoosePc,
         onPairAgain: widget.onPairAgain,
         onWatchHere: playback == null ? null : (id) => _openPlayer((playback) => playback.watch(id, takeOver: true)),
+        onBrowseLibrary: () => setState(() => _tab = 1),
+        // From the screen that says nothing is playing: the title starts on the PC, and the Remote stays in front.
+        onPlayOnPc: (entry) => _actions.playOnPc(entry),
+        changed: _playbackChanged,
+        active: _tab == 0,
       ),
-      LibraryScreen(link: link, actions: _actions, changed: _playbackChanged),
+      LibraryScreen(link: link, actions: _actions, changed: _playbackChanged, active: _tab == 1, toTop: _libraryTop),
       SettingsScreen(model: widget.model, link: link, onChoosePc: widget.onChoosePc, updater: widget.updater),
     ];
     return Scaffold(
       body: IndexedStack(index: _tab, children: tabs),
-      bottomNavigationBar: AppTabBar(index: _tab, onSelect: (index) => setState(() => _tab = index)),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Away from the Remote, what the PC plays keeps its play buttons within reach.
+          if (_tab != 0) MiniRemoteBar(link: link, onOpen: () => setState(() => _tab = 0), safeBottom: false),
+          AppTabBar(
+            index: _tab,
+            onSelect: (index) {
+              if (index == _tab && index == 1) _libraryTop.value++;
+              setState(() => _tab = index);
+            },
+          ),
+        ],
+      ),
     );
   }
 }

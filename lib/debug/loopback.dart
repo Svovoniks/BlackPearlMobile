@@ -137,6 +137,7 @@ class LoopbackPc {
     'room': null,
   };
   DateTime _stateAt = DateTime.now();
+  int _video = 1;
 
   Future<void> connect() async {
     final socket = await WebSocket.connect(serverUrl);
@@ -237,6 +238,16 @@ class LoopbackPc {
         switch (action) {
           case 'toggle':
             state['playing'] = !(state['playing'] as bool);
+          case 'play':
+            state['playing'] = true;
+          case 'pause':
+            state['playing'] = false;
+          case 'next':
+            // The next video, from its start.
+            _video++;
+            state['title'] = 'Loopback Video $_video';
+            state['positionMs'] = 0;
+            state['hasPrevious'] = true;
           case 'seek-by':
             state['positionMs'] = ((state['positionMs'] as int) + (message['value'] as num).round()).clamp(0, 1800000);
           case 'seek-to':

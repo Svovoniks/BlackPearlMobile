@@ -7,6 +7,7 @@ import '../connection/remote_link.dart';
 import '../protocol/library.dart';
 import 'artwork.dart';
 import 'library_screen.dart';
+import 'mini_remote_bar.dart';
 import 'pebbles.dart';
 import 'theme.dart';
 
@@ -54,10 +55,13 @@ Future<List<QueueSummary>> loadQueues(RemoteLink link) async => QueueSummary.lis
 
 /// One video in a queue's or a show's list: its picture, what it is, and how far it got.
 class QueueEntryRow extends StatelessWidget {
-  const QueueEntryRow({super.key, required this.link, required this.entry, required this.onTap, this.current = false, this.light = false});
+  const QueueEntryRow({super.key, required this.link, required this.entry, required this.onTap, this.onLongPress, this.current = false, this.light = false});
   final RemoteLink link;
   final LibraryEntry entry;
   final VoidCallback? onTap;
+
+  /// A long press, for the video's quick actions.
+  final VoidCallback? onLongPress;
 
   /// The video playing now.
   final bool current;
@@ -88,6 +92,7 @@ class QueueEntryRow extends StatelessWidget {
           child: InkWell(
             borderRadius: BorderRadius.circular(14),
             onTap: dim ? null : onTap,
+            onLongPress: dim ? null : onLongPress,
             child: Container(
               height: queueRowExtentOf(context) - 2,
               padding: const EdgeInsets.all(8),
@@ -202,7 +207,36 @@ class ListChooser extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget pill(String label, bool on, VoidCallback onTap, {IconData? icon}) => Padding(
+    // A pill is some 35 dp high: the touch takes a fingertip's height around it.
+    Widget pill(String label, bool on, VoidCallback onTap, {IconData? icon}) => GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: ConstrainedBox(constraints: const BoxConstraints(minHeight: 48), child: Center(widthFactor: 1, child: _pill(label, on, onTap, icon))),
+    );
+    final list = queues;
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          if (episodes) pill('Episodes', selected == null, () => onSelect(null), icon: Icons.tv_rounded),
+          if (list == null)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 10),
+              child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Palette.accent)),
+            )
+          else
+            for (final queue in list) pill(queue.name, selected == queue.id, () => onSelect(queue), icon: Icons.queue_play_next_rounded),
+          if (loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 6),
+              child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Palette.accent)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  static Widget _pill(String label, bool on, VoidCallback onTap, IconData? icon) => Padding(
       padding: const EdgeInsets.only(right: 6),
       child: Semantics(
         button: true,
@@ -235,28 +269,6 @@ class ListChooser extends StatelessWidget {
         ),
       ),
     );
-    final list = queues;
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          if (episodes) pill('Episodes', selected == null, () => onSelect(null), icon: Icons.tv_rounded),
-          if (list == null)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 10),
-              child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Palette.accent)),
-            )
-          else
-            for (final queue in list) pill(queue.name, selected == queue.id, () => onSelect(queue), icon: Icons.queue_play_next_rounded),
-          if (loading)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 6),
-              child: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Palette.accent)),
-            ),
-        ],
-      ),
-    );
-  }
 }
 
 /// Library › Queues: the PC's saved queues, each opening its videos.
@@ -299,7 +311,14 @@ class _QueuesViewState extends State<QueuesView> {
         });
       }
     } on RemoteRequestException catch (e) {
-      if (mounted) setState(() => _error = e.message);
+      if (!mounted) return;
+      setState(() => _error = e.message);
+      // With a list showing, the page keeps it: the message says the refresh didn't come.
+      if (_queues != null) {
+        ScaffoldMessenger.maybeOf(context)
+          ?..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(content: Text(e.message), duration: const Duration(seconds: 4)));
+      }
     }
   }
 
@@ -320,8 +339,10 @@ class _QueuesViewState extends State<QueuesView> {
     }
     return RefreshIndicator(
       color: Palette.accent,
+      backgroundColor: Palette.elevated,
       onRefresh: _load,
       child: ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
         itemCount: queues.length,
         separatorBuilder: (_, _) => const SizedBox(height: 10),
@@ -455,123 +476,140 @@ class _QueueScreenState extends State<QueueScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(listenable: widget.link, builder: (context, _) => _page(context));
+
+  Widget _page(BuildContext context) {
     final link = widget.link;
     final entries = _listing.entries;
     final next = _upNext;
     final canWatch = link.features.contains('watch');
     return Scaffold(
       backgroundColor: Palette.canvas,
+      // This page covers the tabs: what the PC plays keeps its buttons here.
+      bottomNavigationBar: MiniRemoteBar.forPage(link, widget.actions.openRemote),
       body: SafeArea(
-        child: CustomScrollView(
-          slivers: [
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
-                child: Row(
-                  children: [
-                    IconButton(tooltip: 'Back', onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.arrow_back_rounded)),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(widget.queue.name, style: display(26), maxLines: 2, overflow: TextOverflow.ellipsis),
+        // The next page loads as the list nears its end, and a page that failed waits in the footer for Try again:
+        // asking from the row that draws the footer asked again on every rebuild, and never showed why.
+        child: NotificationListener<ScrollNotification>(
+          onNotification: (notification) {
+            if (notification.metrics.axis == Axis.vertical && notification.metrics.extentAfter < 400 && _listing.hasMore && _listing.error == null) {
+              unawaited(_listing.more());
+            }
+            return false;
+          },
+          child: RefreshIndicator(
+            color: Palette.accent,
+            backgroundColor: Palette.elevated,
+            onRefresh: _listing.reload,
+            child: CustomScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 8, 16, 0),
+                    child: Row(
+                      children: [
+                        IconButton(tooltip: 'Back', onPressed: () => Navigator.of(context).pop(), icon: const Icon(Icons.arrow_back_rounded)),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: Text(widget.queue.name, style: display(26), maxLines: 2, overflow: TextOverflow.ellipsis),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 6, 20, 14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      [
-                        _count(_listing.total > 0 ? _listing.total : widget.queue.count),
-                        if (widget.queue.active) 'Playing on the PC',
-                      ].join(' · '),
-                      style: TextStyle(color: widget.queue.active ? Palette.accent : Palette.muted, fontSize: 13.5),
-                    ),
-                    if (next != null) ...[
-                      const SizedBox(height: 14),
-                      Text(
-                        'Up next: ${next.title}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 13.5, color: Palette.muted),
-                      ),
-                      const SizedBox(height: 10),
-                      Row(
-                        children: [
-                          if (canWatch) ...[
-                            Expanded(
-                              child: PebbleButton(
-                                label: 'Play on phone',
-                                icon: Icons.phone_android_rounded,
-                                lit: true,
-                                onTap: _busy ? null : () => _playHere(next),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 6, 20, 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Text(
+                          [
+                            _count(_listing.total > 0 ? _listing.total : widget.queue.count),
+                            if (widget.queue.active) 'Playing on the PC',
+                          ].join(' · '),
+                          style: TextStyle(color: widget.queue.active ? Palette.accent : Palette.muted, fontSize: 13.5),
+                        ),
+                        if (next != null) ...[
+                          const SizedBox(height: 14),
+                          Text(
+                            'Up next: ${next.title}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 13.5, color: Palette.muted),
+                          ),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              if (canWatch) ...[
+                                Expanded(
+                                  child: PebbleButton(
+                                    label: 'Play on phone',
+                                    icon: Icons.phone_android_rounded,
+                                    lit: true,
+                                    onTap: _busy ? null : () => _playHere(next),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                              ],
+                              Expanded(
+                                child: PebbleButton(
+                                  label: _busy ? 'Starting…' : 'Play on PC',
+                                  icon: Icons.desktop_windows_outlined,
+                                  onTap: _busy ? null : () => _playOnPc(next),
+                                ),
                               ),
-                            ),
-                            const SizedBox(width: 10),
-                          ],
-                          Expanded(
-                            child: PebbleButton(
-                              label: _busy ? 'Starting…' : 'Play on PC',
-                              icon: Icons.desktop_windows_outlined,
-                              onTap: _busy ? null : () => _playOnPc(next),
-                            ),
+                            ],
                           ),
                         ],
-                      ),
-                    ],
-                    if (_error != null) ...[
-                      const SizedBox(height: 10),
-                      Text(_error!, style: const TextStyle(color: Palette.danger, fontSize: 13.5)),
-                    ],
-                  ],
+                        if (_error != null) ...[
+                          const SizedBox(height: 10),
+                          Text(_error!, style: const TextStyle(color: Palette.danger, fontSize: 13.5)),
+                        ],
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+                if (entries.isEmpty && _listing.loading)
+                  const SliverFillRemaining(
+                    child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)),
+                  )
+                else if (entries.isEmpty && _listing.error != null)
+                  SliverFillRemaining(
+                    child: _Empty(
+                      icon: Icons.error_outline_rounded,
+                      title: "Couldn't load the queue",
+                      text: _listing.error!,
+                      onRetry: () => _listing.load(),
+                    ),
+                  )
+                else if (entries.isEmpty)
+                  const SliverFillRemaining(
+                    child: _Empty(icon: Icons.queue_play_next_rounded, title: 'This queue is empty', text: 'Add videos to it on the PC.'),
+                  )
+                else
+                  SliverPadding(
+                    padding: EdgeInsets.fromLTRB(10, 0, 10, _listing.hasMore ? 0 : 24),
+                    sliver: SliverList.builder(
+                      // The footer is the list's last row, built only once it scrolls into view: its spinner doesn't
+                      // run out of sight. It only shows how the next page is going; the scrolling asks for it.
+                      itemCount: entries.length + (_listing.hasMore ? 1 : 0),
+                      itemBuilder: (context, index) {
+                        if (index >= entries.length) return ListingFooter(listing: _listing);
+                        final entry = entries[index];
+                        return QueueEntryRow(
+                          link: link,
+                          entry: entry,
+                          onTap: () => unawaited(showTitleSheet(context, link: link, entry: entry, actions: _actions)),
+                          onLongPress: () => unawaited(showQuickActions(context, link: link, entry: entry, actions: _actions)),
+                        );
+                      },
+                    ),
+                  ),
+              ],
             ),
-            if (entries.isEmpty && _listing.loading)
-              const SliverFillRemaining(
-                child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)),
-              )
-            else if (entries.isEmpty && _listing.error != null)
-              SliverFillRemaining(
-                child: _Empty(
-                  icon: Icons.error_outline_rounded,
-                  title: "Couldn't load the queue",
-                  text: _listing.error!,
-                  onRetry: () => _listing.load(),
-                ),
-              )
-            else if (entries.isEmpty)
-              const SliverFillRemaining(
-                child: _Empty(icon: Icons.queue_play_next_rounded, title: 'This queue is empty', text: 'Add videos to it on the PC.'),
-              )
-            else
-              SliverPadding(
-                padding: const EdgeInsets.fromLTRB(10, 0, 10, 24),
-                sliver: SliverList.builder(
-                  itemCount: entries.length + (_listing.hasMore ? 1 : 0),
-                  itemBuilder: (context, index) {
-                    if (index >= entries.length) {
-                      unawaited(_listing.more());
-                      return const Padding(
-                        padding: EdgeInsets.all(16),
-                        child: Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5)),
-                      );
-                    }
-                    final entry = entries[index];
-                    return QueueEntryRow(
-                      link: link,
-                      entry: entry,
-                      onTap: () => unawaited(showTitleSheet(context, link: link, entry: entry, actions: _actions)),
-                    );
-                  },
-                ),
-              ),
-          ],
+          ),
         ),
       ),
     );
@@ -731,7 +769,7 @@ class _RemoteUpNextState extends State<_RemoteUpNext> {
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
             child: ListChooser(
               queues: _queues,
               selected: _selected,

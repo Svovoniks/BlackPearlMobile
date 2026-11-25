@@ -8,18 +8,47 @@ import 'package:flutter/services.dart';
 import '../connection/remote_link.dart';
 import '../connection/transport.dart';
 import '../playback/phone_sound.dart';
+import '../protocol/library.dart';
 import '../protocol/remote_state.dart';
 import '../storage/app_settings.dart';
+import 'library_screen.dart' show ContinueCard, LibraryListing;
 import 'pebbles.dart';
 import 'queue_widgets.dart';
 import 'remote_tracks.dart';
+import 'status_copy.dart';
 import 'theme.dart';
+
+export 'status_copy.dart';
 
 /// The Remote tab: what's playing on the PC and everything the player's bars do.
 class RemoteScreen extends StatefulWidget {
-  const RemoteScreen({super.key, required this.link, required this.onChoosePc, required this.onPairAgain, this.onWatchHere, this.sound});
+  const RemoteScreen({
+    super.key,
+    required this.link,
+    required this.onChoosePc,
+    required this.onPairAgain,
+    this.onWatchHere,
+    this.sound,
+    this.onBrowseLibrary,
+    this.onPlayOnPc,
+    this.changed,
+    this.active = true,
+  });
 
   final RemoteLink link;
+
+  /// Shows the Library, from the screen that says nothing is playing; null leaves the button out.
+  final VoidCallback? onBrowseLibrary;
+
+  /// Starts a title on the PC from where it stopped, for the Continue watching row shown while nothing plays; returns
+  /// why it couldn't, or null. Null leaves the row out.
+  final Future<String?> Function(LibraryEntry entry)? onPlayOnPc;
+
+  /// Fires when playback elsewhere changed resume points: the Continue watching row loads again.
+  final Listenable? changed;
+
+  /// Whether this tab is the one showing; behind another, its clock doesn't tick.
+  final bool active;
 
   /// Sound on the phone, for a PC that can send its sound; null leaves the option out.
   final PhoneSound? sound;
@@ -81,7 +110,10 @@ class _RemoteScreenState extends State<RemoteScreen> {
       link.notice.addListener(_showNotice);
       _volumeOverride = null;
       _seekTarget = null;
+      // Another PC: what was stopped on the last one isn't its to resume.
+      _stopped = null;
     }
+    if (oldWidget.active != widget.active) _syncTicker();
     if (oldWidget.sound != widget.sound) {
       oldWidget.sound?.removeListener(_soundChanged);
       oldWidget.sound?.notice.removeListener(_showSoundNotice);
@@ -97,6 +129,8 @@ class _RemoteScreenState extends State<RemoteScreen> {
     _sound?.removeListener(_soundChanged);
     _sound?.notice.removeListener(_showSoundNotice);
     _ticker?.cancel();
+    _stopTimer?.cancel();
+    _tick.dispose();
     _volumeTimer?.cancel();
     _volumeSettleTimer?.cancel();
     _feedbackTimer?.cancel();
@@ -104,6 +138,15 @@ class _RemoteScreenState extends State<RemoteScreen> {
   }
 
   void _changed() {
+    // Once the Stop has landed (the PC says nothing plays), a PC that plays again leaves nothing stopped to resume. A
+    // state it sent just before the Stop reached it still says it plays, and doesn't count.
+    if (_stopped != null) {
+      if (!(link.state?.media ?? false)) {
+        _stopLanded = true;
+      } else if (_stopLanded) {
+        _stopped = null;
+      }
+    }
     final at = link.stateReceivedAt;
     // A state that arrived after the seek replaces the guess once it shows the seek, or after a while if it never does:
     // one the PC sent before the seek reached it put the knob back for a moment.
@@ -126,15 +169,63 @@ class _RemoteScreenState extends State<RemoteScreen> {
     setState(() {});
   }
 
+  // Moves the timeline and its clocks while the PC plays, and only those: the rest of the screen is built again when
+  // the PC says something new. Behind another tab nothing ticks.
+  final ValueNotifier<int> _tick = ValueNotifier(0);
+
   void _syncTicker() {
-    final playing = link.state?.playing == true && link.status.isConnected;
+    final playing = widget.active && link.state?.playing == true && link.status.isConnected;
     if (playing && _ticker == null) {
-      _ticker = Timer.periodic(const Duration(milliseconds: 250), (_) {
-        if (mounted) setState(() {});
-      });
+      _ticker = Timer.periodic(const Duration(milliseconds: 250), (_) => _tick.value++);
     } else if (!playing) {
       _ticker?.cancel();
       _ticker = null;
+    }
+  }
+
+  // ---- Stop, and taking it back ----
+
+  // The library video this phone's Stop ended, and where: the empty screen offers to play it again from there.
+  ({String id, String title, int positionMs, QueueRef? queue})? _stopped;
+  bool _stopLanded = false;
+  Timer? _stopTimer;
+  bool _resuming = false;
+
+  void _stop() {
+    final state = _state;
+    final id = state?.mediaId;
+    if (state != null && id != null && link.canStart && link.features.contains('library')) {
+      _stopped = (id: id, title: state.title.isEmpty ? 'the video' : state.title, positionMs: _position, queue: state.queue);
+      _stopLanded = false;
+      // A Stop the PC didn't act on leaves nothing to take back: the video it ends by itself later isn't this one's.
+      _stopTimer?.cancel();
+      _stopTimer = Timer(const Duration(seconds: 3), () {
+        if (!_stopLanded) _stopped = null;
+      });
+    }
+    link.command('stop');
+  }
+
+  Future<void> _resume() async {
+    final stopped = _stopped;
+    if (stopped == null || _resuming) return;
+    setState(() => _resuming = true);
+    String? error;
+    try {
+      await link.ask('play', {
+        'id': stopped.id,
+        'positionMs': stopped.positionMs,
+        if (stopped.queue != null) ...{'queue': stopped.queue!.id, 'queueIndex': ?stopped.queue!.index},
+      }, timeout: const Duration(seconds: 30));
+    } on RemoteRequestException catch (e) {
+      error = e.message;
+    }
+    if (!mounted) return;
+    setState(() => _resuming = false);
+    if (error != null) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(error), duration: const Duration(seconds: 4)));
     }
   }
 
@@ -274,8 +365,9 @@ class _RemoteScreenState extends State<RemoteScreen> {
         bottom: false,
         child: Column(
           children: [
+            // The chips are 36 dp in a row a fingertip high, which stands where their 10 dp of room above was.
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
               child: Row(
                 children: [
                   // The PC's name gets the room it needs; the room chip shrinks first.
@@ -318,7 +410,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
         // play buttons: under the pad, those were below the fold.
         if (state.media && constraints.maxWidth > constraints.maxHeight && constraints.maxWidth >= 560) {
           return Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
@@ -326,9 +418,13 @@ class _RemoteScreenState extends State<RemoteScreen> {
                 const SizedBox(width: 20),
                 Expanded(
                   flex: 6,
+                  // Sideways the volume scrolls with the rest: pinned, it would push the play buttons out of view.
                   child: SingleChildScrollView(
                     padding: const EdgeInsets.only(bottom: 12),
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [...banner, ..._playing(state, sideways: true)]),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [...banner, ..._playing(state, sideways: true), const SizedBox(height: 12), _volumeRow()],
+                    ),
                   ),
                 ),
               ],
@@ -344,7 +440,15 @@ class _RemoteScreenState extends State<RemoteScreen> {
     final children = <Widget>[
       ...banner,
       if (!state.media)
-        _Nothing(pcName: link.pcName, connected: link.status.isConnected)
+        _Nothing(
+          link: link,
+          stopped: _stopped,
+          resuming: _resuming,
+          onResume: _resume,
+          onBrowseLibrary: widget.onBrowseLibrary,
+          onPlayOnPc: widget.onPlayOnPc,
+          changed: widget.changed,
+        )
       else ...[
         Expanded(
           child: ConstrainedBox(constraints: const BoxConstraints(minHeight: 116), child: _touchPad()),
@@ -352,18 +456,29 @@ class _RemoteScreenState extends State<RemoteScreen> {
         const SizedBox(height: 16),
         ..._playing(state),
       ],
+      // The room under the last row is part of what fills the screen: as the sliver's own padding it came after a
+      // full screen, so the page always scrolled by that much.
+      const SizedBox(height: 12),
     ];
     // The touch pad takes whatever height the controls leave. On a screen too short for its smallest size, it all
     // scrolls instead of squeezing.
-    return CustomScrollView(
+    final scrolled = CustomScrollView(
       slivers: [
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
           sliver: SliverFillRemaining(
             hasScrollBody: false,
             child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: children),
           ),
         ),
+      ],
+    );
+    if (!state.media) return scrolled;
+    // The volume stays in reach under whatever scrolls, just above the tab bar.
+    return Column(
+      children: [
+        Expanded(child: scrolled),
+        Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 8), child: _volumeRow()),
       ],
     );
   }
@@ -399,16 +514,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
   /// [sideways]: beside the touch pad, where the title and its detail take a line each, to leave the play buttons in view.
   List<Widget> _playing(RemoteState state, {bool sideways = false}) {
     final duration = state.durationMs;
-    final position = _position;
-    final fraction = duration > 0 ? (position / duration).clamp(0.0, 1.0) : 0.0;
-    final loop = _Pill(
-      label: 'Loop',
-      value: state.loop.label,
-      icon: state.loop == LoopMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
-      active: state.loop != LoopMode.off,
-      enabled: _canPlay,
-      onTap: () => link.command('loop'),
-    );
+    const clockStyle = TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]);
     return [
       Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -446,47 +552,49 @@ class _RemoteScreenState extends State<RemoteScreen> {
           ],
         ],
       ),
-      const SizedBox(height: 16),
-      _Timeline(
-        fraction: _dragFraction ?? fraction,
-        enabled: _canPlay && duration > 0,
-        onDrag: (value) => setState(() {
-          if (_dragFraction == null) _dragVideo = _videoOf(state);
-          _dragFraction = value;
-        }),
-        onRelease: (value) {
-          _seekTo(value);
-          setState(() => _dragFraction = null);
+      // The timeline takes touches over 44 dp, 14 more than it used to: 7 of them come out of the room above it.
+      const SizedBox(height: 9),
+      // The timeline and its clocks follow the PC's position between its messages, on their own (see _tick).
+      ValueListenableBuilder<int>(
+        valueListenable: _tick,
+        builder: (context, _, _) {
+          final position = _position;
+          final fraction = duration > 0 ? (position / duration).clamp(0.0, 1.0) : 0.0;
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _Timeline(
+                fraction: _dragFraction ?? fraction,
+                enabled: _canPlay && duration > 0,
+                onDrag: (value) => setState(() {
+                  if (_dragFraction == null) _dragVideo = _videoOf(state);
+                  _dragFraction = value;
+                }),
+                onRelease: (value) {
+                  _seekTo(value);
+                  setState(() => _dragFraction = null);
+                },
+                onCancel: () => setState(() => _dragFraction = null),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // Each shrinks rather than spill past the edge on a narrow phone with very large text.
+                  Flexible(
+                    child: FittedBox(fit: BoxFit.scaleDown, child: Text(formatClock(position), style: clockStyle)),
+                  ),
+                  Flexible(
+                    child: FittedBox(fit: BoxFit.scaleDown, child: Text(duration > 0 ? '−${formatClock(duration - position)}' : '', style: clockStyle)),
+                  ),
+                ],
+              ),
+            ],
+          );
         },
-        onCancel: () => setState(() => _dragFraction = null),
-      ),
-      const SizedBox(height: 2),
-      Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          // Each shrinks rather than spill past the edge on a narrow phone with very large text.
-          Flexible(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(
-                formatClock(position),
-                style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
-              ),
-            ),
-          ),
-          Flexible(
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(
-                duration > 0 ? '−${formatClock(duration - position)}' : '',
-                style: const TextStyle(color: Palette.muted, fontSize: 13, fontFeatures: [FontFeature.tabularFigures()]),
-              ),
-            ),
-          ),
-        ],
       ),
       if (!state.canControl && _connected) ...[const SizedBox(height: 12), _CantControl(room: state.room)],
-      const SizedBox(height: 14),
+      const SizedBox(height: 9),
       Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -534,162 +642,148 @@ class _RemoteScreenState extends State<RemoteScreen> {
         ],
       ),
       const SizedBox(height: 14),
-      // A PC with Shuffle gets a row for the order of play, Shuffle beside Loop; Stop and Fullscreen go under it.
-      if (state.shuffle != null) ...[
+      // What the PC plays in and where its sound goes, on one row: Audio and Subtitles open the PC player's menus (from
+      // a PC that sends them), and Sound moves the sound to this phone and back (headphones on the couch).
+      if (state.hasTracks || _soundOffered) ...[
         Row(
           children: [
-            Expanded(
-              child: _Pill(
+            if (state.hasTracks) ...[
+              Expanded(
+                child: _TrackPill(
+                  label: 'Audio',
+                  icon: Icons.graphic_eq_rounded,
+                  tracks: state.audioTracks!,
+                  selected: state.audioTrack,
+                  enabled: _canAdjust,
+                  onTap: () => unawaited(showRemoteTracks(context, link: link, tab: RemoteTracksTab.audio)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _TrackPill(
+                  label: 'Subtitles',
+                  icon: Icons.subtitles_outlined,
+                  tracks: state.subtitleTracks!,
+                  // A video without subtitles has an empty menu on the PC once its audio is listed: it has none, not "not yet".
+                  opened: state.audioTracks!.isNotEmpty,
+                  selected: state.subtitleTrack,
+                  enabled: _canAdjust,
+                  onTap: () => unawaited(showRemoteTracks(context, link: link, tab: RemoteTracksTab.subtitles)),
+                ),
+              ),
+            ],
+            if (state.hasTracks && _soundOffered) const SizedBox(width: 8),
+            if (_soundOffered)
+              Expanded(
+                child: _SoundPill(
+                  sound: _sound!,
+                  elsewhere: state.phoneSound == true,
+                  enabled: _connected,
+                  onToggle: () {
+                    final here = _sound!.on;
+                    unawaited(_sound!.toggle());
+                    _flash(here ? 'Sound on the PC' : 'Sound on this phone');
+                  },
+                ),
+              ),
+          ],
+        ),
+        // While this phone plays the sound: how it is going, and the delay that lines it up with the picture.
+        if (_soundOffered && _sound!.on) ...[const SizedBox(height: 8), _SoundDelay(sound: _sound!)],
+        const SizedBox(height: 8),
+      ],
+      // The order of play, what plays next and the PC's window, as small buttons on one row, as in the phone's own
+      // player. Stop comes last, out of the way of the others: a slip onto it ends the video.
+      Row(
+        children: [
+          for (final (index, button) in [
+            // Shuffle, from a PC that has it.
+            if (state.shuffle != null)
+              _ModeButton(
                 label: 'Shuffle',
-                value: state.shuffle! ? 'On' : 'Off',
+                semanticLabel: 'Shuffle, ${state.shuffle! ? 'On' : 'Off'}',
                 icon: Icons.shuffle_rounded,
                 active: state.shuffle!,
                 enabled: _canPlay,
                 onTap: () => link.command('shuffle'),
               ),
+            _ModeButton(
+              label: switch (state.loop) {
+                LoopMode.off => 'Loop',
+                LoopMode.all => 'Loop all',
+                LoopMode.one => 'Loop one',
+              },
+              semanticLabel: 'Loop, ${state.loop.label}',
+              icon: state.loop == LoopMode.one ? Icons.repeat_one_rounded : Icons.repeat_rounded,
+              active: state.loop != LoopMode.off,
+              enabled: _canPlay,
+              onTap: () => link.command('loop'),
             ),
-            const SizedBox(width: 8),
-            Expanded(child: loop),
-          ],
-        ),
-        const SizedBox(height: 8),
-      ],
-      Row(
-        children: [
-          Expanded(
-            child: _Pill(label: 'Stop', icon: Icons.stop_rounded, enabled: _canPlay, onTap: () => link.command('stop')),
-          ),
-          if (state.shuffle == null) ...[const SizedBox(width: 8), Expanded(child: loop)],
-          const SizedBox(width: 8),
-          Expanded(
-            child: _Pill(
+            // What the PC plays through, to pick another video from: its queue, or the playing show's episodes.
+            if (link.features.contains('queues') && (state.queue != null || state.mediaId != null))
+              _ModeButton(
+                label: 'Up next',
+                semanticLabel: state.queue != null ? 'Up next: queue ${state.queue!.name}' : 'Up next: episodes',
+                icon: Icons.queue_play_next_rounded,
+                enabled: _connected,
+                onTap: () => unawaited(showRemoteUpNext(context, link: link, mediaId: state.mediaId, queue: state.queue)),
+              ),
+            _ModeButton(
               label: 'Fullscreen',
-              value: state.fullscreen ? 'On' : 'Off',
+              semanticLabel: 'Fullscreen, ${state.fullscreen ? 'On' : 'Off'}',
               icon: state.fullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
               active: state.fullscreen,
               enabled: _canAdjust,
               onTap: () => link.command('fullscreen'),
             ),
-          ),
-          // Where the sound plays: the PC, or this phone (headphones on the couch).
-        ],
-      ),
-      // Where the sound plays: the PC, or this phone (headphones on the couch). A row of its own, so the pills beside
-      // Stop keep their size on narrow phones.
-      if (_soundOffered) ...[
-        const SizedBox(height: 8),
-        _SoundRow(
-          sound: _sound!,
-          elsewhere: state.phoneSound == true,
-          enabled: _connected,
-          onToggle: () {
-            final here = _sound!.on;
-            unawaited(_sound!.toggle());
-            _flash(here ? 'Sound on the PC' : 'Sound on this phone');
-          },
-        ),
-      ],
-      // The PC player's Audio and Subtitles menus, from a PC that sends them.
-      if (state.hasTracks) ...[
-        const SizedBox(height: 8),
-        Row(
-          children: [
-            Expanded(
-              child: _TrackPill(
-                label: 'Audio',
-                icon: Icons.graphic_eq_rounded,
-                tracks: state.audioTracks!,
-                selected: state.audioTrack,
-                enabled: _canAdjust,
-                onTap: () => unawaited(showRemoteTracks(context, link: link, tab: RemoteTracksTab.audio)),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: _TrackPill(
-                label: 'Subtitles',
-                icon: Icons.subtitles_outlined,
-                tracks: state.subtitleTracks!,
-                // A video without subtitles has an empty menu on the PC once its audio is listed: it has none, not "not yet".
-                opened: state.audioTracks!.isNotEmpty,
-                selected: state.subtitleTrack,
-                enabled: _canAdjust,
-                onTap: () => unawaited(showRemoteTracks(context, link: link, tab: RemoteTracksTab.subtitles)),
-              ),
-            ),
-          ],
-        ),
-      ],
-      // What the PC plays through, to pick another video from: its queue, or the playing show's episodes.
-      if (link.features.contains('queues') && (state.queue != null || state.mediaId != null)) ...[
-        const SizedBox(height: 12),
-        Pebble(
-          height: 46,
-          enabled: _connected,
-          onTap: () => unawaited(showRemoteUpNext(context, link: link, mediaId: state.mediaId, queue: state.queue)),
-          semanticLabel: state.queue != null ? 'Up next: queue ${state.queue!.name}' : 'Up next: episodes',
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              const Icon(Icons.queue_play_next_rounded, size: 20),
-              const SizedBox(width: 10),
-              const Text('Up next', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  state.queue != null ? state.queue!.name : 'Episodes',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 13.5, color: Palette.muted),
-                ),
-              ),
-              const Icon(Icons.chevron_right_rounded, color: Palette.muted),
-            ],
-          ),
-        ),
-      ],
-      const SizedBox(height: 16),
-      Row(
-        children: [
-          Pebble(
-            width: 44,
-            height: 44,
-            enabled: _canAdjust,
-            onTap: _toggleMute,
-            semanticLabel: _phoneVolume ? (_muted ? 'Unmute the phone' : 'Mute the phone') : (_muted ? 'Unmute' : 'Mute'),
-            child: Icon(
-              _phoneVolume ? (_muted ? Icons.headset_off_rounded : Icons.headphones_rounded) : (_muted ? Icons.volume_off_rounded : Icons.volume_up_rounded),
-              size: 21,
-              color: _muted ? Palette.danger : null,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: _VolumeTrack(
-              value: _volume,
-              muted: _muted,
-              label: _phoneVolume ? 'Phone volume' : 'PC volume',
-              enabled: _canAdjust,
-              onChanged: (value) => _setVolume(value),
-              onChangeEnd: (value) => _setVolume(value, done: true),
-            ),
-          ),
-          const SizedBox(width: 12),
-          // As wide as "Muted" at the phone's text size, so neither it nor "100%" wraps, and the track keeps its length.
-          SizedBox(
-            width: math.max(42.0, _labelWidth(context, 'Muted', _volumeStyle)),
-            child: Text(
-              _muted ? 'Muted' : '$_volume%',
-              textAlign: TextAlign.right,
-              maxLines: 1,
-              softWrap: false,
-              style: _volumeStyle,
-            ),
-          ),
+            _ModeButton(label: 'Stop', semanticLabel: 'Stop', icon: Icons.stop_rounded, enabled: _canPlay, onTap: _stop),
+          ].indexed) ...[if (index > 0) const SizedBox(width: 6), Expanded(child: button)],
         ],
       ),
     ];
   }
+
+  /// Mute and the volume: the PC's, or the phone's while it plays the PC's sound.
+  Widget _volumeRow() => Row(
+    children: [
+      Pebble(
+        width: 44,
+        height: 44,
+        tapArea: Pebble.fingertip,
+        enabled: _canAdjust,
+        onTap: _toggleMute,
+        semanticLabel: _phoneVolume ? (_muted ? 'Unmute the phone' : 'Mute the phone') : (_muted ? 'Unmute' : 'Mute'),
+        child: Icon(
+          _phoneVolume ? (_muted ? Icons.headset_off_rounded : Icons.headphones_rounded) : (_muted ? Icons.volume_off_rounded : Icons.volume_up_rounded),
+          size: 21,
+          color: _muted ? Palette.danger : null,
+        ),
+      ),
+      const SizedBox(width: 12),
+      Expanded(
+        child: _VolumeTrack(
+          value: _volume,
+          muted: _muted,
+          label: _phoneVolume ? 'Phone volume' : 'PC volume',
+          enabled: _canAdjust,
+          onChanged: (value) => _setVolume(value),
+          onChangeEnd: (value) => _setVolume(value, done: true),
+        ),
+      ),
+      const SizedBox(width: 12),
+      // As wide as "Muted" at the phone's text size, so neither it nor "100%" wraps, and the track keeps its length.
+      SizedBox(
+        width: math.max(42.0, _labelWidth(context, 'Muted', _volumeStyle)),
+        child: Text(
+          _muted ? 'Muted' : '$_volume%',
+          textAlign: TextAlign.right,
+          maxLines: 1,
+          softWrap: false,
+          style: _volumeStyle,
+        ),
+      ),
+    ],
+  );
 }
 
 class _Centered extends StatelessWidget {
@@ -717,6 +811,7 @@ class _PcChip extends StatelessWidget {
     final away = status.isConnected && (status.path == NetworkPath.away || status.path == NetworkPath.relayed);
     return Pebble(
       height: 36,
+      tapArea: Pebble.fingertip,
       onTap: onTap,
       padding: const EdgeInsets.symmetric(horizontal: 14),
       semanticLabel: 'Choose PC',
@@ -856,8 +951,9 @@ class _ConnectionBanner extends StatelessWidget {
     final status = link.status;
     final copy = describe(status, link.pcName);
     final busy = status.phase == LinkPhase.connecting || status.phase == LinkPhase.linking || status.phase == LinkPhase.pairing;
+    // Its button is 34 dp in a fingertip's height, which stands where 7 dp of the slab's room above and below was.
     return Slab(
-      padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+      padding: const EdgeInsets.fromLTRB(14, 5, 10, 5),
       child: Row(
         children: [
           SizedBox(
@@ -884,6 +980,7 @@ class _ConnectionBanner extends StatelessWidget {
             Pebble(
               height: 34,
               lit: true,
+              tapArea: Pebble.fingertip,
               padding: const EdgeInsets.symmetric(horizontal: 14),
               onTap: onPairAgain,
               child: const Text('Pair', style: TextStyle(fontSize: 13)),
@@ -891,47 +988,19 @@ class _ConnectionBanner extends StatelessWidget {
           else if (status.phase == LinkPhase.failed || status.phase == LinkPhase.waitingForPc)
             Pebble(
               height: 34,
+              tapArea: Pebble.fingertip,
               padding: const EdgeInsets.symmetric(horizontal: 14),
               onTap: link.retryNow,
               child: const Text('Retry', style: TextStyle(fontSize: 13)),
-            ),
+            )
+          else
+            // Without a button the slab keeps the height it has with one.
+            const SizedBox(height: 48),
         ],
       ),
     );
   }
 }
-
-class StatusCopy {
-  const StatusCopy(this.headline, this.detail, this.icon, {this.shortDetail});
-  final String headline;
-  final String detail;
-  final String? shortDetail;
-  final IconData icon;
-}
-
-/// The words for each connection state.
-StatusCopy describe(LinkStatus status, String pcName) => switch (status.phase) {
-  LinkPhase.connecting => StatusCopy(
-    'Connecting…',
-    'Reaching the room server that introduces this phone to $pcName.',
-    Icons.cloud_outlined,
-  ),
-  LinkPhase.linking => StatusCopy('Reaching $pcName…', 'Setting up a direct, encrypted link to the PC.', Icons.link_rounded),
-  LinkPhase.pairing => StatusCopy('Pairing with $pcName…', 'The PC is adding this phone.', Icons.link_rounded),
-  LinkPhase.waitingForPc => StatusCopy(
-    "Your PC isn't online",
-    'Open BlackPearl on $pcName and turn on Phone remote in Settings › Profile. This connects as soon as the PC is back.',
-    Icons.desktop_access_disabled_outlined,
-    shortDetail: 'Connects as soon as the PC is back.',
-  ),
-  LinkPhase.failed => StatusCopy(
-    status.message ?? "Couldn't connect",
-    status.needsPairing ? 'Show a new pairing code on the PC and scan it.' : '',
-    status.needsPairing ? Icons.link_off_rounded : Icons.error_outline_rounded,
-  ),
-  LinkPhase.idle => StatusCopy('Not connected', 'The remote reconnects when you come back to the app.', Icons.pause_circle_outline_rounded),
-  LinkPhase.connected => StatusCopy('Connected', '', Icons.check_circle_outline_rounded),
-};
 
 class _RetryCountdown extends StatefulWidget {
   const _RetryCountdown({required this.at, this.small = false});
@@ -995,97 +1064,291 @@ class _CantControl extends StatelessWidget {
   );
 }
 
-class _Nothing extends StatelessWidget {
-  const _Nothing({required this.pcName, required this.connected});
-  final String pcName;
-  final bool connected;
+/// Nothing plays on the PC. Rather than only say so, the screen offers what comes next: the Library, the video this
+/// phone's Stop just ended, and the PC's Continue watching row, where a card starts on the PC with one tap.
+class _Nothing extends StatefulWidget {
+  const _Nothing({
+    required this.link,
+    required this.stopped,
+    required this.resuming,
+    required this.onResume,
+    this.onBrowseLibrary,
+    this.onPlayOnPc,
+    this.changed,
+  });
+  final RemoteLink link;
+
+  /// The video Stop ended, to play again from where it was; null when there is none.
+  final ({String id, String title, int positionMs, QueueRef? queue})? stopped;
+  final bool resuming;
+  final VoidCallback onResume;
+  final VoidCallback? onBrowseLibrary;
+  final Future<String?> Function(LibraryEntry entry)? onPlayOnPc;
+  final Listenable? changed;
+
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 40),
-    child: Column(
-      children: [
-        Well(
-          width: 96,
-          height: 96,
-          child: const Center(child: Icon(Icons.movie_outlined, size: 38, color: Palette.muted)),
-        ),
-        const SizedBox(height: 22),
-        Text('Nothing is playing', textAlign: TextAlign.center, style: display(24)),
-        const SizedBox(height: 8),
-        Text(
-          connected ? 'Start a video on $pcName and its controls appear here.' : 'When $pcName plays something, its controls appear here.',
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Palette.muted, fontSize: 14.5, height: 1.4),
-        ),
-      ],
-    ),
-  );
+  State<_Nothing> createState() => _NothingState();
 }
 
-/// Label with a small value under it, as the mockup's pills.
-class _Pill extends StatelessWidget {
-  const _Pill({required this.label, required this.icon, this.value, this.active = false, required this.enabled, required this.onTap});
+class _NothingState extends State<_Nothing> {
+  List<LibraryEntry> _continuing = const [];
+  String? _starting;
+  bool _wasConnected = false;
+  int _loads = 0;
+
+  RemoteLink get link => widget.link;
+
+  // The row shows for a PC with a library that lets phones start videos on it.
+  bool get _offers => widget.onPlayOnPc != null && link.features.contains('library') && link.canStart;
+
+  @override
+  void initState() {
+    super.initState();
+    link.addListener(_linkChanged);
+    widget.changed?.addListener(_load);
+    _wasConnected = link.status.isConnected;
+    unawaited(_load());
+  }
+
+  @override
+  void didUpdateWidget(_Nothing oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.changed != widget.changed) {
+      oldWidget.changed?.removeListener(_load);
+      widget.changed?.addListener(_load);
+    }
+    if (oldWidget.link != link) {
+      oldWidget.link.removeListener(_linkChanged);
+      link.addListener(_linkChanged);
+      _wasConnected = link.status.isConnected;
+      _continuing = const [];
+      unawaited(_load());
+    }
+  }
+
+  @override
+  void dispose() {
+    link.removeListener(_linkChanged);
+    widget.changed?.removeListener(_load);
+    super.dispose();
+  }
+
+  void _linkChanged() {
+    final connected = link.status.isConnected;
+    if (connected && !_wasConnected) unawaited(_load());
+    _wasConnected = connected;
+  }
+
+  // Home's first page starts with Continue watching. A load that fails leaves the row as it was.
+  Future<void> _load() async {
+    if (!_offers || !link.status.isConnected) return;
+    final load = ++_loads;
+    final home = LibraryListing(link, const BrowseRequest(home: true));
+    await home.load();
+    final entries = home.error == null ? home.entries.where((e) => e.homeSection == 'continue' && e.playable).toList() : null;
+    home.dispose();
+    if (!mounted || load != _loads || entries == null) return;
+    setState(() => _continuing = entries);
+  }
+
+  Future<void> _play(LibraryEntry entry) async {
+    if (_starting != null) return;
+    setState(() => _starting = entry.id);
+    final error = await widget.onPlayOnPc!(entry);
+    if (!mounted) return;
+    setState(() => _starting = null);
+    if (error != null) {
+      ScaffoldMessenger.maybeOf(context)
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(error), duration: const Duration(seconds: 4)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final connected = link.status.isConnected;
+    final stopped = connected ? widget.stopped : null;
+    final browse = widget.onBrowseLibrary != null && link.features.contains('library');
+    final row = connected && _offers ? _continuing : const <LibraryEntry>[];
+    return Padding(
+      padding: EdgeInsets.only(top: row.isEmpty ? 40 : 20),
+      child: Column(
+        children: [
+          Well(
+            width: 96,
+            height: 96,
+            child: const Center(child: Icon(Icons.movie_outlined, size: 38, color: Palette.muted)),
+          ),
+          const SizedBox(height: 22),
+          Text('Nothing is playing', textAlign: TextAlign.center, style: display(24)),
+          const SizedBox(height: 8),
+          Text(
+            connected ? 'Start a video on ${link.pcName} and its controls appear here.' : 'When ${link.pcName} plays something, its controls appear here.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Palette.muted, fontSize: 14.5, height: 1.4),
+          ),
+          if (stopped != null) ...[
+            const SizedBox(height: 20),
+            PebbleButton(
+              label: widget.resuming ? 'Starting…' : 'Resume ${stopped.title} · ${formatClock(stopped.positionMs)}',
+              icon: Icons.play_arrow_rounded,
+              lit: true,
+              onTap: widget.resuming ? null : widget.onResume,
+            ),
+          ],
+          if (browse) ...[
+            SizedBox(height: stopped != null ? 10 : 20),
+            PebbleButton(label: 'Browse library', icon: Icons.video_library_outlined, lit: stopped == null, onTap: widget.onBrowseLibrary),
+          ],
+          if (row.isNotEmpty) ...[
+            const SizedBox(height: 26),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Continue on ${link.pcName}', maxLines: 1, overflow: TextOverflow.ellipsis, style: display(19)),
+            ),
+            const SizedBox(height: 10),
+            SizedBox(
+              height: ContinueCard.heightOf(context),
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: row.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 12),
+                itemBuilder: (context, index) {
+                  final entry = row[index];
+                  final starting = _starting == entry.id;
+                  return Stack(
+                    children: [
+                      Opacity(
+                        opacity: _starting != null && !starting ? 0.5 : 1,
+                        child: ContinueCard(link: link, entry: entry, onOpen: (entry) => unawaited(_play(entry))),
+                      ),
+                      // Over the card's picture while the PC starts it.
+                      if (starting)
+                        const Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 0,
+                          height: 130,
+                          child: IgnorePointer(
+                            child: Center(child: SizedBox(width: 30, height: 30, child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5))),
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+/// One of the buttons under the play buttons: an icon over a short label, lit with the accent while its mode is on.
+class _ModeButton extends StatelessWidget {
+  const _ModeButton({required this.label, required this.semanticLabel, required this.icon, this.active = false, required this.enabled, required this.onTap});
   final String label;
-  final String? value;
+  final String semanticLabel;
   final IconData icon;
   final bool active;
   final bool enabled;
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Pebble(
-    height: 54,
-    radius: 18,
-    enabled: enabled,
-    onTap: onTap,
-    semanticLabel: value == null ? label : '$label, $value',
-    padding: const EdgeInsets.symmetric(horizontal: 10),
-    child: Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(icon, size: 20, color: active ? Palette.accent : null),
-        const SizedBox(width: 7),
-        Flexible(
-          // Narrow phones shrink the words a little rather than cutting them off.
-          child: FittedBox(
+  // An icon and a line of text in a 52 dp pebble: past 130% text they would spill out of it.
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(
+    maxScaleFactor: 1.3,
+    child: Pebble(
+      height: 52,
+      radius: 16,
+      enabled: enabled,
+      onTap: onTap,
+      semanticLabel: semanticLabel,
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 20, color: active ? Palette.accent : null),
+          const SizedBox(height: 3),
+          // Five of them share a narrow phone's width: the word shrinks a little rather than being cut off.
+          FittedBox(
             fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, maxLines: 1, style: const TextStyle(fontSize: 13, height: 1.15)),
-                if (value != null)
-                  Text(
-                    value!,
-                    maxLines: 1,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      height: 1.2,
-                      fontWeight: FontWeight.w500,
-                      color: active ? Palette.accent : Palette.muted,
-                    ),
-                  ),
-              ],
+            child: Text(
+              label,
+              maxLines: 1,
+              style: TextStyle(fontSize: 11.5, height: 1.15, fontWeight: FontWeight.w500, color: active ? Palette.accent : null),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }
 
-/// Where the PC's sound plays. Off, a wide button that plays it on this phone. On, how it is going and the delay that
-/// lines it up with the picture, for headphones and speakers that take their own time (each step 50 ms, kept for next
-/// time), beside a lit button that gives the sound back to the PC.
-class _SoundRow extends StatelessWidget {
-  const _SoundRow({required this.sound, required this.elsewhere, required this.enabled, required this.onToggle});
+/// Where the PC's sound plays, beside Audio and Subtitles: a tap plays it on this phone, and another gives it back to
+/// the PC.
+class _SoundPill extends StatelessWidget {
+  const _SoundPill({required this.sound, required this.elsewhere, required this.enabled, required this.onToggle});
   final PhoneSound sound;
 
   /// Another phone has the sound now.
   final bool elsewhere;
   final bool enabled;
   final VoidCallback onToggle;
+
+  @override
+  // Two lines of text in a 54 dp pebble: past 160% text they would spill out of it.
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(
+    maxScaleFactor: 1.6,
+    child: ListenableBuilder(
+      listenable: sound,
+      builder: (context, _) {
+        final on = sound.on;
+        final where = on ? 'On this phone' : (elsewhere ? 'On a phone' : 'On the PC');
+        // A third of the row's width holds "On phone" whole, where "On this phone" was cut short.
+        final shown = on ? 'On phone' : where;
+        return Pebble(
+          height: 54,
+          radius: 18,
+          enabled: enabled,
+          onTap: onToggle,
+          semanticLabel: on ? 'Sound, On this phone. Play it on the PC' : 'Sound, $where. Play it on this phone',
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(on ? Icons.headphones_rounded : Icons.speaker_rounded, size: 20, color: on ? Palette.accent : null),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Sound', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, height: 1.15)),
+                    Text(
+                      shown,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 11.5, height: 1.2, fontWeight: FontWeight.w500, color: on ? Palette.accent : Palette.muted),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    ),
+  );
+}
+
+/// Under the pills while this phone plays the PC's sound: how it is going, and the delay that lines it up with the
+/// picture, for headphones and speakers that take their own time (each step 50 ms, kept for next time).
+class _SoundDelay extends StatelessWidget {
+  const _SoundDelay({required this.sound});
+  final PhoneSound sound;
 
   static String _delay(int ms) {
     if (ms == 0) return 'Sound delay: none';
@@ -1094,103 +1357,57 @@ class _SoundRow extends StatelessWidget {
   }
 
   @override
-  // Two lines of text in a 54 dp pebble: past 160% text they would spill out of it.
-  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(maxScaleFactor: 1.6, child: _build(context));
-
-  Widget _build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([sound, sound.settings]),
-    builder: (context, _) {
-      if (!sound.on) {
-        final where = elsewhere ? 'On a phone' : 'On the PC';
-        return Pebble(
-          height: 54,
+  Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(
+    maxScaleFactor: 1.6,
+    child: ListenableBuilder(
+      listenable: Listenable.merge([sound, sound.settings]),
+      builder: (context, _) {
+        final delay = sound.settings.soundDelayMs;
+        final limit = AppSettings.soundDelayLimitMs;
+        return Slab(
+          padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
           radius: 18,
-          enabled: enabled,
-          onTap: onToggle,
-          semanticLabel: 'Sound, $where. Play it on this phone',
-          padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Row(
             children: [
-              const Icon(Icons.speaker_rounded, size: 20),
-              const SizedBox(width: 10),
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Sound', style: TextStyle(fontSize: 13, height: 1.15)),
-                  Text(where, style: const TextStyle(fontSize: 11.5, height: 1.2, fontWeight: FontWeight.w500, color: Palette.muted)),
-                ],
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Text(
-                  'Play on this phone',
-                  textAlign: TextAlign.right,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 13, color: Palette.muted),
+              Expanded(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(sound.statusText, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, height: 1.2)),
+                    Text(
+                      _delay(delay),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11.5, height: 1.25, color: Palette.muted, fontFeatures: [FontFeature.tabularFigures()]),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 8),
-              const Icon(Icons.headphones_rounded, size: 18, color: Palette.muted),
+              const SizedBox(width: 6),
+              Pebble(
+                width: 40,
+                height: 40,
+                tapArea: Pebble.fingertip,
+                enabled: delay > -limit,
+                onTap: () => unawaited(sound.adjustDelay(-50)),
+                semanticLabel: 'Sound earlier',
+                child: const Icon(Icons.remove_rounded, size: 20),
+              ),
+              Pebble(
+                width: 40,
+                height: 40,
+                tapArea: Pebble.fingertip,
+                enabled: delay < limit,
+                onTap: () => unawaited(sound.adjustDelay(50)),
+                semanticLabel: 'Sound later',
+                child: const Icon(Icons.add_rounded, size: 20),
+              ),
             ],
           ),
         );
-      }
-      final delay = sound.settings.soundDelayMs;
-      final limit = AppSettings.soundDelayLimitMs;
-      return Slab(
-        padding: const EdgeInsets.all(6),
-        radius: 18,
-        child: Row(
-          children: [
-            Pebble(
-              width: 42,
-              height: 42,
-              lit: true,
-              enabled: enabled,
-              onTap: onToggle,
-              semanticLabel: 'Sound, On this phone. Play it on the PC',
-              child: const Icon(Icons.headphones_rounded, size: 21),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(sound.statusText, maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, height: 1.2)),
-                  Text(
-                    _delay(delay),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11.5, height: 1.25, color: Palette.muted, fontFeatures: [FontFeature.tabularFigures()]),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 6),
-            Pebble(
-              width: 40,
-              height: 40,
-              enabled: delay > -limit,
-              onTap: () => unawaited(sound.adjustDelay(-50)),
-              semanticLabel: 'Sound earlier',
-              child: const Icon(Icons.remove_rounded, size: 20),
-            ),
-            const SizedBox(width: 6),
-            Pebble(
-              width: 40,
-              height: 40,
-              enabled: delay < limit,
-              onTap: () => unawaited(sound.adjustDelay(50)),
-              semanticLabel: 'Sound later',
-              child: const Icon(Icons.add_rounded, size: 20),
-            ),
-          ],
-        ),
-      );
-    },
+      },
+    ),
   );
 }
 
@@ -1217,7 +1434,7 @@ class _TrackPill extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  // As the Sound row: two lines in a 54 dp pebble.
+  // As the Sound pill: two lines in a 54 dp pebble.
   Widget build(BuildContext context) => MediaQuery.withClampedTextScaling(maxScaleFactor: 1.6, child: Builder(builder: _build));
 
   Widget _build(BuildContext context) {
@@ -1263,8 +1480,6 @@ class _TrackPill extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 2),
-          const Icon(Icons.expand_more_rounded, size: 18, color: Palette.muted),
         ],
       ),
     );
@@ -1297,8 +1512,9 @@ class _Timeline extends StatelessWidget {
         onHorizontalDragEnd: enabled ? (d) => onRelease(at(d.localPosition)) : null,
         onHorizontalDragCancel: enabled ? onCancel : null,
         onTapUp: enabled ? (d) => onRelease(at(d.localPosition)) : null,
+        // The bar is 10 dp; the touch takes 44 around it.
         child: SizedBox(
-          height: 30,
+          height: 44,
           child: Opacity(
             opacity: enabled ? 1 : 0.5,
             child: CustomPaint(
@@ -1342,7 +1558,7 @@ class _VolumeTrack extends StatelessWidget {
         onHorizontalDragEnd: enabled ? (d) => onChangeEnd(at(d.localPosition)) : null,
         onTapUp: enabled ? (d) => onChangeEnd(at(d.localPosition)) : null,
         child: SizedBox(
-          height: 36,
+          height: 48,
           child: Opacity(
             opacity: enabled ? 1 : 0.5,
             child: CustomPaint(

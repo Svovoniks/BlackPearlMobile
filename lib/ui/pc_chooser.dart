@@ -58,6 +58,14 @@ class _PcChooser extends StatelessWidget {
                   Navigator.of(context).pop();
                   if (pc.pcId != current) model.select(pc);
                 },
+                // Any PC can be forgotten from its own row, without switching to it first. Forgetting the one in use
+                // closes the sheet, as the remote moves on to another PC or to pairing; another one just leaves the list.
+                onForget: () async {
+                  final confirmed = await _confirmForget(context, pc);
+                  if (confirmed != true || !context.mounted) return;
+                  if (pc.pcId == current) Navigator.of(context).pop();
+                  await model.forget(pc);
+                },
               ),
             const SizedBox(height: 12),
             PebbleButton(
@@ -68,22 +76,6 @@ class _PcChooser extends StatelessWidget {
                 model.requestPairing();
               },
             ),
-            if (current != null) ...[
-              const SizedBox(height: 10),
-              PebbleButton(
-                label: 'Forget this PC',
-                icon: Icons.link_off_rounded,
-                textColor: Palette.danger,
-                onTap: () async {
-                  final pc = model.pcs.firstWhere((p) => p.pcId == current);
-                  final confirmed = await _confirmForget(context, pc);
-                  if (confirmed == true && context.mounted) {
-                    Navigator.of(context).pop();
-                    await model.forget(pc);
-                  }
-                },
-              ),
-            ],
           ],
         ),
       ),
@@ -121,11 +113,12 @@ class _PcChooser extends StatelessWidget {
 }
 
 class _PcRow extends StatelessWidget {
-  const _PcRow({required this.pc, required this.selected, required this.status, required this.onTap});
+  const _PcRow({required this.pc, required this.selected, required this.status, required this.onTap, required this.onForget});
   final PairedPc pc;
   final bool selected;
   final LinkStatus? status;
   final VoidCallback onTap;
+  final VoidCallback onForget;
 
   @override
   Widget build(BuildContext context) {
@@ -144,7 +137,7 @@ class _PcRow extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          padding: const EdgeInsets.fromLTRB(12, 6, 0, 6),
           child: Row(
             children: [
               Icon(Icons.desktop_windows_outlined, color: selected ? Palette.accent : Palette.muted, size: 22),
@@ -170,6 +163,24 @@ class _PcRow extends StatelessWidget {
                 ),
               ),
               if (selected) const Icon(Icons.check_rounded, color: Palette.accent, size: 20),
+              PopupMenuButton<String>(
+                tooltip: 'More for ${pc.name}',
+                icon: const Icon(Icons.more_vert_rounded, color: Palette.muted),
+                color: Palette.elevated,
+                onSelected: (_) => onForget(),
+                itemBuilder: (context) => [
+                  PopupMenuItem<String>(
+                    value: 'forget',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.link_off_rounded, size: 20, color: Palette.danger),
+                        const SizedBox(width: 12),
+                        Flexible(child: Text('Forget ${pc.name}', overflow: TextOverflow.ellipsis, style: const TextStyle(color: Palette.danger))),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ],
           ),
         ),

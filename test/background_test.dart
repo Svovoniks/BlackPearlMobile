@@ -14,7 +14,7 @@ class FakeBackground extends BackgroundLink {
   final List<BackgroundNotice> shown = [];
   int stops = 0, asked = 0;
   bool _on = false;
-  void Function(String action)? press;
+  BackgroundAction? press;
 
   @override
   bool get running => _on;
@@ -24,7 +24,7 @@ class FakeBackground extends BackgroundLink {
   @override
   bool get mayBeRunning => _on || unsettled;
   @override
-  void listen(void Function(String action) onAction) => press = onAction;
+  void listen(BackgroundAction onAction) => press = onAction;
   @override
   Future<bool> show(BackgroundNotice notice) async {
     _on = true;

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
@@ -17,10 +19,18 @@ class Pebble extends StatefulWidget {
     this.semanticLabel,
     this.enabled = true,
     this.color,
+    this.tapArea,
   });
 
   final Widget child;
   final VoidCallback? onTap;
+
+  /// The least room that takes the touch, around a pebble drawn smaller than a fingertip: the pebble keeps its look,
+  /// centered in it. Null: the pebble itself.
+  final Size? tapArea;
+
+  /// A fingertip: Android's 48 dp.
+  static const fingertip = Size(48, 48);
 
   /// The accent pebble, for the main action.
   final bool lit;
@@ -97,6 +107,15 @@ class _PebbleState extends State<Pebble> {
     );
     content = AnimatedScale(scale: pressed ? 0.95 : 1, duration: const Duration(milliseconds: 90), child: content);
     content = AnimatedOpacity(opacity: widget.enabled ? 1 : 0.38, duration: const Duration(milliseconds: 150), child: content);
+    final tapArea = widget.tapArea;
+    if (tapArea != null) {
+      // Padding rather than a centering box, so a pebble that fills the width it is given still does.
+      final above = math.max(0.0, (tapArea.height - widget.height) / 2);
+      final width = widget.width;
+      final beside = width == null ? 0.0 : math.max(0.0, (tapArea.width - width) / 2);
+      content = Padding(padding: EdgeInsets.symmetric(vertical: above, horizontal: beside), child: content);
+      if (width == null && tapArea.width > 0) content = ConstrainedBox(constraints: BoxConstraints(minWidth: tapArea.width), child: content);
+    }
     return Semantics(
       button: true,
       enabled: _active,

@@ -2,19 +2,28 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/rendering.dart' show RenderAbstractViewport;
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../connection/remote_link.dart';
 import '../protocol/library.dart';
 import '../protocol/remote_state.dart';
 import 'artwork.dart';
+import 'mini_remote_bar.dart';
 import 'pebbles.dart';
 import 'queue_widgets.dart';
+import 'status_copy.dart';
 import 'theme.dart';
 
 /// What the library screens do with a title: play it here, or start it on the PC.
 class LibraryActions {
-  const LibraryActions({required this.watchHere, required this.playOnPc, this.markWatched});
+  const LibraryActions({required this.watchHere, required this.playOnPc, this.markWatched, this.openRemote, this.prefersPc});
+
+  /// Shows the Remote tab, from a page above the tabs; null where there is none to show.
+  final VoidCallback? openRemote;
+
+  /// Whether a video was last started on the PC rather than on the phone: where a list's play buttons start one.
+  final bool Function()? prefersPc;
 
   /// Plays [entry] on the phone. [fromStart] ignores the resume point; [queue] plays it as part of a saved queue.
   final Future<void> Function(LibraryEntry entry, {bool fromStart, QueueRef? queue}) watchHere;
@@ -32,6 +41,119 @@ class LibraryActions {
     watchHere: (entry, {bool fromStart = false, QueueRef? queue}) => watchHere(entry, fromStart: fromStart, queue: queue ?? list.at(entry.index)),
     playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) => playOnPc(entry, fromStart: fromStart, queue: queue ?? list.at(entry.index)),
     markWatched: markWatched,
+    openRemote: openRemote,
+    prefersPc: prefersPc,
+  );
+}
+
+/// Where a list's play button starts a video.
+enum PlayTarget { phone, pc }
+
+/// Where a play button on a list starts a video now: the place used last when the PC offers both, the one it offers
+/// otherwise, or null when it offers neither.
+PlayTarget? quickPlayTarget(RemoteLink link, LibraryActions actions) {
+  final phone = link.features.contains('watch');
+  final pc = link.status.isConnected && link.canStart;
+  if (phone && pc) return (actions.prefersPc?.call() ?? false) ? PlayTarget.pc : PlayTarget.phone;
+  return phone ? PlayTarget.phone : (pc ? PlayTarget.pc : null);
+}
+
+/// Plays [entry] at [quickPlayTarget] without opening its sheet, from its resume point. A refusal from the PC shows
+/// in a snack bar.
+Future<void> quickPlay(BuildContext context, {required RemoteLink link, required LibraryEntry entry, required LibraryActions actions}) async {
+  final target = quickPlayTarget(link, actions);
+  if (target == null) return;
+  if (target == PlayTarget.phone) {
+    await actions.watchHere(entry);
+    return;
+  }
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  final error = await actions.playOnPc(entry);
+  if (error != null) {
+    messenger
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(error), duration: const Duration(seconds: 4)));
+  }
+}
+
+/// Whether [entry]'s watched mark can be changed from the phone: a film or an episode (songs keep no marks), or a show
+/// or season as a whole, on a PC that takes marks.
+bool canMarkWatched(RemoteLink link, LibraryEntry entry, LibraryActions actions) =>
+    actions.markWatched != null &&
+    link.features.contains('mark-watched') &&
+    entry.kind != 'Music' &&
+    (entry.level == 'movie' || entry.level == 'episode' || entry.playable || entry.opensList);
+
+/// What a long press on a title offers, without opening it: where to play it, and its watched mark.
+Future<void> showQuickActions(BuildContext context, {required RemoteLink link, required LibraryEntry entry, required LibraryActions actions}) {
+  final canWatch = entry.playable && link.features.contains('watch');
+  final canStart = entry.playable && link.status.isConnected && link.canStart;
+  final canMark = canMarkWatched(link, entry, actions) && link.status.isConnected;
+  if (!canWatch && !canStart && !canMark) return Future.value();
+  unawaited(HapticFeedback.mediumImpact());
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  void say(String text) => messenger
+    ?..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(content: Text(text), duration: const Duration(seconds: 3)));
+  final resume = !entry.watched && entry.positionMs >= 10000;
+  // A show or a season has no mark of its own to flip: both ways are offered, for all its episodes.
+  final whole = entry.opensList;
+  return showModalBottomSheet<void>(
+    context: context,
+    useSafeArea: true,
+    isScrollControlled: true,
+    builder: (sheet) {
+      Widget row(IconData icon, String label, Future<void> Function() act) => InkWell(
+        onTap: () {
+          Navigator.of(sheet).pop();
+          unawaited(act());
+        },
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 52),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            child: Row(
+              children: [
+                Icon(icon, size: 22, color: Palette.muted),
+                const SizedBox(width: 16),
+                Expanded(child: Text(label, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500))),
+              ],
+            ),
+          ),
+        ),
+      );
+      Future<void> mark(bool watched) async {
+        final error = await actions.markWatched!(entry, watched);
+        say(error ?? (whole ? 'Every episode is marked ${watched ? 'watched' : 'unwatched'}.' : 'Marked ${watched ? 'watched' : 'unwatched'}.'));
+      }
+
+      return SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.only(top: 14, bottom: 10),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+                child: Text(entry.title, maxLines: 2, overflow: TextOverflow.ellipsis, style: display(19)),
+              ),
+              if (canWatch)
+                row(Icons.phone_android_rounded, resume ? 'Resume on phone · ${formatClock(entry.positionMs)}' : 'Play on phone', () => actions.watchHere(entry)),
+              if (canStart)
+                row(Icons.desktop_windows_outlined, 'Play on ${link.pcName}', () async {
+                  final error = await actions.playOnPc(entry);
+                  if (error != null) say(error);
+                }),
+              if (canMark && (whole || !entry.watched)) row(Icons.check_rounded, whole ? 'Mark every episode as watched' : 'Mark as watched', () => mark(true)),
+              if (canMark && (whole || entry.watched))
+                row(Icons.remove_done_rounded, whole ? 'Mark every episode as unwatched' : 'Mark as unwatched', () => mark(false)),
+            ],
+          ),
+        ),
+      );
+    },
   );
 }
 
@@ -155,9 +277,15 @@ enum _Mode { home, category, queues, search }
 
 /// The Library tab: Home's rows, each category as a grid of posters, and search.
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key, required this.link, required this.actions, this.changed});
+  const LibraryScreen({super.key, required this.link, required this.actions, this.changed, this.active = true, this.toTop});
   final RemoteLink link;
   final LibraryActions actions;
+
+  /// Whether this tab is the one showing: only then does the system's Back close its search.
+  final bool active;
+
+  /// Fires when the Library tab is tapped while it shows: the list goes to its top, and from there back to Home.
+  final Listenable? toTop;
 
   /// Fires when playback elsewhere changed resume points or watched marks: the list loads again.
   final Listenable? changed;
@@ -184,9 +312,27 @@ class _LibraryScreenState extends State<LibraryScreen> {
     super.initState();
     link.addListener(_linkChanged);
     widget.changed?.addListener(_playbackChanged);
+    widget.toTop?.addListener(_toTop);
     _wasConnected = link.status.isConnected;
+    _phase = link.status.phase;
     if (_wasConnected && _available) _open();
   }
+
+  // Home's list, to send it back to its top.
+  final ScrollController _homeScroll = ScrollController();
+
+  void _toTop() {
+    if (_mode == _Mode.home && _homeScroll.hasClients && _homeScroll.offset > 0) {
+      unawaited(_homeScroll.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOutCubic));
+    } else if (_mode != _Mode.home) {
+      _select(_Mode.home);
+    }
+  }
+
+  // What search was opened over, which leaving it shows again.
+  _Mode _beforeSearch = _Mode.home;
+
+  void _leaveSearch() => _select(_beforeSearch == _Mode.search ? _Mode.home : _beforeSearch);
 
   // Continue watching on Home: it goes back to its start once playback changed, where the title just watched now is.
   // Left where it was scrolled to, the row showed the titles after it, so it looked as if nothing had changed.
@@ -208,9 +354,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
       oldWidget.link.removeListener(_linkChanged);
       link.addListener(_linkChanged);
       _wasConnected = link.status.isConnected;
+      _phase = link.status.phase;
       _listing?.dispose();
       _listing = null;
       if (_wasConnected && _available) _open();
+    }
+    if (oldWidget.toTop != widget.toTop) {
+      oldWidget.toTop?.removeListener(_toTop);
+      widget.toTop?.addListener(_toTop);
     }
   }
 
@@ -218,17 +369,27 @@ class _LibraryScreenState extends State<LibraryScreen> {
   void dispose() {
     link.removeListener(_linkChanged);
     widget.changed?.removeListener(_playbackChanged);
+    widget.toTop?.removeListener(_toTop);
     _searchDebounce?.cancel();
     _search.dispose();
     _searchFocus.dispose();
     _continueRow.dispose();
+    _homeScroll.dispose();
     _listing?.dispose();
     super.dispose();
   }
 
+  // The connection's phase as last shown, for the words of "not connected".
+  LinkPhase? _phase;
+
   void _linkChanged() {
     final connected = link.status.isConnected;
-    if (connected == _wasConnected) return;
+    if (connected == _wasConnected) {
+      // Still not connected, but otherwise: the message says how it is going.
+      if (link.status.phase != _phase && mounted) setState(() => _phase = link.status.phase);
+      return;
+    }
+    _phase = link.status.phase;
     _wasConnected = connected;
     // Coming back after a drop: load again, unless what is shown loaded fine. An empty list loads again too: a PC that
     // has just started may have answered before it had read its library.
@@ -261,6 +422,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     // A search still waiting to start belongs to the search field, not to the listing chosen now.
     _searchDebounce?.cancel();
     setState(() {
+      if (mode == _Mode.search) _beforeSearch = _mode;
       _mode = mode;
       if (category != null) _category = category;
     });
@@ -334,23 +496,63 @@ class _LibraryScreenState extends State<LibraryScreen> {
     builder: (_) => UnwatchedScreen(link: link, actions: widget.actions, changed: widget.changed),
   )));
 
+  void _holdEntry(LibraryEntry entry) => unawaited(showQuickActions(context, link: link, entry: entry, actions: widget.actions));
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: _mode == _Mode.search ? _searchField() : Text('Library', style: display(28)),
-            ),
-            const SizedBox(height: 12),
-            _modes(),
-            const SizedBox(height: 6),
-            Expanded(child: _body()),
-          ],
+    final searching = _mode == _Mode.search;
+    // In search, the system's Back closes the search, as its arrow does, rather than the app.
+    return PopScope(
+      canPop: !(widget.active && searching),
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && widget.active && _mode == _Mode.search) _leaveSearch();
+      },
+      child: Scaffold(
+        body: SafeArea(
+          bottom: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 12, 0),
+                child: SizedBox(
+                  height: 48,
+                  child: Row(
+                    children: [
+                      if (searching) ...[
+                        Pebble(
+                          width: 40,
+                          height: 40,
+                          tapArea: Pebble.fingertip,
+                          onTap: _leaveSearch,
+                          semanticLabel: 'Close search',
+                          child: const Icon(Icons.arrow_back_rounded, size: 20),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(child: _searchField()),
+                        const SizedBox(width: 4),
+                      ] else ...[
+                        Expanded(child: Text('Library', style: display(28), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                        // Always in view, where the pills' row scrolled it out of sight.
+                        Pebble(
+                          width: 44,
+                          height: 44,
+                          tapArea: Pebble.fingertip,
+                          onTap: () => _select(_Mode.search),
+                          semanticLabel: 'Search',
+                          child: const Icon(Icons.search_rounded, size: 22),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              _modes(),
+              const SizedBox(height: 6),
+              Expanded(child: _body()),
+            ],
+          ),
         ),
       ),
     );
@@ -393,6 +595,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       child: Pebble(
         height: 38,
         lit: selected,
+        tapArea: Pebble.fingertip,
         onTap: onTap,
         semanticLabel: label,
         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -405,18 +608,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ),
       ),
     );
+    // The pills are 38 dp in a row a fingertip high. Search has its own button beside the title.
     return SizedBox(
-      height: 46,
+      height: 48,
       child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(16, 2, 8, 6),
+        padding: const EdgeInsets.only(left: 16, right: 8),
         children: [
           pill(_Mode.home, 'Home', _mode == _Mode.home, () => _select(_Mode.home)),
           for (final category in [LibraryCategory.films, LibraryCategory.shows, LibraryCategory.anime])
             pill(category, category.label, _mode == _Mode.category && _category == category, () => _select(_Mode.category, category)),
           if (link.features.contains('queues'))
             pill(_Mode.queues, 'Queues', _mode == _Mode.queues, () => _select(_Mode.queues), icon: Icons.queue_play_next_rounded),
-          pill(_Mode.search, 'Search', _mode == _Mode.search, () => _select(_Mode.search), icon: Icons.search_rounded),
         ],
       ),
     );
@@ -424,7 +627,18 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Widget _body() {
     if (!link.status.isConnected && (_listing == null || _listing!.entries.isEmpty)) {
-      return _Message(icon: Icons.cloud_off_rounded, title: 'Not connected', text: "The library shows once the phone reaches ${link.pcName}. The Remote tab says how it's going.");
+      // How the connection is going, in the Remote's words, and a way to try again from here.
+      final status = link.status;
+      final copy = describe(status, link.pcName);
+      final trying = status.phase == LinkPhase.connecting || status.phase == LinkPhase.linking || status.phase == LinkPhase.pairing;
+      return _Message(
+        icon: trying ? Icons.cloud_sync_outlined : Icons.cloud_off_rounded,
+        title: status.phase == LinkPhase.idle ? 'Not connected' : copy.headline,
+        text: status.needsPairing
+            ? 'The Remote tab pairs this phone with ${link.pcName} again.'
+            : 'The library shows once the phone reaches ${link.pcName}.',
+        action: trying || status.needsPairing ? null : ('Try again', link.retryNow),
+      );
     }
     if (link.status.isConnected && !_available) {
       return _Message(
@@ -459,7 +673,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           color: Palette.accent,
           backgroundColor: Palette.elevated,
           onRefresh: _refresh,
-          child: _mode == _Mode.home ? _home(listing) : PosterGrid(link: link, listing: listing, onOpen: _openEntry),
+          child: _mode == _Mode.home ? _home(listing) : PosterGrid(link: link, listing: listing, onOpen: _openEntry, onHold: _holdEntry),
         );
       },
     );
@@ -487,19 +701,21 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _ => kind,
     };
     return ListView(
+      controller: _homeScroll,
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(bottom: 24),
       children: [
         if (continuing.isNotEmpty) ...[
           const _RowTitle('Continue watching'),
           SizedBox(
-            height: math.max(182, 130 + cardCaptionHeight(context)).ceilToDouble(),
+            height: ContinueCard.heightOf(context),
             child: ListView.separated(
               controller: _continueRow,
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: continuing.length,
               separatorBuilder: (_, _) => const SizedBox(width: 12),
-              itemBuilder: (context, index) => _ContinueCard(link: link, entry: continuing[index], onOpen: _openEntry),
+              itemBuilder: (context, index) => ContinueCard(link: link, entry: continuing[index], onOpen: _openEntry, onHold: _holdEntry),
             ),
           ),
         ],
@@ -513,7 +729,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: unwatched.length,
               separatorBuilder: (_, _) => const SizedBox(width: 12),
-              itemBuilder: (context, index) => SizedBox(width: 112, child: PosterCard(link: link, entry: unwatched[index], onOpen: _openEntry)),
+              itemBuilder: (context, index) => SizedBox(width: 112, child: PosterCard(link: link, entry: unwatched[index], onOpen: _openEntry, onHold: _holdEntry)),
             ),
           ),
         ],
@@ -526,7 +742,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               itemCount: row.value.length,
               separatorBuilder: (_, _) => const SizedBox(width: 12),
-              itemBuilder: (context, index) => SizedBox(width: 112, child: PosterCard(link: link, entry: row.value[index], onOpen: _openEntry)),
+              itemBuilder: (context, index) => SizedBox(width: 112, child: PosterCard(link: link, entry: row.value[index], onOpen: _openEntry, onHold: _holdEntry)),
             ),
           ),
         ],
@@ -667,10 +883,13 @@ class _WatchedMark extends StatelessWidget {
 
 /// A poster with its title and caption underneath.
 class PosterCard extends StatelessWidget {
-  const PosterCard({super.key, required this.link, required this.entry, required this.onOpen});
+  const PosterCard({super.key, required this.link, required this.entry, required this.onOpen, this.onHold});
   final RemoteLink link;
   final LibraryEntry entry;
   final void Function(LibraryEntry entry) onOpen;
+
+  /// A long press, for the title's quick actions.
+  final void Function(LibraryEntry entry)? onHold;
 
   @override
   Widget build(BuildContext context) {
@@ -681,6 +900,7 @@ class PosterCard extends StatelessWidget {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: () => onOpen(entry),
+        onLongPress: onHold == null ? null : () => onHold!(entry),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -718,10 +938,11 @@ double cardCaptionHeight(BuildContext context) {
 
 /// A listing as a grid of posters that loads more as it scrolls.
 class PosterGrid extends StatelessWidget {
-  const PosterGrid({super.key, required this.link, required this.listing, required this.onOpen});
+  const PosterGrid({super.key, required this.link, required this.listing, required this.onOpen, this.onHold});
   final RemoteLink link;
   final LibraryListing listing;
   final void Function(LibraryEntry entry) onOpen;
+  final void Function(LibraryEntry entry)? onHold;
 
   @override
   Widget build(BuildContext context) {
@@ -743,7 +964,7 @@ class PosterGrid extends StatelessWidget {
             sliver: SliverGrid.builder(
               gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: columns, mainAxisSpacing: 16, crossAxisSpacing: 12, mainAxisExtent: height),
               itemCount: listing.entries.length,
-              itemBuilder: (context, index) => PosterCard(link: link, entry: listing.entries[index], onOpen: onOpen),
+              itemBuilder: (context, index) => PosterCard(link: link, entry: listing.entries[index], onOpen: onOpen, onHold: onHold),
             ),
           ),
           if (listing.hasMore) SliverToBoxAdapter(child: ListingFooter(listing: listing)),
@@ -754,11 +975,15 @@ class PosterGrid extends StatelessWidget {
 }
 
 /// Continue watching: a wide card with the resume point.
-class _ContinueCard extends StatelessWidget {
-  const _ContinueCard({required this.link, required this.entry, required this.onOpen});
+class ContinueCard extends StatelessWidget {
+  const ContinueCard({super.key, required this.link, required this.entry, required this.onOpen, this.onHold});
   final RemoteLink link;
   final LibraryEntry entry;
   final void Function(LibraryEntry entry) onOpen;
+  final void Function(LibraryEntry entry)? onHold;
+
+  /// The card's height at the phone's text size: its picture and the two lines under it.
+  static double heightOf(BuildContext context) => math.max(182, 130 + cardCaptionHeight(context)).ceilToDouble();
 
   @override
   Widget build(BuildContext context) {
@@ -770,6 +995,7 @@ class _ContinueCard extends StatelessWidget {
       label: '${entry.title}, ${next ? 'next episode' : 'resume at ${formatClock(entry.positionMs)}'}',
       child: GestureDetector(
         onTap: () => onOpen(entry),
+        onLongPress: onHold == null ? null : () => onHold!(entry),
         child: SizedBox(
           width: 230,
           child: Column(
@@ -908,7 +1134,11 @@ class _UnwatchedScreenState extends State<UnwatchedScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
+  Widget build(BuildContext context) => ListenableBuilder(listenable: widget.link, builder: (context, _) => _page(context));
+
+  Widget _page(BuildContext context) => Scaffold(
+    // This page covers the tabs: what the PC plays keeps its buttons here.
+    bottomNavigationBar: MiniRemoteBar.forPage(widget.link, widget.actions.openRemote),
     appBar: AppBar(
       backgroundColor: Palette.canvas,
       surfaceTintColor: Colors.transparent,
@@ -945,7 +1175,15 @@ class _UnwatchedScreenState extends State<UnwatchedScreen> {
           backgroundColor: Palette.elevated,
           onRefresh: _listing.reload,
           // Clear of the system's navigation buttons, which this page draws under.
-          child: SafeArea(top: false, child: PosterGrid(link: widget.link, listing: _listing, onOpen: _open)),
+          child: SafeArea(
+            top: false,
+            child: PosterGrid(
+              link: widget.link,
+              listing: _listing,
+              onOpen: _open,
+              onHold: (entry) => unawaited(showQuickActions(context, link: widget.link, entry: entry, actions: widget.actions)),
+            ),
+          ),
         );
       },
     ),
@@ -1022,14 +1260,32 @@ class _ShowScreenState extends State<ShowScreen> {
     if (error == null && widget.changed == null) unawaited(_listing.reload());
   }
 
+  // The episode a row's play button is starting on the PC, which can take a while: its button shows it.
+  String? _starting;
+
+  Future<void> _play(LibraryEntry entry) async {
+    if (_starting != null) return;
+    setState(() => _starting = entry.id);
+    await quickPlay(context, link: widget.link, entry: entry, actions: widget.actions);
+    if (!mounted) return;
+    setState(() => _starting = null);
+    // Playing it on either side moves its resume point.
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 600), () => mounted ? _listing.reload() : null));
+  }
+
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => ListenableBuilder(listenable: widget.link, builder: (context, _) => _page(context));
+
+  Widget _page(BuildContext context) {
     final season = widget.season;
     final title = season == null ? widget.show.title : season.title;
     final link = widget.link;
     final canMark = widget.actions.markWatched != null && link.features.contains('mark-watched');
     final whole = season == null && widget.show.level != 'season' ? 'show' : 'season';
+    final target = quickPlayTarget(link, widget.actions);
     return Scaffold(
+      // This page covers the tabs: what the PC plays keeps its buttons here.
+      bottomNavigationBar: MiniRemoteBar.forPage(link, widget.actions.openRemote),
       appBar: AppBar(
         backgroundColor: Palette.canvas,
         surfaceTintColor: Colors.transparent,
@@ -1069,17 +1325,35 @@ class _ShowScreenState extends State<ShowScreen> {
               if (notification.metrics.extentAfter < 400 && _listing.hasMore && _listing.error == null) unawaited(_listing.more());
               return false;
             },
-            child: ListView(
-              // Clear of the system's navigation buttons, which this page draws under.
-              padding: EdgeInsets.fromLTRB(16, 4, 16, 24 + MediaQuery.paddingOf(context).bottom),
-              children: [
-                if (season == null && widget.show.overview.isNotEmpty) ...[
-                  Text(widget.show.overview, style: const TextStyle(fontSize: 14, height: 1.4, color: Palette.muted), maxLines: 6, overflow: TextOverflow.ellipsis),
-                  const SizedBox(height: 16),
+            child: RefreshIndicator(
+              color: Palette.accent,
+              backgroundColor: Palette.elevated,
+              onRefresh: _listing.reload,
+              child: ListView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                // Clear of the system's navigation buttons, which this page draws under.
+                padding: EdgeInsets.fromLTRB(16, 4, 8, 24 + MediaQuery.paddingOf(context).bottom),
+                children: [
+                  if (season == null && widget.show.overview.isNotEmpty) ...[
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Text(widget.show.overview, style: const TextStyle(fontSize: 14, height: 1.4, color: Palette.muted), maxLines: 6, overflow: TextOverflow.ellipsis),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  for (final entry in _listing.entries)
+                    _EpisodeRow(
+                      link: widget.link,
+                      entry: entry,
+                      onOpen: _open,
+                      onHold: (entry) => unawaited(showQuickActions(context, link: widget.link, entry: entry, actions: widget.actions)),
+                      target: target,
+                      starting: _starting == entry.id,
+                      onPlay: _starting == null ? _play : null,
+                    ),
+                  if (_listing.hasMore) ListingFooter(listing: _listing),
                 ],
-                for (final entry in _listing.entries) _EpisodeRow(link: widget.link, entry: entry, onOpen: _open),
-                if (_listing.hasMore) ListingFooter(listing: _listing),
-              ],
+              ),
             ),
           );
         },
@@ -1089,10 +1363,20 @@ class _ShowScreenState extends State<ShowScreen> {
 }
 
 class _EpisodeRow extends StatelessWidget {
-  const _EpisodeRow({required this.link, required this.entry, required this.onOpen});
+  const _EpisodeRow({required this.link, required this.entry, required this.onOpen, this.onHold, this.target, this.starting = false, this.onPlay});
   final RemoteLink link;
   final LibraryEntry entry;
   final void Function(LibraryEntry entry) onOpen;
+  final void Function(LibraryEntry entry)? onHold;
+
+  /// Where the row's play button starts the episode; null leaves the button out.
+  final PlayTarget? target;
+
+  /// This row's episode is starting on the PC.
+  final bool starting;
+
+  /// Null while another row's episode starts.
+  final void Function(LibraryEntry entry)? onPlay;
 
   @override
   Widget build(BuildContext context) {
@@ -1104,6 +1388,7 @@ class _EpisodeRow extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(14),
         onTap: () => onOpen(entry),
+        onLongPress: onHold == null ? null : () => onHold!(entry),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 7),
           child: Row(
@@ -1135,7 +1420,8 @@ class _EpisodeRow extends StatelessWidget {
                               if (entry.runtimeMinutes != null && entry.runtimeMinutes! > 0) '${entry.runtimeMinutes} min',
                               if (entry.watched) 'Watched' else if (entry.positionMs >= 10000) 'Stopped at ${formatClock(entry.positionMs)}',
                             ].join(' · '),
-                      maxLines: 1,
+                      // Beside the play button there is less width: a second line keeps where it stopped in view.
+                      maxLines: isSeason ? 1 : 2,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(fontSize: 12.5, color: Palette.muted),
                     ),
@@ -1143,7 +1429,31 @@ class _EpisodeRow extends StatelessWidget {
                 ),
               ),
               if (entry.watched) const Padding(padding: EdgeInsets.only(left: 8), child: _WatchedMark()),
-              if (isSeason) const Icon(Icons.chevron_right_rounded, color: Palette.muted),
+              if (isSeason) const Padding(padding: EdgeInsets.only(right: 8), child: Icon(Icons.chevron_right_rounded, color: Palette.muted)),
+              // One tap plays the episode where videos were last played, without its sheet.
+              if (entry.playable && target != null)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Pebble(
+                    width: 48,
+                    height: 40,
+                    tapArea: Pebble.fingertip,
+                    enabled: onPlay != null || starting,
+                    onTap: onPlay == null ? null : () => onPlay!(entry),
+                    semanticLabel: target == PlayTarget.pc ? 'Play ${entry.title} on ${link.pcName}' : 'Play ${entry.title} on this phone',
+                    child: starting
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Palette.ink))
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.play_arrow_rounded, size: 20),
+                              Icon(target == PlayTarget.pc ? Icons.desktop_windows_outlined : Icons.phone_android_rounded, size: 13, color: Palette.muted),
+                            ],
+                          ),
+                  ),
+                )
+              else if (!isSeason)
+                const SizedBox(width: 8),
             ],
           ),
         ),

@@ -150,6 +150,94 @@ void main() {
     await pump(tester, state: RemoteState.nothing);
     expect(find.text('Nothing is playing'), findsOneWidget);
     expect(find.bySemanticsLabel('Timeline'), findsNothing);
+    // A PC from before the library has nothing to browse or continue.
+    expect(find.text('Browse library'), findsNothing);
+  });
+
+  group('with nothing playing', () {
+    Map<String, dynamic> home() => {
+      'type': 'page',
+      'total': 2,
+      'page': 0,
+      'pageSize': 40,
+      'location': 'Home',
+      'entries': [
+        {'id': 'film', 'title': 'Asteroid City', 'caption': 'Movie · 2023', 'level': 'movie', 'kind': 'Movie', 'runtimeMinutes': 105, 'homeSection': 'continue', 'positionMs': 760000, 'playable': true},
+        {'id': 'show', 'title': 'Harbor Lights', 'caption': 'Show · 2021', 'level': 'series', 'kind': 'Show', 'homeSection': 'suggestions', 'playable': false},
+      ],
+    };
+
+    Future<(FakeRemoteLink, List<String>)> pumpIdle(WidgetTester tester, {RemoteState state = RemoteState.nothing}) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 2.75;
+      addTearDown(tester.view.reset);
+      final link = FakeRemoteLink(pcName: 'Living room PC', status: const LinkStatus(LinkPhase.connected, path: NetworkPath.home), state: state)
+        ..offered = const {'library', 'watch'};
+      link.answer = (type, fields) async => type == 'browse' ? home() : {'type': 'done'};
+      final did = <String>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildTheme(),
+          home: RemoteScreen(
+            link: link,
+            onChoosePc: () {},
+            onPairAgain: () {},
+            onBrowseLibrary: () => did.add('library'),
+            onPlayOnPc: (entry) async {
+              did.add('pc ${entry.id}');
+              return null;
+            },
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return (link, did);
+    }
+
+    testWidgets("the screen leads to the Library, and a Continue watching card starts on the PC with one tap", (tester) async {
+      final (link, did) = await pumpIdle(tester);
+      expect(link.asked.single.$2['home'], isTrue);
+      await tester.tap(find.text('Browse library'));
+      expect(did, ['library']);
+      expect(find.text('Continue on Living room PC'), findsOneWidget);
+      expect(find.text('Harbor Lights'), findsNothing, reason: 'only what was started shows');
+      await tester.tap(find.text('Asteroid City'));
+      await tester.pumpAndSettle();
+      expect(did.last, 'pc film');
+    });
+
+    testWidgets("Stop can be taken back: the video it ended resumes from where it was", (tester) async {
+      final (link, _) = await pumpIdle(
+        tester,
+        state: const RemoteState(media: true, title: 'Night Signal', positionMs: 1122000, durationMs: 2830000, volume: 64, mediaId: 'e3'),
+      );
+      expect(find.textContaining('Resume'), findsNothing);
+      await tester.tap(find.bySemanticsLabel(RegExp('^Stop')));
+      expect(link.sent.single.$1, 'stop');
+      link.setState(RemoteState.nothing);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Resume Night Signal · 18:42'));
+      await tester.pumpAndSettle();
+      expect(link.asked.last.$1, 'play');
+      expect((link.asked.last.$2['id'], link.asked.last.$2['positionMs']), ('e3', 1122000));
+      // The PC plays again: nothing is left to resume once it stops by itself.
+      link.setState(const RemoteState(media: true, title: 'Night Signal', positionMs: 1122000, durationMs: 2830000, mediaId: 'e3'));
+      await tester.pump();
+      link.setState(RemoteState.nothing);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Resume'), findsNothing);
+    });
+
+    testWidgets("a video that stopped without this phone's Stop isn't offered", (tester) async {
+      final (link, _) = await pumpIdle(
+        tester,
+        state: const RemoteState(media: true, title: 'Night Signal', positionMs: 1122000, durationMs: 2830000, mediaId: 'e3'),
+      );
+      link.setState(RemoteState.nothing);
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Resume'), findsNothing);
+      expect(find.text('Browse library'), findsOneWidget);
+    });
   });
 
   testWidgets("waiting for the PC says it isn't online", (tester) async {

@@ -173,6 +173,55 @@ void main() {
     expect((played?.id, played?.index), ('evening', 3));
   });
 
+  testWidgets("a long queue loads its next page as the list nears its end; a page that fails says why and waits for Try again", (tester) async {
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    final link = FakeRemoteLink(pcName: 'Den', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch', 'queues'};
+    var fail = true;
+    link.answer = (type, fields) async {
+      final page = fields['page'] as int;
+      if (page > 0 && fail) throw const RemoteRequestException('timeout', "The PC didn't answer. Try again.");
+      return {
+        'type': 'page',
+        'total': 60,
+        'page': page,
+        'pageSize': 40,
+        'location': 'Evening',
+        'entries': [for (var i = page * 40; i < 60 && i < page * 40 + 40; i++) {'id': 'v$i', 'title': 'Video $i', 'level': 'movie', 'playable': true, 'index': i}],
+      };
+    };
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(),
+      home: QueueScreen(
+        link: link,
+        queue: const QueueSummary(id: 'evening', name: 'Evening', count: 60, upNext: 0),
+        actions: LibraryActions(watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {}, playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null),
+        changed: null,
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(link.asked, hasLength(1), reason: 'the first page only, until the list is scrolled');
+    // To the end of what has loaded, and a while there: the page that failed is asked for once, not on every frame.
+    await tester.drag(find.text('Video 3'), const Offset(0, -5000));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(tester.takeException(), isNull);
+    expect(link.asked, hasLength(2));
+    expect(find.textContaining("Couldn't load more"), findsOneWidget);
+    fail = false;
+    await tester.ensureVisible(find.text('Try again'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Try again'));
+    await tester.pumpAndSettle();
+    expect(link.asked, hasLength(3));
+    await tester.drag(find.text('Video 39'), const Offset(0, -5000));
+    await tester.pumpAndSettle();
+    expect(find.text('Video 59'), findsOneWidget);
+    expect(find.text('Try again'), findsNothing);
+  });
+
   testWidgets("the Remote's Up next follows the PC to the next episode", (tester) async {
     final link = FakeRemoteLink(
       pcName: 'Den',

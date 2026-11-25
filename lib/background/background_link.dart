@@ -4,23 +4,72 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+/// What the PC plays, for Android's media controls: the lock screen and the notification show it with a timeline and
+/// play buttons, and headset buttons work it.
+@immutable
+class NowPlaying {
+  const NowPlaying({required this.title, this.detail = '', required this.playing, this.positionMs = 0, this.durationMs = 0, this.hasNext = false, this.volume});
+  final String title;
+  final String detail;
+  final bool playing;
+
+  /// Where the video is now; Android moves its timeline on from here while it plays.
+  final int positionMs;
+  final int durationMs;
+  final bool hasNext;
+
+  /// The PC's volume, 0 to 100, when the phone's volume buttons set it while the PC plays; null leaves them the
+  /// phone's own.
+  final int? volume;
+
+  Map<String, Object?> toMap() => {
+    'title': title,
+    'detail': detail,
+    'playing': playing,
+    'positionMs': positionMs,
+    'durationMs': durationMs,
+    'hasNext': hasNext,
+    'volume': volume,
+  };
+
+  @override
+  bool operator ==(Object other) =>
+      other is NowPlaying &&
+      other.title == title &&
+      other.detail == detail &&
+      other.playing == playing &&
+      other.positionMs == positionMs &&
+      other.durationMs == durationMs &&
+      other.hasNext == hasNext &&
+      other.volume == volume;
+  @override
+  int get hashCode => Object.hash(title, detail, playing, positionMs, durationMs, hasNext, volume);
+}
+
 /// What the background notification shows.
 @immutable
 class BackgroundNotice {
-  const BackgroundNotice({required this.title, required this.text, this.playing});
+  const BackgroundNotice({required this.title, required this.text, this.playing, this.media});
   final String title;
   final String text;
 
   /// Whether the PC is playing, for the notification's Play/Pause button; null hides it.
   final bool? playing;
 
-  Map<String, Object?> toMap() => {'title': title, 'text': text, 'playing': playing};
+  /// The PC's video, which makes the notification a media one; null leaves it plain.
+  final NowPlaying? media;
+
+  Map<String, Object?> toMap() => {'title': title, 'text': text, 'playing': playing, 'media': media?.toMap()};
 
   @override
-  bool operator ==(Object other) => other is BackgroundNotice && other.title == title && other.text == text && other.playing == playing;
+  bool operator ==(Object other) => other is BackgroundNotice && other.title == title && other.text == text && other.playing == playing && other.media == media;
   @override
-  int get hashCode => Object.hash(title, text, playing);
+  int get hashCode => Object.hash(title, text, playing, media);
 }
+
+/// A button of the notification or of Android's media controls: `toggle`, `play`, `pause`, `next`, `previous` and
+/// `disconnect`, and with a value `seek-by` and `seek-to` (milliseconds) and `volume` (0 to 100).
+typedef BackgroundAction = void Function(String action, [int? value]);
 
 /// The Android foreground service that keeps the app, and its link to the PC, running after the app is closed. Android
 /// shows its notification while it runs; the notification's Disconnect button stops it
@@ -45,10 +94,17 @@ class BackgroundLink {
   bool _settled = false;
   bool get mayBeRunning => _running || !_settled;
 
-  /// Called with `toggle` (the notification's Play/Pause) and `disconnect`.
-  void listen(void Function(String action) onAction) {
+  /// Called with what was pressed on the notification or in the media controls (see [BackgroundAction]).
+  void listen(BackgroundAction onAction) {
     _channel.setMethodCallHandler((call) async {
-      if (call.method == 'action' && call.arguments is String) onAction(call.arguments as String);
+      if (call.method != 'action') return null;
+      final pressed = call.arguments;
+      if (pressed is String) {
+        onAction(pressed);
+      } else if (pressed is Map && pressed['action'] is String) {
+        final value = pressed['value'];
+        onAction(pressed['action'] as String, value is num ? value.round() : null);
+      }
       return null;
     });
   }

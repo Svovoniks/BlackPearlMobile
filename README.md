@@ -17,19 +17,28 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   mute, fullscreen, and the PC player's Audio and Subtitles: their sheet lists the PC's tracks as its menus show them,
   and picking one there is a click in the PC's menu. In a room where only whoever plays the video picks tracks, the
   sheet shows them without changing them. The artwork area is a touch pad: tap to play or pause, swipe sideways to skip
-  10 s, slide up and down for volume.
-  **Sound**, a row of its own under Stop and Fullscreen, plays the PC's sound on the phone while the picture stays on the PC, for
+  10 s, slide up and down for volume. Under the play buttons, one row holds Audio, Subtitles and Sound and the next
+  Shuffle, Loop, Up next, Fullscreen and Stop; the volume stays above the tab bar while the rest scrolls on a short
+  phone. While nothing plays, the Remote leads to the Library and lists the PC's Continue watching, where a card
+  starts on the PC with one tap, and after Stop it offers the stopped video again from where it was. On the other
+  tabs, and on the pages that cover them, a bar at the bottom shows what the PC plays with −10 s, Play/Pause and
+  +10 s; its title opens the Remote.
+  **Sound**, beside Audio and Subtitles, plays the PC's sound on the phone while the picture stays on the PC, for
   headphones on the couch: the PC goes quiet, the phone keeps itself in step with the picture (a little faster or
-  slower, or a seek for a larger gap), the volume row and touch pad set the phone's volume, and − and + move the
+  slower, or a seek for a larger gap), the volume row and touch pad set the phone's volume, and − and + (on a row
+  under it while it is on) move the
   sound 50 ms earlier or later for headphones that lag. It keeps playing with the screen off (the background service
   runs while it plays, even with Stay connected in the background off; Disconnect stops it). The PC's Mute, or joining a
   room, takes it back.
   When the PC plays a video of its own library, **Watch here** moves it to the phone: the PC stops and the phone carries
   on from the same moment.
 - **Library.** The PC's Home (Continue watching, the titles not started yet newest first with See all, suggestions for
-  each kind, a random pick), films, shows and anime as posters, search, and a show's seasons and episodes, with the PC's
+  each kind, a random pick), films, shows and anime as posters, search (the button beside the title), and a show's
+  seasons and episodes, with the PC's
   resume points and watched marks. A title's sheet plays it on the phone (resume or start over) or on the PC, and marks
-  it watched or unwatched; a show's or a season's page marks all its episodes.
+  it watched or unwatched; a show's or a season's page marks all its episodes. A long press on a title offers the same
+  without opening it, and an episode's row has a play button that starts it where a video was last started, on the
+  phone or on the PC.
 - **Watching on the phone.** The PC sends the video over the same direct link; the phone plays it with libmpv
   (media_kit) through a small HTTP server on `127.0.0.1` that turns the player's byte ranges into reads on the link's
   `media-v1` channel. At home the phone gets the file itself; away from home it asks for a 720p conversion by default
@@ -57,8 +66,14 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   window, the video has the shape it had; a player that turns with the phone keeps it until the phone is turned to
   match.
 - **Background connection (Android).** With Settings › Stay connected in the background on (the default), closing the
-  app leaves a foreground service running that keeps the link to the PC. Its notification shows what the PC plays,
-  with Play/Pause, and a Disconnect button that drops the link until the app is opened again, without changing the setting. The Flutter engine lives apart from the activity
+  app leaves a foreground service running that keeps the link to the PC. Its notification says how the connection is,
+  with a Disconnect button that drops the link until the app is opened again, without changing the setting. While the
+  PC plays a video the phone can control, the notification is a media one (`RemoteSession.kt`, a media session of the
+  platform's own, with no added library): the lock screen and Android's media controls show the video with a timeline,
+  Play/Pause, back and forward 10 s, Next and Disconnect, and with Settings › Volume buttons set the PC's volume on
+  (the default) the phone's volume buttons change the PC's volume while it plays, as for a cast. They stay the
+  phone's own while the phone plays the PC's sound or a video itself. Headset buttons reach the session only when the
+  app has played sound on the phone, which is Android's rule for them. The Flutter engine lives apart from the activity
   (`LinkEngine`), so opening the app again shows it already connected.
 
 ## Building

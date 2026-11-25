@@ -99,9 +99,12 @@ class PlayerDock extends StatelessWidget {
     final transport = Row(
       mainAxisSize: portrait ? MainAxisSize.max : MainAxisSize.min,
       mainAxisAlignment: portrait ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
-      children: _spaced(portrait ? 0 : 10, [
-        if (showSteps) DockButton(icon: Icons.skip_previous_rounded, label: 'Previous', onTap: onPrevious),
+      // In landscape the buttons are drawn 10 dp apart, as before each round one took touches over a fingertip's room:
+      // that room (4 dp on each side) stands where most of the gaps were.
+      children: [
+        if (showSteps) ...[DockButton(icon: Icons.skip_previous_rounded, label: 'Previous', onTap: onPrevious), if (!portrait) const SizedBox(width: 2)],
         DockButton(icon: Icons.replay_10_rounded, label: 'Back 10 seconds', onTap: onBack10),
+        if (!portrait) const SizedBox(width: 6),
         Pebble(
           lit: true,
           width: 58,
@@ -110,9 +113,10 @@ class PlayerDock extends StatelessWidget {
           semanticLabel: playing ? 'Pause' : 'Play',
           child: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded, size: 32),
         ),
+        if (!portrait) const SizedBox(width: 6),
         DockButton(icon: Icons.forward_10_rounded, label: 'Forward 10 seconds', onTap: onForward10),
-        if (showSteps) DockButton(icon: Icons.skip_next_rounded, label: 'Next', onTap: onNext),
-      ]),
+        if (showSteps) ...[if (!portrait) const SizedBox(width: 2), DockButton(icon: Icons.skip_next_rounded, label: 'Next', onTap: onNext)],
+      ],
     );
     DockChip chip(DockMenu menu, IconData icon, DockChipValue value, String name) => DockChip(
       key: chipKeys[menu],
@@ -136,12 +140,14 @@ class PlayerDock extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // The gaps are what is left of 10, 16 and 10 dp once the timeline, the chips and the buttons under them take
+          // their touches over a fingertip's height: everything is drawn where it was.
           faded(timeline),
-          const SizedBox(height: 10),
+          const SizedBox(height: 2),
           faded(transport),
-          const SizedBox(height: 16),
+          const SizedBox(height: 11),
           _ChipRow(chips: [audioChip, subtitleChip, ?qualityChip]),
-          const SizedBox(height: 10),
+          const SizedBox(height: 1),
           faded(
             Row(
               children: _spaced(6, [
@@ -162,10 +168,17 @@ class PlayerDock extends StatelessWidget {
         ],
       );
     } else {
+      // Side by side with no gap, each 40 dp button taking touches over 44: as wide together as they were 6 dp apart.
       final modes = <Widget>[
-        if (shuffle != null) faded(DockButton(icon: Icons.shuffle_rounded, label: shuffle! ? 'Shuffle on' : 'Shuffle off', on: shuffle!, onTap: onShuffle)),
-        faded(DockButton(icon: loopIcon, label: loopLabel(loop), on: loop != 'off', onTap: onLoop)),
-        if (onUpNext != null) faded(DockButton(icon: Icons.queue_play_next_rounded, label: 'Up next', onTap: onUpNext)),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (shuffle != null)
+              faded(DockButton(icon: Icons.shuffle_rounded, label: shuffle! ? 'Shuffle on' : 'Shuffle off', on: shuffle!, onTap: onShuffle, tapWidth: 44)),
+            faded(DockButton(icon: loopIcon, label: loopLabel(loop), on: loop != 'off', onTap: onLoop, tapWidth: 44)),
+            if (onUpNext != null) faded(DockButton(icon: Icons.queue_play_next_rounded, label: 'Up next', onTap: onUpNext, tapWidth: 44)),
+          ],
+        ),
       ];
       content = LayoutBuilder(
         builder: (context, constraints) {
@@ -177,11 +190,10 @@ class PlayerDock extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 faded(timeline),
-                const SizedBox(height: 8),
                 Center(child: faded(transport)),
-                const SizedBox(height: 10),
+                const SizedBox(height: 5),
                 Row(
-                  children: _spaced(6, [
+                  children: _spaced(4, [
                     // The chips take all the room the mode buttons leave.
                     Expanded(child: _ChipRow(chips: [audioChip, subtitleChip, ?qualityChip])),
                     ...modes,
@@ -194,7 +206,9 @@ class PlayerDock extends StatelessWidget {
         },
       );
     }
-    final slab = DockSlab(padding: portrait ? const EdgeInsets.fromLTRB(16, 16, 16, 16) : const EdgeInsets.fromLTRB(16, 12, 16, 12), child: content);
+    // Less than the 16 and 12 dp the dock keeps around what it draws: the timeline on top and the buttons at the bottom
+    // bring the rest as room for the finger.
+    final slab = DockSlab(padding: portrait ? const EdgeInsets.fromLTRB(16, 8, 16, 12) : const EdgeInsets.fromLTRB(16, 4, 16, 7), child: content);
     // The tree stays the same with a menu open or not, so the chips' dimming animates and the timeline keeps its state.
     return GestureDetector(
       behavior: dim ? HitTestBehavior.opaque : HitTestBehavior.deferToChild,
@@ -219,22 +233,23 @@ class PlayerDock extends StatelessWidget {
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
       faded(timeline),
-      const SizedBox(height: 8),
       Row(
         children: [
           // The sides take equal shares, so playback stays in the middle.
           Expanded(child: _ChipRow(chips: [audioChip, subtitleChip])),
-          const SizedBox(width: 10),
+          const SizedBox(width: 6),
           faded(transport),
-          const SizedBox(width: 10),
+          const SizedBox(width: 6),
           Expanded(
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
-              children: _spaced(6, [?(qualityChip == null ? null : Flexible(child: qualityChip)), ...modes]),
+              children: _spaced(4, [?(qualityChip == null ? null : Flexible(child: qualityChip)), ...modes]),
             ),
           ),
         ],
       ),
+      // Under the one row, the room the two-row dock's buttons bring themselves.
+      const SizedBox(height: 5),
     ],
   );
 }
@@ -316,12 +331,15 @@ class DockSlab extends StatelessWidget {
 
 /// A round pebble in the dock, lit with the accent while its mode is on; with [text], a labelled one.
 class DockButton extends StatelessWidget {
-  const DockButton({super.key, required this.icon, required this.label, required this.onTap, this.on = false, this.text});
+  const DockButton({super.key, required this.icon, required this.label, required this.onTap, this.on = false, this.text, this.tapWidth = 48});
   final IconData icon;
   final String label;
   final VoidCallback? onTap;
   final bool on;
   final String? text;
+
+  /// How wide a round button takes touches, around its 40 dp; it always takes them over a fingertip's height.
+  final double tapWidth;
 
   @override
   Widget build(BuildContext context) {
@@ -331,6 +349,7 @@ class DockButton extends StatelessWidget {
       child: Pebble(
         width: text == null ? 40 : null,
         height: 40,
+        tapArea: Size(text == null ? tapWidth : 0, 48),
         onTap: onTap,
         enabled: onTap != null,
         semanticLabel: label,
@@ -413,8 +432,10 @@ class DockChip extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: _labelStyle.copyWith(color: value.off ? Palette.muted : Palette.ink),
             );
+            // The chip is 38 dp high and takes touches over a fingertip's height.
             return Container(
               height: 38,
+              margin: const EdgeInsets.symmetric(vertical: 5),
               padding: EdgeInsets.only(left: withIcon ? 11 : 14, right: 14),
               decoration: ShapeDecoration(
                 shape: const StadiumBorder(),
@@ -476,6 +497,9 @@ class DockTimeline extends StatefulWidget {
 }
 
 class _DockTimelineState extends State<DockTimeline> {
+  /// The height over which the bar takes touches.
+  static const barHeight = 44.0;
+
   double? _drag;
 
   double get _length => widget.duration.inMilliseconds.toDouble();
@@ -529,8 +553,9 @@ class _DockTimelineState extends State<DockTimeline> {
             onTapDown: length > 0 ? (d) => _start(_fraction(d.localPosition.dx, width)) : null,
             onTapUp: length > 0 ? (_) => _end() : null,
             onTapCancel: length > 0 ? _cancel : null,
+            // The bar is 4 dp; the touch takes 44 around it.
             child: SizedBox(
-              height: 28,
+              height: barHeight,
               child: CustomPaint(painter: _TimelinePainter(shown, buffered, dragging: _drag != null)),
             ),
           ),
@@ -543,12 +568,19 @@ class _DockTimelineState extends State<DockTimeline> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           bar,
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(elapsed, style: timeStyle),
-              Text(left, style: timeStyle),
-            ],
+          // The clocks stay as near the bar as before it took touches over more height: they sit in the lower part of
+          // that room, which stays the bar's to touch.
+          IgnorePointer(
+            child: Transform.translate(
+              offset: const Offset(0, -8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(elapsed, style: timeStyle),
+                  Text(left, style: timeStyle),
+                ],
+              ),
+            ),
           ),
         ],
       );
@@ -687,8 +719,10 @@ class UpNextDock extends StatelessWidget {
               ),
             ),
           ),
+          // The timeline is the last row, and takes touches down to 4 dp above the card's bottom (the player keeps
+          // that clear of the gesture strip).
           Padding(
-            padding: EdgeInsets.fromLTRB(16, portrait ? 14 : 10, 16, 12),
+            padding: EdgeInsets.fromLTRB(16, portrait ? 14 : 10, 16, 4),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -706,7 +740,6 @@ class UpNextDock extends StatelessWidget {
                       play,
                     ],
                   ),
-                const SizedBox(height: 8),
                 timeline,
               ],
             ),
