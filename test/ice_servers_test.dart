@@ -3,53 +3,68 @@ import 'package:blackpearl_mobile/protocol/ice_servers.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  test('stun passes through', () {
-    expect(toWebRtcIceServer('stun:stun.cloudflare.com:3478'), {'urls': 'stun:stun.cloudflare.com:3478'});
-    expect(toWebRtcIceServer('stun://stun.example.com:3478'), {'urls': 'stun:stun.example.com:3478'});
+  test('stun comes back as libdatachannel takes it', () {
+    expect(toIceServerUrl('stun:stun.cloudflare.com:3478'), 'stun:stun.cloudflare.com:3478');
+    expect(toIceServerUrl('stun://stun.example.com:3478'), 'stun:stun.example.com:3478');
+    expect(toIceServerUrl('STUN:stun.example.com'), 'stun:stun.example.com');
   });
 
-  test('libdatachannel turn urls become urls, username and credential', () {
-    expect(toWebRtcIceServer('turn://user:pass@turn.example.com:3478?transport=udp'), {
-      'urls': 'turn:turn.example.com:3478?transport=udp',
-      'username': 'user',
-      'credential': 'pass',
-    });
-    expect(toWebRtcIceServer('turns://u:p@turn.example.com:443?transport=tcp'), {
-      'urls': 'turns:turn.example.com:443?transport=tcp',
-      'username': 'u',
-      'credential': 'p',
-    });
+  test('turn keeps its credentials in the url, and its transport', () {
+    expect(toIceServerUrl('turn://user:pass@turn.example.com:3478?transport=udp'), 'turn:user:pass@turn.example.com:3478?transport=udp');
+    expect(toIceServerUrl('turns://u:p@turn.example.com:443?transport=tcp'), 'turns:u:p@turn.example.com:443?transport=tcp');
   });
 
-  test('user and password are percent-decoded', () {
+  test('user and password stay percent-encoded, so libdatachannel decodes them to what the server meant', () {
     // As the server writes them: Uri.EscapeDataString of each part.
-    expect(toWebRtcIceServer('turn://g0a1%3Ab2%40c3:pw%2Fwith%3Dsymbols%2B%25%3A%40@turn.example.com:3478?transport=udp'), {
-      'urls': 'turn:turn.example.com:3478?transport=udp',
-      'username': 'g0a1:b2@c3',
-      'credential': 'pw/with=symbols+%:@',
-    });
+    expect(
+      toIceServerUrl('turn://g0a1%3Ab2%40c3:pw%2Fwith%3Dsymbols%2B%25%3A%40@turn.example.com:3478?transport=udp'),
+      'turn:g0a1%3Ab2%40c3:pw%2Fwith%3Dsymbols%2B%25%3A%40@turn.example.com:3478?transport=udp',
+    );
   });
 
-  test('turn without credentials, unknown schemes and junk are skipped', () {
-    expect(toWebRtcIceServer('turn:turn.example.com:3478'), isNull);
-    expect(toWebRtcIceServer('https://example.com'), isNull);
-    expect(toWebRtcIceServer(''), isNull);
-    expect(toWebRtcIceServer('turn://'), isNull);
-    expect(toWebRtcIceServer('turn://u:%zz@host:3478'), isNull);
+  test('what libdatachannel would refuse, and turn without credentials, are skipped', () {
+    expect(toIceServerUrl('turn:turn.example.com:3478'), isNull);
+    expect(toIceServerUrl('https://example.com'), isNull);
+    expect(toIceServerUrl(''), isNull);
+    expect(toIceServerUrl('turn://'), isNull);
+    expect(toIceServerUrl('turn://u:%zz@host:3478'), isNull);
+    expect(toIceServerUrl('stuns:stun.example.com:5349'), isNull, reason: 'libdatachannel knows no stuns');
+    expect(toIceServerUrl('stun:stun.example.com:port'), isNull);
+    expect(toIceServerUrl('stun:stun.example.com:70000'), isNull);
+    expect(toIceServerUrl('stun:stun.example.com/path'), isNull);
+  });
+
+  test('an IPv6 address keeps its brackets', () {
+    expect(toIceServerUrl('stun:[2001:db8::1]:3478'), 'stun:[2001:db8::1]:3478');
+    expect(toIceServerUrl('turn://u:p@[2001:db8::1]:3478'), 'turn:u:p@[2001:db8::1]:3478');
   });
 
   test('a list keeps order and drops what it cannot use', () {
-    final servers = toWebRtcIceServers([
-      'stun:stun.cloudflare.com:3478',
-      'turn://a:b@turn.cloudflare.com:3478?transport=udp',
-      'nonsense',
-      'turns://a:b@turn.cloudflare.com:5349?transport=tcp',
-    ]);
-    expect(servers.map((s) => s['urls']), [
-      'stun:stun.cloudflare.com:3478',
-      'turn:turn.cloudflare.com:3478?transport=udp',
-      'turns:turn.cloudflare.com:5349?transport=tcp',
-    ]);
+    expect(
+      toIceServerUrls([
+        'stun:stun.cloudflare.com:3478',
+        'turn://a:b@turn.cloudflare.com:3478?transport=udp',
+        'nonsense',
+        'turns://a:b@turn.cloudflare.com:5349?transport=tcp',
+      ]),
+      [
+        'stun:stun.cloudflare.com:3478',
+        'turn:a:b@turn.cloudflare.com:3478?transport=udp',
+        'turns:a:b@turn.cloudflare.com:5349?transport=tcp',
+      ],
+    );
+  });
+
+  test('candidate lines give their type and address', () {
+    expect(parseCandidate('candidate:1 1 UDP 2122317823 192.168.1.30 50000 typ host'), (type: 'host', address: '192.168.1.30'));
+    expect(
+      parseCandidate('a=candidate:2 1 UDP 1686052607 203.0.113.4 61000 typ srflx raddr 0.0.0.0 rport 0'),
+      (type: 'srflx', address: '203.0.113.4'),
+    );
+    expect(parseCandidate('candidate:3 1 UDP 16777215 2001:db8::7 3478 typ relay raddr :: rport 0'), (type: 'relay', address: '2001:db8::7'));
+    expect(parseCandidate('candidate:1 1 UDP 1 host'), isNull);
+    expect(parseCandidate('m=application 9'), isNull);
+    expect(parseCandidate(null), isNull);
   });
 
   group('path classification', () {
@@ -73,15 +88,5 @@ void main() {
     test('nothing selected yet is unknown', () {
       expect(classifyPath(null, 'host'), NetworkPath.unknown);
     });
-  });
-
-  test('media ids map to m-line indexes and back', () {
-    const sdp =
-        'v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\nm=audio 9 RTP\r\na=mid:x\r\n';
-    expect(mLineIndexForMid(sdp, '0'), 0);
-    expect(mLineIndexForMid(sdp, 'x'), 1);
-    expect(mLineIndexForMid(sdp, 'missing'), 0);
-    expect(midForMLineIndex(sdp, 1), 'x');
-    expect(midForMLineIndex(sdp, 5), isNull);
   });
 }

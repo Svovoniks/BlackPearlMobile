@@ -1,0 +1,27 @@
+name: blackpearl_datachannel
+description: "WebRTC data channels over libdatachannel, for the BlackPearl phone remote."
+version: 0.1.0
+publish_to: 'none'
+
+environment:
+  sdk: ^3.14.0
+  flutter: '>=3.50.0'
+
+dependencies:
+  ffi: ^2.2.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+# An FFI plugin: Flutter builds src/ with each platform's toolchain and bundles the library.
+flutter:
+  plugin:
+    platforms:
+      android:
+        ffiPlugin: true
+      windows:
+        ffiPlugin: true

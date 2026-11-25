@@ -31,7 +31,7 @@ android {
 
     defaultConfig {
         applicationId = "io.github.svovoniks.blackpearlmobile"
-        // flutter_secure_storage needs 24; flutter_webrtc needs 21 and mobile_scanner 23.
+        // flutter_secure_storage needs 24, and mobile_scanner 23.
         minSdk = maxOf(24, flutter.minSdkVersion)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -49,7 +49,7 @@ android {
         }
     }
 
-    // Compresses the native libraries (libmpv, libwebrtc, Flutter's engine) in the APK, which halves its download.
+    // Compresses the native libraries (libmpv, Flutter's engine, libdatachannel) in the APK, which halves its download.
     // Android then unpacks them on install instead of loading them straight from the APK, which takes more storage.
     packaging {
         jniLibs {
@@ -60,7 +60,7 @@ android {
     buildTypes {
         release {
             signingConfig = if (hasReleaseKey) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 }

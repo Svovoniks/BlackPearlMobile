@@ -59,7 +59,8 @@ abstract class PeerLink {
   void Function()? onMediaClosed;
 }
 
-typedef PeerFactory = Future<PeerLink> Function(List<Map<String, dynamic>> iceServers, bool forceRelay);
+/// Makes a [PeerLink] with the room server's STUN and TURN servers, as libdatachannel URLs (see `toIceServerUrls`).
+typedef PeerFactory = Future<PeerLink> Function(List<String> iceServers, bool forceRelay);
 
 /// Classifies a candidate pair by the two candidates' types and addresses.
 NetworkPath classifyPath(String? localType, String? remoteType, {String? localAddress, String? remoteAddress}) {
@@ -88,28 +89,17 @@ bool isPrivateAddress(String? address) {
   return p0 == 10 || p0 == 127 || (p0 == 172 && p1 >= 16 && p1 <= 31) || (p0 == 192 && p1 == 168) || (p0 == 169 && p1 == 254);
 }
 
-/// The index of the m-section with media id [mid] in [sdp], or 0 when it isn't there.
-int mLineIndexForMid(String? sdp, String? mid) {
-  if (sdp == null || mid == null) return 0;
-  var index = -1;
-  for (final raw in sdp.split('\n')) {
-    final line = raw.trimRight();
-    if (line.startsWith('m=')) index++;
-    if (line.startsWith('a=mid:') && line.substring(6) == mid) return index < 0 ? 0 : index;
-  }
-  return 0;
-}
-
-/// The media id of m-section [index] in [sdp], or null.
-String? midForMLineIndex(String? sdp, int? index) {
-  if (sdp == null || index == null) return null;
-  var current = -1;
-  for (final raw in sdp.split('\n')) {
-    final line = raw.trimRight();
-    if (line.startsWith('m=')) current++;
-    if (current == index && line.startsWith('a=mid:')) return line.substring(6);
-  }
-  return null;
+/// The type (`host`, `srflx`, `prflx`, `relay`) and address of an ICE candidate line, with or without `a=`, or null
+/// for a line that isn't one.
+({String type, String address})? parseCandidate(String? line) {
+  if (line == null) return null;
+  var text = line.trim();
+  if (text.startsWith('a=')) text = text.substring(2);
+  if (!text.startsWith('candidate:')) return null;
+  // candidate:<foundation> <component> <transport> <priority> <address> <port> typ <type> …
+  final fields = text.substring('candidate:'.length).split(' ').where((f) => f.isNotEmpty).toList();
+  if (fields.length < 8 || fields[6] != 'typ') return null;
+  return (type: fields[7], address: fields[4]);
 }
 
 /// The phone's Wi-Fi or Ethernet network, for reaching the PC on its home network (PHONE-REMOTE.md, "On the home

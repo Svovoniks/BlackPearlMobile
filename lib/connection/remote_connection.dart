@@ -121,6 +121,7 @@ class RemoteConnection extends RemoteLink {
   final Duration lanRetryLimit;
 
   /// The phone's Wi-Fi or Ethernet, where the platform has one to offer; null tries every time, on the default network.
+  /// A home-network try opens its socket to the PC, and then its ICE sockets, while bound to it.
   final LocalNetworkAccess? localNetwork;
   final Random _random;
 
@@ -156,7 +157,7 @@ class RemoteConnection extends RemoteLink {
   bool _offerSent = false, _answered = false, _rejectedHandled = false, _welcomed = false;
   final List<(String, String)> _pendingLocal = [];
   final List<(String, String?)> _pendingRemote = [];
-  List<Map<String, dynamic>> _iceServers = const [];
+  List<String> _iceServers = const [];
   bool _forceRelay = false;
   int _pingNumber = 0;
   Set<String> _features = const {};
@@ -753,7 +754,7 @@ class RemoteConnection extends RemoteLink {
       final json = jsonDecode(data);
       if (json is! Map) return;
       final servers = json['iceServers'];
-      _iceServers = servers is List ? toWebRtcIceServers(servers.whereType<String>()) : const [];
+      _iceServers = servers is List ? toIceServerUrls(servers.whereType<String>()) : const [];
       _forceRelay = json['forceRelay'] == true;
     } on FormatException {
       _iceServers = const [];
@@ -839,7 +840,11 @@ class RemoteConnection extends RemoteLink {
       _fail(generation, _status.isConnected ? 'Lost the connection to the PC.' : reason);
     };
     try {
-      final sdp = await peer.createOffer();
+      // Making the offer opens the ICE sockets. On the home network they open while the phone is bound to the Wi-Fi, as
+      // the PC's own socket did (see [localNetwork]): sockets go out on the default network, which is mobile data when
+      // the Wi-Fi has no internet.
+      final network = localNetwork;
+      final sdp = await (_viaLan && network != null ? network.run(peer.createOffer) : peer.createOffer());
       if (generation != _generation || _session != session) return;
       _signal('sdp', jsonEncode({'type': 'offer', 'sdp': sdp}));
       _offerSent = true;

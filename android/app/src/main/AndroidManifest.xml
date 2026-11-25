@@ -7,8 +7,6 @@
     <!-- Scanning the pairing code. -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
-    <!-- flutter_webrtc asks for Bluetooth (for call audio); the app makes no calls, so don't require the hardware. -->
-    <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
     <!-- Sound on the phone: keeps the processor awake with the screen off (SoundLocks). -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <!-- Staying connected to the PC with the app closed (BackgroundLinkService), with its notification. -->
@@ -79,6 +77,11 @@
             android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/update_files"/>
         </provider>
+        <!-- The QR scanner comes from Google Play services (android/gradle.properties); this asks for its model when
+             the app is installed, so the first scan doesn't wait for a download. -->
+        <meta-data
+            android:name="com.google.mlkit.vision.DEPENDENCIES"
+            android:value="barcode" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

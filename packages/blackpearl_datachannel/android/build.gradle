@@ -1,0 +1,56 @@
+// Builds src/ (libdatachannel and the shim the Dart side calls) with the NDK, for each ABI the app is built for.
+group = "io.github.svovoniks.blackpearl_datachannel"
+version = "1.0"
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle:9.3.1")
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: "com.android.library"
+
+android {
+    namespace = "io.github.svovoniks.blackpearl_datachannel"
+    compileSdk = 36
+    ndkVersion = android.ndkVersion
+
+    externalNativeBuild {
+        cmake {
+            path = "../src/CMakeLists.txt"
+            // On Windows, Ninja can't use paths longer than 260 characters, and the build of libdatachannel and its
+            // dependencies nests deep under this folder. A short folder of the user's instead; the build keeps one
+            // folder per checkout and configuration inside it.
+            if (System.getProperty("os.name").toLowerCase().contains("windows")) {
+                def base = System.getenv("LOCALAPPDATA") ?: System.getProperty("java.io.tmpdir")
+                buildStagingDirectory = new File(base, "bpdc")
+            }
+        }
+    }
+
+    defaultConfig {
+        minSdk = 24
+        externalNativeBuild {
+            cmake {
+                // The C++ runtime linked in, so the APK needs no libc++_shared.so for it.
+                arguments "-DANDROID_STL=c++_static"
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}

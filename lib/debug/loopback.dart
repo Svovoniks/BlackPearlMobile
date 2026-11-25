@@ -2,13 +2,13 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:blackpearl_datachannel/blackpearl_datachannel.dart';
 import 'package:crypto/crypto.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../protocol/signing.dart';
 
 /// Debug builds only (`--preview=loopback`): a room server and a stand-in PC inside this process, so the app's real
-/// connection code (WebSocket signaling, signed signals, flutter_webrtc offer/answer, trickled ICE, the data channel,
+/// connection code (WebSocket signaling, signed signals, libdatachannel offer/answer, trickled ICE, the data channel,
 /// pairing and state) runs end to end on one machine. It is not the desktop app; it follows PHONE-REMOTE.md the same
 /// way, and answers commands by changing a made-up state.
 class LoopbackHarness {
@@ -113,8 +113,8 @@ class LoopbackPc {
   String get pcId => sha256.convert(utf8.encode(hostKey)).toString().toUpperCase().substring(0, 32);
 
   WebSocket? _socket;
-  RTCPeerConnection? _peer;
-  RTCDataChannel? _channel;
+  RtcPeer? _peer;
+  RtcChannel? _channel;
   String? _session, _signalAs, _key, _phoneConnection;
   bool _codeUsed = false;
   final List<String> commands = [];
@@ -189,28 +189,29 @@ class LoopbackPc {
       _session = signal.session;
       _signalAs = signal.phone;
       _key = key;
-      final peer = await createPeerConnection({'iceServers': <Map<String, dynamic>>[], 'sdpSemantics': 'unified-plan'});
+      final peer = RtcPeer.create();
       _peer = peer;
-      peer.onIceCandidate = (candidate) {
-        final line = candidate.candidate;
-        if (line == null || line.isEmpty) return;
-        _signal('ice', jsonEncode({'candidate': line.startsWith('a=') ? line.substring(2) : line, 'mid': candidate.sdpMid ?? '0'}));
+      peer.onCandidate = (candidate, mid) {
+        _signal('ice', jsonEncode({'candidate': candidate.startsWith('a=') ? candidate.substring(2) : candidate, 'mid': mid.isEmpty ? '0' : mid}));
       };
-      peer.onDataChannel = (channel) {
+      final answer = Completer<String>();
+      peer.onDescription = (sdp, type) {
+        if (!answer.isCompleted) answer.complete(sdp);
+      };
+      peer.onChannel = (channel) {
         if (channel.label != 'remote-v1') return;
         _channel = channel;
-        channel.onMessage = (message) => _onMessage(message.text);
+        channel.onText = _onMessage;
       };
-      await peer.setRemoteDescription(RTCSessionDescription(payload['sdp'] as String, 'offer'));
-      final answer = await peer.createAnswer();
-      await peer.setLocalDescription(answer);
-      _signal('sdp', jsonEncode({'type': 'answer', 'sdp': answer.sdp}));
+      await peer.setRemoteDescription(payload['sdp'] as String, 'offer');
+      await peer.setLocalDescription('answer');
+      _signal('sdp', jsonEncode({'type': 'answer', 'sdp': await answer.future}));
     } else if (signal.kind == 'ice' && signal.session == _session) {
-      await _peer?.addCandidate(RTCIceCandidate(payload['candidate'] as String, payload['mid'] as String?, 0));
+      await _peer?.addRemoteCandidate(payload['candidate'] as String, payload['mid'] as String?);
     }
   }
 
-  void _send(Map<String, Object?> message) => _channel?.send(RTCDataChannelMessage(jsonEncode(message)));
+  void _send(Map<String, Object?> message) => _channel?.sendText(jsonEncode(message));
 
   void _sendState() {
     final now = DateTime.now();
