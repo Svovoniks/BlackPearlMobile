@@ -18,7 +18,16 @@ import 'theme.dart';
 
 /// The app once a PC is chosen: Remote, Library and Settings tabs.
 class HomeShell extends StatefulWidget {
-  const HomeShell({super.key, required this.model, required this.connection, required this.onChoosePc, required this.onPairAgain, this.updater});
+  const HomeShell({
+    super.key,
+    required this.model,
+    required this.connection,
+    required this.onChoosePc,
+    required this.onPairAgain,
+    this.updater,
+    this.initialTab = HomeShell.remoteTab,
+    this.onTabChanged,
+  });
   final AppModel model;
   final RemoteConnection connection;
   final VoidCallback onChoosePc;
@@ -27,13 +36,41 @@ class HomeShell extends StatefulWidget {
   /// Checks for and installs app updates, for Settings; null where the app doesn't update itself.
   final AppUpdater? updater;
 
+  /// The tab shown first: the one that showed before the pairing screen took the place of the tabs, when it was cancelled.
+  final int initialTab;
+
+  /// Every tab chosen, so the app can come back to it.
+  final ValueChanged<int>? onTabChanged;
+
+  static const remoteTab = 0, libraryTab = 1, settingsTab = 2;
+
   @override
   State<HomeShell> createState() => _HomeShellState();
 }
 
 class _HomeShellState extends State<HomeShell> {
-  int _tab = 0;
+  late int _tab = widget.initialTab;
   bool _playerOpen = false;
+
+  // The tabs shown before this one, the last most recent, each once: the system's Back goes back through them. The
+  // Remote is where they start, so reaching it forgets them, and its Back closes the app.
+  final List<int> _visited = [];
+
+  void _showTab(int tab, {bool back = false}) {
+    if (!mounted || tab == _tab) return;
+    if (tab == HomeShell.remoteTab) {
+      _visited.clear();
+    } else if (!back) {
+      _visited
+        ..remove(tab)
+        ..add(_tab);
+    }
+    setState(() => _tab = tab);
+    widget.onTabChanged?.call(tab);
+  }
+
+  // Back from a tab other than the Remote: to the tab shown before it, or to the Remote when there is none.
+  void _back() => _showTab(_visited.isEmpty ? HomeShell.remoteTab : _visited.removeLast(), back: true);
 
   /// Bumped when the phone's player closes or the PC starts a title, so the Library shows the new resume points.
   final ValueNotifier<int> _playbackChanged = ValueNotifier(0);
@@ -51,7 +88,7 @@ class _HomeShellState extends State<HomeShell> {
   // The Remote, over whatever page is open above the tabs.
   void _showRemote() {
     Navigator.of(context).popUntil((route) => route.isFirst);
-    setState(() => _tab = 0);
+    _showTab(HomeShell.remoteTab);
   }
 
   RemoteLink get link => widget.connection;
@@ -73,7 +110,7 @@ class _HomeShellState extends State<HomeShell> {
     final opened = start(playback);
     await Navigator.of(context).push(MaterialPageRoute<void>(
       fullscreenDialog: true,
-      builder: (_) => PlayerScreen(playback: playback, pcName: link.pcName, settings: widget.model.settings, onHandedToPc: () => setState(() => _tab = 0)),
+      builder: (_) => PlayerScreen(playback: playback, pcName: link.pcName, settings: widget.model.settings, onHandedToPc: () => _showTab(HomeShell.remoteTab)),
     ));
     _playerOpen = false;
     // Left while it was still opening: a request still waiting for the link is not sent any more (Watch here would
@@ -109,7 +146,7 @@ class _HomeShellState extends State<HomeShell> {
       if (mounted) {
         // The Remote shows what the PC now plays: over a show's or season's page too, which close for it.
         Navigator.of(context).popUntil((route) => route.isFirst);
-        setState(() => _tab = 0);
+        _showTab(HomeShell.remoteTab);
       }
       _playbackChanged.value++;
       return null;
@@ -142,30 +179,45 @@ class _HomeShellState extends State<HomeShell> {
         onChoosePc: widget.onChoosePc,
         onPairAgain: widget.onPairAgain,
         onWatchHere: playback == null ? null : (id) => _openPlayer((playback) => playback.watch(id, takeOver: true)),
-        onBrowseLibrary: () => setState(() => _tab = 1),
+        onBrowseLibrary: () => _showTab(HomeShell.libraryTab),
         // From the screen that says nothing is playing: the title starts on the PC, and the Remote stays in front.
         onPlayOnPc: (entry) => _actions.playOnPc(entry),
         changed: _playbackChanged,
-        active: _tab == 0,
+        active: _tab == HomeShell.remoteTab,
       ),
-      LibraryScreen(link: link, actions: _actions, changed: _playbackChanged, active: _tab == 1, toTop: _libraryTop),
+      LibraryScreen(
+        link: link,
+        actions: _actions,
+        changed: _playbackChanged,
+        active: _tab == HomeShell.libraryTab,
+        toTop: _libraryTop,
+        onBack: _back,
+      ),
       SettingsScreen(model: widget.model, link: link, onChoosePc: widget.onChoosePc, updater: widget.updater),
     ];
-    return Scaffold(
-      body: IndexedStack(index: _tab, children: tabs),
-      bottomNavigationBar: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Away from the Remote, what the PC plays keeps its play buttons within reach.
-          if (_tab != 0) MiniRemoteBar(link: link, onOpen: () => setState(() => _tab = 0), safeBottom: false),
-          AppTabBar(
-            index: _tab,
-            onSelect: (index) {
-              if (index == _tab && index == 1) _libraryTop.value++;
-              setState(() => _tab = index);
-            },
-          ),
-        ],
+    // The system's Back goes back to the tab shown before rather than closing the app; only the Remote's closes it. The
+    // Library takes its own Back, which closes its search first.
+    return PopScope(
+      canPop: _tab == HomeShell.remoteTab,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && _tab == HomeShell.settingsTab) _back();
+      },
+      child: Scaffold(
+        body: IndexedStack(index: _tab, children: tabs),
+        bottomNavigationBar: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Away from the Remote, what the PC plays keeps its play buttons within reach.
+            if (_tab != HomeShell.remoteTab) MiniRemoteBar(link: link, onOpen: () => _showTab(HomeShell.remoteTab), safeBottom: false),
+            AppTabBar(
+              index: _tab,
+              onSelect: (index) {
+                if (index == _tab && index == HomeShell.libraryTab) _libraryTop.value++;
+                _showTab(index);
+              },
+            ),
+          ],
+        ),
       ),
     );
   }

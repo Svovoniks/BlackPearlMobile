@@ -6,6 +6,7 @@ import 'package:blackpearl_mobile/connection/transport.dart';
 import 'package:blackpearl_mobile/main.dart';
 import 'package:blackpearl_mobile/protocol/pair_link.dart';
 import 'package:blackpearl_mobile/storage/paired_pcs.dart';
+import 'package:blackpearl_mobile/ui/home_shell.dart';
 import 'package:blackpearl_mobile/ui/theme.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/services.dart';
@@ -224,5 +225,98 @@ void main() {
     expect(app.model.connection?.target.pcId, pcId);
     await links.close();
     app.model.dispose();
+  });
+
+  group('Back', () {
+    Future<TestApp> openApp(WidgetTester tester) async {
+      final app = TestApp(FlakyStore());
+      await PairedPcStore(app.secrets).save([pc]);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildTheme(),
+          home: Root(model: app.model, links: const Stream.empty(), network: const Stream<List<ConnectivityResult>>.empty()),
+        ),
+      );
+      await tester.runAsync(app.model.load);
+      await tester.pump();
+      return app;
+    }
+
+    Finder tab(String label) => find.descendant(of: find.byType(AppTabBar), matching: find.text(label));
+    int shownTab(WidgetTester tester) => tester.widget<AppTabBar>(find.byType(AppTabBar)).index;
+
+    // What the system's Back did: true when the app took it, false when it would close the app.
+    Future<bool> back(WidgetTester tester) async {
+      final handled = await tester.binding.handlePopRoute();
+      await tester.pump(const Duration(milliseconds: 400));
+      return handled;
+    }
+
+    testWidgets('from Settings and the Library goes to the Remote; only the Remote closes the app', (tester) async {
+      final app = await openApp(tester);
+      expect(shownTab(tester), HomeShell.remoteTab);
+
+      await tester.tap(tab('Settings'));
+      await tester.pump();
+      expect(shownTab(tester), HomeShell.settingsTab);
+      expect(await back(tester), isTrue, reason: 'the app stays open');
+      expect(shownTab(tester), HomeShell.remoteTab);
+
+      await tester.tap(tab('Library'));
+      await tester.pump();
+      expect(shownTab(tester), HomeShell.libraryTab);
+      expect(await back(tester), isTrue, reason: 'the app stays open');
+      expect(shownTab(tester), HomeShell.remoteTab);
+
+      expect(await back(tester), isFalse, reason: "the Remote's Back closes the app");
+      app.model.dispose();
+    });
+
+    testWidgets('goes back to the tab shown before, each tab once, and the Remote forgets them', (tester) async {
+      final app = await openApp(tester);
+      // Library, then Settings: Back shows the Library, then the Remote.
+      await tester.tap(tab('Library'));
+      await tester.pump();
+      await tester.tap(tab('Settings'));
+      await tester.pump();
+      expect(await back(tester), isTrue);
+      expect(shownTab(tester), HomeShell.libraryTab);
+      expect(await back(tester), isTrue);
+      expect(shownTab(tester), HomeShell.remoteTab);
+
+      // Settings, Library, Settings again: no going round, just Library and the Remote.
+      for (final label in ['Settings', 'Library', 'Settings']) {
+        await tester.tap(tab(label));
+        await tester.pump();
+      }
+      expect(await back(tester), isTrue);
+      expect(shownTab(tester), HomeShell.libraryTab);
+      expect(await back(tester), isTrue);
+      expect(shownTab(tester), HomeShell.remoteTab);
+
+      // The Remote, reached by its tab: the tabs before are forgotten, and Back from a tab opened then is the Remote.
+      for (final label in ['Library', 'Remote', 'Settings']) {
+        await tester.tap(tab(label));
+        await tester.pump();
+      }
+      expect(await back(tester), isTrue);
+      expect(shownTab(tester), HomeShell.remoteTab);
+      expect(await back(tester), isFalse);
+      app.model.dispose();
+    });
+
+    testWidgets('from a pairing opened in Settings comes back to Settings', (tester) async {
+      final app = await openApp(tester);
+      await tester.tap(tab('Settings'));
+      await tester.pump();
+
+      app.model.requestPairing();
+      await tester.pump();
+      expect(find.text('Connect to BlackPearl'), findsOneWidget);
+      expect(await back(tester), isTrue);
+      expect(find.text('Connect to BlackPearl'), findsNothing);
+      expect(shownTab(tester), HomeShell.settingsTab);
+      app.model.dispose();
+    });
   });
 }
