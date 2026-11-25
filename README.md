@@ -72,7 +72,11 @@ flutter test
 flutter build apk --debug
 ```
 
-Release APKs are built and signed by CI when a `v*` tag is pushed, and attached to that tag's GitHub release. The tag
+Release APKs are built and signed by CI when a `v*` tag is pushed, and attached to that tag's GitHub release: one per
+ABI, `BlackPearl-v<version>.apk` for 64-bit ARM (nearly every phone) and `BlackPearl-v<version>-armeabi-v7a.apk` for
+32-bit ARM. None is built for x86_64. Their native libraries are compressed, which halves the download; Android unpacks
+them on install. Since the split, Flutter numbers each APK's version code as 1000 × the ABI's number + the build number
+(armeabi-v7a 1, arm64-v8a 2), so later releases must stay split for phones to accept them as updates. The tag
 must match `version:` in `pubspec.yaml`. Signing uses the repository secrets `ANDROID_KEYSTORE_BASE64`,
 `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` and `ANDROID_KEY_PASSWORD`. A local `flutter build apk --release`
 without `android/key.properties` is signed with the debug key, so it can't update an installed release.

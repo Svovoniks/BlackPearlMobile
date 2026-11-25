@@ -94,7 +94,11 @@ Future<void> main(List<String> args) async {
   // Release builds on Android update themselves from GitHub. A debug build is signed with another key, so Android
   // wouldn't install a release over it.
   final updater = kReleaseMode && Platform.isAndroid
-      ? AppUpdater(platform: AndroidUpdatePlatform(appVersion: identity.appVersion), currentVersion: identity.appVersion)
+      ? AppUpdater(
+          platform: AndroidUpdatePlatform(appVersion: identity.appVersion),
+          currentVersion: identity.appVersion,
+          abis: await _abis(),
+        )
       : null;
   runApp(BlackPearlApp(model: model, updater: updater));
   unawaited(model.load());
@@ -178,6 +182,15 @@ Future<PhoneIdentity> _identity() async {
   if (device.isEmpty) device = 'Phone';
   if (device.length > 60) device = device.substring(0, 60);
   return PhoneIdentity(appVersion: version, device: device);
+}
+
+/// The ABIs the phone runs, most preferred first, which pick the update's APK. When Android won't say, the plain APK's.
+Future<List<String>> _abis() async {
+  try {
+    final abis = (await DeviceInfoPlugin().androidInfo).supportedAbis;
+    if (abis.isNotEmpty) return abis;
+  } catch (_) {}
+  return const [plainApkAbi];
 }
 
 class BlackPearlApp extends StatelessWidget {

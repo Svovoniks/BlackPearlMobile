@@ -17,8 +17,13 @@ class AppRelease {
   final String? sha256;
 }
 
-/// The release APK's name, as the release workflow uploads it.
-final _apkName = RegExp(r'^BlackPearl-v\d+(\.\d+)*\.apk$');
+/// The release APKs' names, as the release workflow uploads them: one per Android ABI. The 64-bit ARM one, which nearly
+/// every phone runs, keeps the plain name `BlackPearl-v1.2.3.apk` that releases up to 0.10.0 used for their only APK, so
+/// those find it; the others are named for their ABI, as in `BlackPearl-v1.2.3-armeabi-v7a.apk`.
+final _apkName = RegExp(r'^BlackPearl-v\d+(?:\.\d+)*(?:-([a-z0-9_-]+))?\.apk$');
+
+/// The ABI of the APK with the plain name.
+const plainApkAbi = 'arm64-v8a';
 
 /// Compares two versions such as "0.1.2" (a leading "v" and anything after "+" or "-" are ignored). Null when either
 /// isn't a version.
@@ -49,22 +54,28 @@ String? newerVersion(Object? json, String current) {
   return (compareVersions(version, current) ?? 0) > 0 ? version : null;
 }
 
-/// The release in GitHub's "latest release" answer, when it is newer than [current] and its APK is uploaded. Null
-/// otherwise; a newer release still being uploaded is null here but not for [newerVersion].
-AppRelease? newerRelease(Object? json, String current) {
+/// The release in GitHub's "latest release" answer, when it is newer than [current] and has an uploaded APK for one of
+/// [abis], the phone's ABIs in Android's order of preference. Null otherwise; a newer release still being uploaded is
+/// null here but not for [newerVersion].
+AppRelease? newerRelease(Object? json, String current, {List<String> abis = const [plainApkAbi]}) {
   final version = newerVersion(json, current);
   if (version == null) return null;
   final assets = (json as Map)['assets'];
   if (assets is! List) return null;
+  final byAbi = <String, AppRelease>{};
   for (final asset in assets) {
-    if (asset is! Map || asset['name'] is! String || !_apkName.hasMatch(asset['name'] as String)) continue;
-    final url = Uri.tryParse(asset['browser_download_url'] as String? ?? '');
+    final match = asset is Map && asset['name'] is String ? _apkName.firstMatch(asset['name'] as String) : null;
+    if (match == null) continue;
+    final url = Uri.tryParse((asset as Map)['browser_download_url'] as String? ?? '');
     final size = asset['size'];
     if (url == null || url.scheme != 'https' || size is! int || size <= 0) continue;
     if (asset['state'] != null && asset['state'] != 'uploaded') continue;
     final digest = asset['digest'];
     final sha = digest is String && digest.startsWith('sha256:') ? digest.substring(7).toLowerCase() : null;
-    return AppRelease(version: version, apk: url, size: size, sha256: sha);
+    byAbi.putIfAbsent(match[1] ?? plainApkAbi, () => AppRelease(version: version, apk: url, size: size, sha256: sha));
+  }
+  for (final abi in abis) {
+    if (byAbi[abi] case final release?) return release;
   }
   return null;
 }
@@ -106,10 +117,13 @@ enum UpdatePhase {
 
 /// Looks for a newer release on GitHub, and downloads and installs it when asked.
 class AppUpdater extends ChangeNotifier {
-  AppUpdater({required this.platform, required this.currentVersion});
+  AppUpdater({required this.platform, required this.currentVersion, this.abis = const [plainApkAbi]});
 
   final UpdatePlatform platform;
   final String currentVersion;
+
+  /// The phone's ABIs, most preferred first (Android's `Build.SUPPORTED_ABIS`), which pick the release's APK.
+  final List<String> abis;
 
   /// How long an automatic check counts as fresh. Opening the app or coming back to it checks again after that.
   static const checkEvery = Duration(hours: 6);
@@ -176,7 +190,7 @@ class AppUpdater extends ChangeNotifier {
       _nextCheck = clock.now().add(checkEvery);
       // An update started while GitHub was answering; this answer mustn't change what it is installing.
       if (_updating) return manual ? _downloadingMessage : null;
-      final found = newerRelease(json, currentVersion);
+      final found = newerRelease(json, currentVersion, abis: abis);
       if (found == null) {
         final publishing = newerVersion(json, currentVersion);
         // A release whose APK is still uploading: keep what the banner offers, say so, and look again soon.
