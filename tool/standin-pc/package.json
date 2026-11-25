@@ -1,0 +1,22 @@
+{
+  "name": "blackpearl-standin-pc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A room server and a stand-in BlackPearl PC (PHONE-REMOTE.md) for testing BlackPearl Mobile end to end on an Android emulator.",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "standin-pc": "index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test --test-concurrency=1 \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "node-datachannel": "^0.33.6",
+    "ws": "^8.23.0"
+  }
+}

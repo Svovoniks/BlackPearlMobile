@@ -147,6 +147,10 @@ sets up the WebRTC link with libdatachannel on both ends, and the stand-in answe
 `--loopback-log=<file>` writes each connection change and the commands the stand-in received. It follows
 PHONE-REMOTE.md but is not the desktop app.
 
+`tool/standin-pc` is a fuller stand-in that runs outside the app, in Node.js: a room server and a PC with a made-up
+library that plays a real video file over `media-v1`, queues, watched marks and the home-network socket. A normal
+build on the Android emulator pairs with it through the link it prints. See `tool/standin-pc/README.md`.
+
 `--paired-pc=<JSON>` starts already paired with a real PC, for trying the Windows build against the desktop app: the
 JSON is a paired PC as the app stores it, `{"pcId":…,"name":…,"server":…,"phoneId":…,"secret":…}`, with a phone id and
 secret the PC knows (its `phoneRemotePhones` setting).
