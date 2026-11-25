@@ -110,11 +110,37 @@ void main() {
     expect(newerRelease(releaseJson('v0.1.1'), '0.1.2'), isNull, reason: 'older');
     expect(newerRelease({...releaseJson('v0.1.3'), 'prerelease': true}, '0.1.2'), isNull);
     expect(newerRelease(releaseJson('v0.1.3', name: 'other.apk'), '0.1.2'), isNull, reason: 'not the release APK');
+    expect(newerRelease(releaseJson('v0.1.3', name: 'BlackPearl-v0.1.3.apk.zip'), '0.1.2'), isNull);
     expect(newerRelease({'message': 'Not Found'}, '0.1.2'), isNull);
     expect(newerRelease('nonsense', '0.1.2'), isNull);
     final plain = releaseJson('v0.1.3');
     ((plain['assets'] as List)[1] as Map)['browser_download_url'] = 'http://github.com/a.apk';
     expect(newerRelease(plain, '0.1.2'), isNull, reason: 'not https');
+  });
+
+  test("picks the APK for the phone's ABI", () {
+    Map<String, Object?> asset(String name, int size) => {
+      'name': name,
+      'size': size,
+      'browser_download_url': 'https://github.com/Svovoniks/BlackPearlMobile/releases/download/v0.1.3/$name',
+      'state': 'uploaded',
+    };
+    final json = {
+      ...releaseJson('v0.1.3'),
+      'assets': [
+        asset('BlackPearl-v0.1.3-armeabi-v7a.apk', 100),
+        asset('BlackPearl-v0.1.3.apk', 200),
+        asset('BlackPearl-v0.1.3-x86_64.apk', 300),
+      ],
+    };
+    expect(newerRelease(json, '0.1.2')!.size, 200, reason: 'the plain APK is for arm64-v8a');
+    expect(newerRelease(json, '0.1.2', abis: ['arm64-v8a', 'armeabi-v7a', 'armeabi'])!.size, 200);
+    expect(newerRelease(json, '0.1.2', abis: ['armeabi-v7a', 'armeabi'])!.size, 100);
+    expect(newerRelease(json, '0.1.2', abis: ['x86_64', 'arm64-v8a'])!.size, 300, reason: 'the most preferred ABI first');
+    expect(newerRelease(json, '0.1.2', abis: ['x86']), isNull, reason: 'no APK for this phone');
+    final plainOnly = {...json, 'assets': [asset('BlackPearl-v0.1.3.apk', 200)]};
+    expect(newerRelease(plainOnly, '0.1.2', abis: ['armeabi-v7a']), isNull, reason: "a 32-bit phone can't run it");
+    expect(newerVersion(plainOnly, '0.1.2'), '0.1.3');
   });
 
   test('finds a newer release, and checks again on its own only after six hours', () async {

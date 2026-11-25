@@ -49,6 +49,14 @@ android {
         }
     }
 
+    // Compresses the native libraries (libmpv, libwebrtc, Flutter's engine) in the APK, which halves its download.
+    // Android then unpacks them on install instead of loading them straight from the APK, which takes more storage.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     buildTypes {
         release {
             signingConfig = if (hasReleaseKey) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
