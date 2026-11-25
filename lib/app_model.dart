@@ -287,7 +287,14 @@ class AppModel extends ChangeNotifier {
     if ((_playback?.active ?? false) && (_sound?.on ?? false)) {
       unawaited(_sound!.turnOff(message: 'The sound went back to the PC while this phone plays a video.'));
     }
+    // The media controls are the PC's only while the phone plays nothing itself.
+    if ((_playback?.active ?? false) != _watching) {
+      _watching = _playback?.active ?? false;
+      _syncBackground();
+    }
   }
+
+  bool _watching = false;
 
   void _settingsChanged() {
     _playback?.awayQuality = settings.awayQuality;
@@ -314,8 +321,10 @@ class AppModel extends ChangeNotifier {
     final status = connection.status;
     final String text;
     bool? playing;
+    NowPlaying? media;
     if (status.isConnected) {
-      if (state != null && state.media && (_sound?.on ?? false)) {
+      final listening = _sound?.on ?? false;
+      if (state != null && state.media && listening) {
         text = '${state.title.isEmpty ? 'Video' : state.title} · sound on this phone';
         if (state.canControl) playing = state.playing;
       } else if (state != null && state.media) {
@@ -324,13 +333,27 @@ class AppModel extends ChangeNotifier {
       } else {
         text = 'Connected. Nothing is playing on the PC.';
       }
+      // A video the phone can control shows as Android's media controls: on the lock screen, with a timeline and play
+      // buttons, and for headset buttons. Not while the phone plays a video of its own, whose buttons those then are.
+      if (state != null && state.media && state.canControl && !(_playback?.active ?? false)) {
+        media = NowPlaying(
+          title: state.title.isEmpty ? 'Video' : state.title,
+          detail: listening ? (state.detail.isEmpty ? 'Sound on this phone' : '${state.detail} · sound on this phone') : state.detail,
+          playing: state.playing,
+          positionMs: connection.currentPositionMs(),
+          durationMs: state.durationMs,
+          hasNext: state.hasNext,
+          // The volume buttons set the PC's volume, unless its sound plays on this phone: then they are the phone's.
+          volume: settings.volumeKeys && !listening ? state.volume : null,
+        );
+      }
     } else if (status.phase == LinkPhase.waitingForPc) {
       text = "Waiting for the PC to come online";
     } else {
       text = 'Reconnecting to the PC';
     }
     final first = !service.running;
-    unawaited(service.show(BackgroundNotice(title: connection.pcName, text: text, playing: playing)).then((started) {
+    unawaited(service.show(BackgroundNotice(title: connection.pcName, text: text, playing: playing, media: media)).then((started) {
       if (started && first && !settings.askedNotifications) {
         unawaited(settings.markAskedNotifications());
         unawaited(service.askForNotifications());
@@ -338,11 +361,15 @@ class AppModel extends ChangeNotifier {
     }));
   }
 
-  void _backgroundAction(String action) {
+  void _backgroundAction(String action, [int? value]) {
     switch (action) {
-      case 'toggle':
+      case 'toggle' || 'play' || 'pause' || 'next' || 'previous':
         // The PC the notification names: during a pairing attempt, the one kept for it.
-        _linkKept?.command('toggle');
+        _linkKept?.command(action);
+      case 'seek-by' || 'seek-to' when value != null:
+        _linkKept?.command(action, value);
+      case 'volume' when value != null:
+        _setPcVolume(value);
       case 'disconnect':
         // Drops the link now and leaves the setting alone. The service stops as the connection does.
         _disconnectedHere = _foreground;
@@ -352,6 +379,26 @@ class AppModel extends ChangeNotifier {
         // A connection halted by a failure says nothing when it stops, so look again once it has.
         unawaited(_connection?.stop().then((_) => _syncBackground()));
     }
+  }
+
+  // A volume button held down asks many times a second: the PC gets the first value at once, then the latest one
+  // every 100 ms.
+  int? _volumeWaiting;
+  Timer? _volumeTimer;
+
+  void _setPcVolume(int value) {
+    final level = value.clamp(0, 100);
+    if (_volumeTimer != null) {
+      _volumeWaiting = level;
+      return;
+    }
+    _linkKept?.command('volume', level);
+    _volumeTimer = Timer(const Duration(milliseconds: 100), () {
+      _volumeTimer = null;
+      final waiting = _volumeWaiting;
+      _volumeWaiting = null;
+      if (waiting != null) _setPcVolume(waiting);
+    });
   }
 
   void _paired(PairedPc pc) {
@@ -447,6 +494,7 @@ class AppModel extends ChangeNotifier {
   @override
   void dispose() {
     _backgroundTimer?.cancel();
+    _volumeTimer?.cancel();
     settings.removeListener(_settingsChanged);
     _disposeConnection();
     notice.dispose();

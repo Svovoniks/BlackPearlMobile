@@ -99,8 +99,9 @@ class _PairingScreenState extends State<PairingScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    // The arrow is 40 dp in a fingertip's room, which stands where the 8 dp under it was.
                     SizedBox(
-                      height: 40,
+                      height: 48,
                       child: Align(
                         alignment: Alignment.centerLeft,
                         child: widget.onCancel == null
@@ -108,13 +109,13 @@ class _PairingScreenState extends State<PairingScreen> {
                             : Pebble(
                                 width: 40,
                                 height: 40,
+                                tapArea: Pebble.fingertip,
                                 onTap: widget.onCancel,
                                 semanticLabel: 'Back',
                                 child: const Icon(Icons.arrow_back_rounded, size: 20),
                               ),
                       ),
                     ),
-                    const SizedBox(height: 8),
                     Text('Connect to BlackPearl', textAlign: TextAlign.center, style: display(28)),
                     const SizedBox(height: 10),
                     Padding(

@@ -281,21 +281,33 @@ class OptionTab extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => Semantics(
-    button: true,
-    selected: selected,
-    child: Material(
-      color: selected ? Palette.accent : Palette.elevated,
-      shape: const StadiumBorder(),
-      child: InkWell(
-        customBorder: const StadiumBorder(),
-        onTap: onTap,
-        child: Padding(
-          // Four pages fit beside the close button in the landscape panel.
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-          child: Text(
-            label,
-            style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: selected ? Palette.accentInk : Palette.ink),
+  // The pill is some 37 dp high: the touch takes a fingertip's height around it, the height of the close button
+  // beside it.
+  Widget build(BuildContext context) => GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    onTap: onTap,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 48),
+      child: Center(
+        widthFactor: 1,
+        child: Semantics(
+          button: true,
+          selected: selected,
+          child: Material(
+            color: selected ? Palette.accent : Palette.elevated,
+            shape: const StadiumBorder(),
+            child: InkWell(
+              customBorder: const StadiumBorder(),
+              onTap: onTap,
+              child: Padding(
+                // Four pages fit beside the close button in the landscape panel.
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                child: Text(
+                  label,
+                  style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: selected ? Palette.accentInk : Palette.ink),
+                ),
+              ),
+            ),
           ),
         ),
       ),
@@ -489,7 +501,7 @@ class _UpNextPageState extends State<_UpNextPage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+          padding: const EdgeInsets.symmetric(horizontal: 16),
           child: ListChooser(
             queues: _queues,
             selected: _selected,

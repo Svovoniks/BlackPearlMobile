@@ -84,6 +84,46 @@ void main() {
     expect(link.asked.last.$2['home'], isFalse);
   });
 
+  testWidgets('Search has a button of its own beside the title, and Back closes it rather than the app', (tester) async {
+    // A narrow phone, where a Search pill at the end of the row was out of sight.
+    tester.view.physicalSize = const Size(720, 1560);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final (link, _) = await pumpLibrary(tester, features: const {'library', 'watch', 'queues'});
+    final button = find.bySemanticsLabel('Search');
+    expect(tester.getRect(button).right, lessThanOrEqualTo(360));
+    expect(tester.getSize(button).height, greaterThanOrEqualTo(48));
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    expect(find.text('Library'), findsNothing);
+    await tester.enterText(find.byType(TextField), 'night');
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pumpAndSettle();
+    expect(link.asked.last.$2['query'], 'night');
+    // The system's Back.
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Library'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
+    expect(find.text('Continue watching'), findsOneWidget, reason: 'back on Home, where the search was opened');
+  });
+
+  testWidgets("without a connection the Library says how it is going and can try again", (tester) async {
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.waitingForPc))..offered = const {'library'};
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(),
+      home: LibraryScreen(link: link, actions: LibraryActions(watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {}, playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null)),
+    ));
+    await tester.pump();
+    expect(find.text("Your PC isn't online"), findsOneWidget);
+    expect(find.text('Try again'), findsOneWidget);
+    // While it is trying there is nothing to press.
+    link.status = const LinkStatus(LinkPhase.linking);
+    await tester.pump();
+    expect(find.text('Reaching Study…'), findsOneWidget);
+    expect(find.text('Try again'), findsNothing);
+  });
+
   testWidgets("Watch here shows for the PC's own video when it offers watching", (tester) async {
     Future<FakeRemoteLink> pump(String? mediaId, Set<String> features) async {
       final link = FakeRemoteLink(
@@ -439,6 +479,69 @@ void main() {
       await tester.tap(find.text('Paper Moon'));
       await tester.pumpAndSettle();
       expect(find.text('Mark as watched'), findsNothing);
+    });
+
+    testWidgets('a long press on a title offers where to play it and its watched mark, without opening it', (tester) async {
+      final (_, marks) = await pump(tester);
+      await tester.longPress(find.text('Paper Moon'));
+      await tester.pumpAndSettle();
+      expect(find.text('Play on phone'), findsOneWidget);
+      expect(find.text('Play on Study'), findsOneWidget);
+      await tester.tap(find.text('Mark as watched'));
+      await tester.pumpAndSettle();
+      expect(marks, ['new movie true']);
+      expect(find.text('Marked watched.'), findsOneWidget);
+      // A show has no mark of its own: both ways are offered, for all its episodes.
+      await tester.longPress(find.text('Night Signal').first);
+      await tester.pumpAndSettle();
+      expect(find.text('Play on phone'), findsNothing);
+      await tester.tap(find.text('Mark every episode as unwatched'));
+      await tester.pumpAndSettle();
+      expect(marks.last, 'ep1 series false');
+    });
+
+    testWidgets("an episode's row plays it with one tap, where a video was last started", (tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 2.75;
+      addTearDown(tester.view.reset);
+      final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch'};
+      link.answer = (type, fields) async => fields['parentId'] == 'ep1'
+          ? page('Night Signal', [
+              {'id': 'e1', 'title': 'Pilot', 'level': 'episode', 'kind': 'Show', 'season': 1, 'episode': 1, 'playable': true},
+              {'id': 's2', 'title': 'Season 2', 'level': 'season', 'kind': 'Show', 'season': 2, 'playable': false},
+            ])
+          : page('Shows', [show]);
+      final played = <String>[];
+      var onPc = false;
+      await tester.pumpWidget(MaterialApp(
+        theme: buildTheme(),
+        home: LibraryScreen(
+          link: link,
+          actions: LibraryActions(
+            watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async => played.add('here ${entry.id}'),
+            playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async {
+              played.add('pc ${entry.id}');
+              return null;
+            },
+            prefersPc: () => onPc,
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Night Signal'));
+      await tester.pumpAndSettle();
+      // A season opens its episodes: it has no play button.
+      expect(find.bySemanticsLabel(RegExp('^Play Season 2')), findsNothing);
+      await tester.tap(find.bySemanticsLabel('Play Pilot on this phone'));
+      await tester.pump(const Duration(seconds: 1));
+      expect(played, ['here e1']);
+      expect(find.text('Play on PC'), findsNothing, reason: 'no sheet opened');
+      onPc = true;
+      link.status = const LinkStatus(LinkPhase.connected);
+      await tester.pump();
+      await tester.tap(find.bySemanticsLabel('Play Pilot on Study'));
+      await tester.pump(const Duration(seconds: 1));
+      expect(played.last, 'pc e1');
     });
 
     testWidgets("a show's page marks every episode", (tester) async {

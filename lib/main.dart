@@ -123,6 +123,8 @@ Future<void> _runLoopback(List<String> args) async {
   final identity = await _identity();
   final model = AppModel(
     store: PairedPcStore(MemorySecretStore()),
+    // On Android the background service runs too, so its notification and media controls can be tried on the stand-in PC.
+    background: BackgroundLink.supported ? BackgroundLink() : null,
     createPlayback: (connection) => PhonePlayback(link: connection),
     connect: (target, {onPaired, onPcName}) => RemoteConnection(
       target: target,

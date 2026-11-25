@@ -121,6 +121,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     unawaited(SystemChrome.setPreferredOrientations([]));
     _hideTimer?.cancel();
     _rippleTimer?.cancel();
+    _tapWindow?.cancel();
     super.dispose();
   }
 
@@ -388,14 +389,43 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     }
   }
 
+  // A tap shows or hides the controls at once: waiting to see whether it is the first of a double tap, as a detector
+  // listening for both does, made every tap answer a third of a second late. A second tap soon after on the same side
+  // is the double tap: it seeks, and puts the controls back as the first tap found them.
+  static const _doubleTapWindow = Duration(milliseconds: 300);
+  Timer? _tapWindow;
+  bool _tapForward = false;
+
+  // Whether the controls showed before the tap that may be a double tap's first; null when there is nothing to put back.
+  bool? _shownBeforeTap;
+
+  void _tapUp(TapUpDetails details) {
+    final forward = details.localPosition.dx > MediaQuery.sizeOf(context).width / 2;
+    final second = (_tapWindow?.isActive ?? false) && forward == _tapForward;
+    _tapWindow?.cancel();
+    _tapWindow = Timer(_doubleTapWindow, () {});
+    _tapForward = forward;
+    if (!second) {
+      _shownBeforeTap = _menu == null ? _controlsShown : null;
+      _tapped();
+      return;
+    }
+    final before = _shownBeforeTap;
+    _shownBeforeTap = null;
+    if (before == true) {
+      _showControls();
+    } else if (before == false && _controlsShown) {
+      _hideTimer?.cancel();
+      setState(() => _controlsShown = false);
+    }
+    _doubleTapped(forward);
+  }
+
   // Double-tapping a side seeks 10 seconds that way; taps in a row add up.
-  double _doubleTapX = 0;
   int _rippleSeconds = 0;
   Timer? _rippleTimer;
 
-  void _doubleTapped() {
-    final width = MediaQuery.sizeOf(context).width;
-    final forward = _doubleTapX > width / 2;
+  void _doubleTapped(bool forward) {
     final seconds = forward ? 10 : -10;
     _seekBy(seconds);
     setState(() => _rippleSeconds = _rippleSeconds != 0 && (_rippleSeconds > 0) == forward ? _rippleSeconds + seconds : seconds);
@@ -731,13 +761,11 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
         fit: StackFit.expand,
         children: [
           Video(key: _videoKey, controller: controller!, controls: NoVideoControls, fill: Colors.black),
-          // Taps anywhere on the picture show or hide the controls; double taps on a side seek.
+          // Taps anywhere on the picture show or hide the controls; double taps on a side seek (see _tapUp).
           Positioned.fill(
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: _tapped,
-              onDoubleTapDown: (details) => _doubleTapX = details.localPosition.dx,
-              onDoubleTap: _doubleTapped,
+              onTapUp: _tapUp,
             ),
           ),
           if (player != null)
@@ -798,12 +826,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
                     ),
                   ),
                   // As far from the bottom edge as the top bar is from the top (see controlInsets on the gesture strip).
-                  // The up-next card's timeline is its last row, 12 dp above its bottom: the card rises as far as it
-                  // takes to keep that drag above the gesture strip.
+                  // The up-next card's timeline is its last row, and takes touches down to 4 dp above the card's
+                  // bottom: the card rises as far as it takes to keep that drag above the gesture strip.
                   Positioned(
                     left: safe.left + side,
                     right: safe.right + side,
-                    bottom: upNext == null ? safe.bottom + 14 : [safe.bottom + 14, MediaQuery.systemGestureInsetsOf(context).bottom - 8].reduce((a, b) => a > b ? a : b),
+                    bottom: upNext == null ? safe.bottom + 14 : [safe.bottom + 14, MediaQuery.systemGestureInsetsOf(context).bottom].reduce((a, b) => a > b ? a : b),
                     child: KeyedSubtree(key: _dockKey, child: dock),
                   ),
                   ?menu,

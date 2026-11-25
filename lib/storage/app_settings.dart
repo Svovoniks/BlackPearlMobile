@@ -48,6 +48,16 @@ class AppSettings extends ChangeNotifier {
   int _soundDelayMs = 0;
   bool _followPhoneRotation = false;
   bool _crashReports = true;
+  bool _playOnPc = false;
+  bool _volumeKeys = true;
+
+  /// Whether the phone's volume buttons set the PC's volume while the PC plays and the background connection shows it
+  /// among Android's media controls, as they do for a cast. On by default; off, they stay the phone's own.
+  bool get volumeKeys => _volumeKeys;
+
+  /// Whether the last video started from the Library went to the PC rather than to the phone: the play buttons on
+  /// lists start the next one in the same place.
+  bool get playOnPc => _playOnPc;
 
   /// Whether errors, crashes and how long startup and opening videos take go to BlackPearl's developer through Sentry,
   /// with paths, titles, addresses and names removed. On by default.
@@ -91,6 +101,8 @@ class AppSettings extends ChangeNotifier {
       _shuffle = await _store.readBool('shuffle') ?? false;
       _followPhoneRotation = await _store.readBool('followPhoneRotation') ?? false;
       _crashReports = await _store.readBool('crashReports') ?? true;
+      _playOnPc = await _store.readBool('playOnPc') ?? false;
+      _volumeKeys = await _store.readBool('volumeKeys') ?? true;
       _soundDelayMs = (int.tryParse(await _store.readString('soundDelayMs') ?? '') ?? 0).clamp(-soundDelayLimitMs, soundDelayLimitMs);
     } catch (_) {
       // Unreadable preferences leave the defaults.
@@ -138,6 +150,20 @@ class AppSettings extends ChangeNotifier {
     _crashReports = value;
     notifyListeners();
     await _quietly(_store.writeBool('crashReports', value));
+  }
+
+  Future<void> setVolumeKeys(bool value) async {
+    if (value == _volumeKeys) return;
+    _volumeKeys = value;
+    notifyListeners();
+    await _quietly(_store.writeBool('volumeKeys', value));
+  }
+
+  Future<void> setPlayOnPc(bool value) async {
+    if (value == _playOnPc) return;
+    _playOnPc = value;
+    notifyListeners();
+    await _quietly(_store.writeBool('playOnPc', value));
   }
 
   Future<void> setSoundDelayMs(int value) async {

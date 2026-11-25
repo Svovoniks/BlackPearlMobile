@@ -67,17 +67,32 @@ object LinkEngine {
 
     private const val SHARED_INSTALLATION_ID = "00000000000000000000000000000000"
 
-    /** Tells the app about a notification button: `toggle` or `disconnect`. */
-    fun send(action: String) {
-        main.post { channel?.invokeMethod("action", action) }
+    /**
+     * Tells the app about a button of the notification or the media controls: `toggle`, `play`, `pause`, `next`,
+     * `previous` and `disconnect`, and with a [value] `seek-by` and `seek-to` (milliseconds) and `volume` (0 to 100).
+     */
+    fun send(action: String, value: Int? = null) {
+        main.post { channel?.invokeMethod("action", if (value == null) action else mapOf("action" to action, "value" to value)) }
     }
 
     private fun notice(arguments: Any?): BackgroundLinkService.Notice {
         val map = arguments as? Map<*, *> ?: emptyMap<String, Any>()
+        val media = map["media"] as? Map<*, *>
         return BackgroundLinkService.Notice(
             title = map["title"] as? String ?: "BlackPearl",
             text = map["text"] as? String ?: "",
             playing = map["playing"] as? Boolean,
+            media = media?.let {
+                BackgroundLinkService.Playing(
+                    title = it["title"] as? String ?: "",
+                    detail = it["detail"] as? String ?: "",
+                    playing = it["playing"] == true,
+                    positionMs = (it["positionMs"] as? Number)?.toLong() ?: 0L,
+                    durationMs = (it["durationMs"] as? Number)?.toLong() ?: 0L,
+                    hasNext = it["hasNext"] == true,
+                    volume = (it["volume"] as? Number)?.toInt(),
+                )
+            },
         )
     }
 }

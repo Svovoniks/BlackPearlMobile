@@ -70,8 +70,9 @@ class UpdateBanner extends StatelessWidget {
     final failed = updater.phase == UpdatePhase.failed;
     return Semantics(
       container: true,
+      // Its button is 34 dp in a fingertip's height, which stands where 7 dp of the slab's room above and below was.
       child: Slab(
-        padding: const EdgeInsets.fromLTRB(14, 10, 6, 10),
+        padding: const EdgeInsets.fromLTRB(14, 3, 6, 3),
         child: Row(
           children: [
             Icon(
@@ -111,13 +112,15 @@ class UpdateBanner extends StatelessWidget {
               Pebble(
                 height: 34,
                 lit: !failed,
+                tapArea: Pebble.fingertip,
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 onTap: onAction,
                 child: Text(action, style: const TextStyle(fontSize: 13)),
               ),
             ],
             if (downloading)
-              const SizedBox(width: 8)
+              // Without a button the slab keeps the room it has around its words.
+              const SizedBox(width: 8, height: 62)
             else
               IconButton(
                 onPressed: updater.dismiss,
