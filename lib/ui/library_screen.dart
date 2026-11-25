@@ -277,12 +277,15 @@ enum _Mode { home, category, queues, search }
 
 /// The Library tab: Home's rows, each category as a grid of posters, and search.
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key, required this.link, required this.actions, this.changed, this.active = true, this.toTop});
+  const LibraryScreen({super.key, required this.link, required this.actions, this.changed, this.active = true, this.toTop, this.onBack});
   final RemoteLink link;
   final LibraryActions actions;
 
   /// Whether this tab is the one showing: only then does the system's Back close its search.
   final bool active;
+
+  /// Where the system's Back goes when no search is open: the tab shown before. Null lets Back close the app.
+  final VoidCallback? onBack;
 
   /// Fires when the Library tab is tapped while it shows: the list goes to its top, and from there back to Home.
   final Listenable? toTop;
@@ -501,11 +504,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
   @override
   Widget build(BuildContext context) {
     final searching = _mode == _Mode.search;
-    // In search, the system's Back closes the search, as its arrow does, rather than the app.
+    // In search, the system's Back closes the search, as its arrow does, rather than the app. Outside it, Back goes
+    // where onBack says.
     return PopScope(
-      canPop: !(widget.active && searching),
+      canPop: !(widget.active && (searching || widget.onBack != null)),
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && widget.active && _mode == _Mode.search) _leaveSearch();
+        if (didPop || !widget.active) return;
+        if (_mode == _Mode.search) {
+          _leaveSearch();
+        } else {
+          widget.onBack?.call();
+        }
       },
       child: Scaffold(
         body: SafeArea(

@@ -232,6 +232,15 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
   Timer? _networkDebounce;
   bool _confirmingLink = false;
 
+  // The tab last shown. The pairing screen takes the tabs' place; cancelled, it gives back the tab it was opened from
+  // (Settings, through "Pair another PC"). A new pairing starts on the Remote, which shows the new PC.
+  int _homeTab = HomeShell.remoteTab;
+
+  void _pair(PairLink link) {
+    _homeTab = HomeShell.remoteTab;
+    model.pair(link);
+  }
+
   AppModel get model => widget.model;
 
   @override
@@ -295,7 +304,7 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
           await Future<void>.delayed(const Duration(milliseconds: 450));
           if (!mounted) return;
         }
-        model.pair(link);
+        _pair(link);
       }
     } finally {
       _confirmingLink = false;
@@ -337,7 +346,7 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
         return PairingScreen(
           key: ValueKey(model.pairingError),
           error: model.pairingError,
-          onLink: model.pair,
+          onLink: _pair,
           onCancel: connection != null || model.pcs.isNotEmpty ? model.cancelPairing : null,
         );
       }
@@ -347,6 +356,8 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
         onChoosePc: () => showPcChooser(context, model),
         updater: widget.updater,
         onPairAgain: () => model.requestPairing(error: connection.status.message),
+        initialTab: _homeTab,
+        onTabChanged: (tab) => _homeTab = tab,
       );
     },
   );
