@@ -3,7 +3,7 @@ description: "A phone remote for BlackPearl."
 publish_to: 'none'
 
 # The release tag must be v<version without the build number>; CI checks it.
-version: 0.12.1+25
+version: 0.12.2+26
 
 environment:
   sdk: ^3.14.0
