@@ -1005,6 +1005,33 @@ void main() {
       });
     });
 
+    test('a streak that began without internet is reported once a reportable failure comes', () {
+      fakeAsync((async) {
+        final sockets = <FakeSocket>[];
+        var refusals = 3;
+        final connection = RemoteConnection(
+          target: pairedTarget,
+          identity: const PhoneIdentity(appVersion: '1.2.3', device: 'Test phone'),
+          connectSocket: (uri) async {
+            if (refusals-- > 0) throw const SocketException('Network is unreachable');
+            return sockets.last = (sockets..add(FakeSocket())).last;
+          },
+          createPeer: (servers, relay) async => FakePeer(servers, relay),
+        );
+        connection.start();
+        // Three failures without internet (retries after 1, 2 and 4 seconds), then the room server answers.
+        async.elapse(const Duration(seconds: 8));
+        expect(problems(), isEmpty);
+        sockets.single.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+        sockets.single.receive({'type': 'remote-online'});
+        async.flushMicrotasks();
+        async.elapse(const Duration(seconds: 20, milliseconds: 500));
+        expect(problems().single.message, 'problem: no-answer');
+        expect(problems().single.data, containsPair('failures', 4));
+        connection.dispose();
+      });
+    });
+
     test("a phone without internet is noted but not reported, and the error's text stays out", () {
       fakeAsync((async) {
         final connection = RemoteConnection(

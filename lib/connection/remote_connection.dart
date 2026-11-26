@@ -1197,7 +1197,9 @@ class RemoteConnection extends RemoteLink {
       'phase': _status.phase.name,
       'homeNetwork': _viaLan,
     });
-    if (!_unreportedFailures.contains(why) && (permanent || _failures + 1 == reportAfterFailures)) {
+    // Every failure from the third on, so a streak that began with an unreported one still is; the same reason goes at
+    // most once a half hour (see [Trail.problem]).
+    if (!_unreportedFailures.contains(why) && (permanent || _failures + 1 >= reportAfterFailures)) {
       Trail.problem('link', why, {'failures': _failures + 1, 'permanent': permanent, 'homeNetwork': _viaLan});
     }
     _generation++;

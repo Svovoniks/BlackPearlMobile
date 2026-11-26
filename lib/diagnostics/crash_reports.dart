@@ -180,10 +180,12 @@ abstract final class CrashReports {
     return event;
   }
 
-  /// The same for a transaction (app start, opening a video), and its spans' descriptions.
+  /// The same for a transaction (app start, opening a video), and its spans' descriptions. A timing carries no notes:
+  /// they help with errors, not with how long something took.
   @visibleForTesting
   static SentryTransaction scrubTransaction(SentryTransaction transaction) {
     scrubEvent(transaction);
+    transaction.breadcrumbs = null;
     for (final span in transaction.spans) {
       span.context.description = ReportText.scrubOrNull(span.context.description);
     }

@@ -85,14 +85,20 @@ abstract final class Trail {
   /// Whether Sentry may keep [crumb]: one of the app's own, while the log is on.
   static bool keeps(Breadcrumb crumb) => enabled && categories.contains(crumb.category);
 
-  /// The notes [breadcrumbs] holds, scrubbed as error text is; null when none is left.
+  /// The notes [breadcrumbs] holds, scrubbed as error text is, as copies: the scope's own stay as written. Null when none
+  /// is left.
   static List<Breadcrumb>? scrubbed(List<Breadcrumb>? breadcrumbs) {
     final kept = [
       for (final crumb in breadcrumbs ?? const <Breadcrumb>[])
         if (categories.contains(crumb.category))
-          crumb
-            ..message = ReportText.scrubOrNull(crumb.message)
-            ..data = crumb.data == null ? null : _scrubData(crumb.data!),
+          Breadcrumb(
+            message: ReportText.scrubOrNull(crumb.message),
+            timestamp: crumb.timestamp,
+            category: crumb.category,
+            data: crumb.data == null ? null : _scrubData(crumb.data!),
+            level: crumb.level,
+            type: crumb.type,
+          ),
     ];
     return kept.isEmpty ? null : kept;
   }

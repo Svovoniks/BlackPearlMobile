@@ -123,11 +123,12 @@ id it keeps per installation, so before Sentry starts, `LinkEngine.kt` sets that
 The only breadcrumbs are the app's log (`lib/diagnostics/trail.dart`): the last 100 notes the app wrote itself about
 connecting to the PC, opening videos and updating, in fixed words and codes, never a title, name, address or anything
 the PC or a server said. Sentry's automatic breadcrumbs (web requests, screens, taps, the console, Android's own) are
-off, and anything other than the app's categories is dropped. The notes are scrubbed again with the rules above before
-a report goes; Sentry also copies them to the Android SDK, so its native crashes carry them too. The log also sends two
-kinds of warning that aren't crashes: a link to the PC that fails three times in a row, or for good (a removed phone, an
-expired code and a phone without internet aren't reported), and a request the PC doesn't answer, or an update that
-fails; each by a fixed code, at most once every half hour and twenty times a run. Settings › Send the app's log turns
+off (`AndroidManifest.xml` turns off the Android SDK's network breadcrumbs, which its other switches leave on), and
+anything other than the app's categories is dropped. The notes are scrubbed again with the rules above before an error
+goes, and timings carry none; Sentry also copies them to the Android SDK, so its native crashes carry them too. The log
+also sends three kinds of warning that aren't crashes: a link to the PC that has failed three times in a row, or for
+good (a removed phone, an expired code and a phone without internet aren't reported); a request the PC doesn't answer;
+and an update that fails. Each goes by a fixed code, at most once every half hour, and twenty a run at most. Settings › Send the app's log turns
 all of it off, and clears the notes kept so far; it only works while crash reports are on.
 
 R8 renames the release build's Java and Kotlin classes. Sentry's Gradle plugin (`android/app/build.gradle.kts`) writes

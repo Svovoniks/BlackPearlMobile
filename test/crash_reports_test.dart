@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/diagnostics/crash_reports.dart';
 import 'package:blackpearl_mobile/diagnostics/report_text.dart';
@@ -6,6 +8,10 @@ import 'package:blackpearl_mobile/storage/app_settings.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
+// ignore: implementation_imports, depend_on_referenced_packages
+import 'package:sentry/src/noop_hub.dart';
+// ignore: implementation_imports, depend_on_referenced_packages
+import 'package:sentry/src/telemetry/span/transaction/sentry_tracer.dart';
 
 void main() {
   group('ReportText', () {
@@ -188,11 +194,28 @@ void main() {
           Breadcrumb(category: 'navigation', message: 'Some Film (2020)'),
         ],
       );
+      final original = event.breadcrumbs![1];
       final kept = CrashReports.scrubEvent(event).breadcrumbs!;
       expect(kept.map((c) => c.category), ['link', 'playback']);
       expect(kept[0].data, {'why': 'no-answer', 'failures': 3});
       expect(kept[1].message, 'opening <address>');
       expect(kept[1].data, {'from': '<path>'});
+      expect(kept[1].timestamp, original.timestamp);
+      expect(original.message, 'opening 10.0.0.5:47811', reason: "the scope's own note isn't rewritten");
+    });
+
+    test('a timing carries no notes', () {
+      final transaction = SentryTransaction(SentryTracer(SentryTransactionContext('playback.open', 'playback'), NoOpHub()))
+        ..breadcrumbs = [Breadcrumb(category: 'link', message: 'connected')];
+      expect(CrashReports.scrubTransaction(transaction).breadcrumbs, isNull);
+    });
+
+    test("the Android SDK's network breadcrumbs, which enableAutoNativeBreadcrumbs leaves on, are off", () {
+      final manifest = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+      expect(
+        RegExp(r'android:name="io\.sentry\.breadcrumbs\.network-events"\s+android:value="false"').hasMatch(manifest),
+        isTrue,
+      );
     });
 
     // Last in the group: from here on CrashReports follows these settings.
