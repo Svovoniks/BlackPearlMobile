@@ -65,8 +65,10 @@ built as the tag build builds them, but signed with the debug key and without a 
 upload. That catches failures only a release build meets (R8, the native libraries for
 both ABIs) before the merge instead of at the tag. Afterwards no tracked file may have
 changed; a `pubspec.lock` that `pub get` rewrites means the lock file is out of date. The
-checks run in a detached copy of the commit under the system temp directory, so untracked
-files cannot affect the result. A fresh copy builds libdatachannel for both ABIs from
+checks run in a detached copy of the commit in a temp folder, so untracked files cannot
+affect the result. On Windows that is the user's own (`%LOCALAPPDATA%\Temp`), whatever
+`TEMP` says: Gradle's javac fails in a folder the user cannot list, such as
+`C:\Windows\Temp`. A fresh copy builds libdatachannel for both ABIs from
 source, so they take about ten minutes. Their record and log live in the repository's
 shared git directory (`blackpearl-checks/`), so every worktree sees them. Pushing a newer
 commit of the same branch stops the checks of the older one. A commit whose checks already

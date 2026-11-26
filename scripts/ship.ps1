@@ -74,7 +74,7 @@ function Assert-ShipPathName {
 function Invoke-ReleaseChecks {
     param([string]$Checkout, [string]$FlutterPath)
     Push-Location $Checkout
-    $failure = Join-Path ([IO.Path]::GetTempPath()) ('bpm-check-failure-' + [guid]::NewGuid().ToString('N') + '.txt')
+    $failure = Join-Path (Get-ScratchRoot) ('bpm-check-failure-' + [guid]::NewGuid().ToString('N') + '.txt')
     try {
         # The same list of checks the workflow runs, from the checked commit itself.
         $shell = (Get-Process -Id $PID).Path
@@ -106,9 +106,9 @@ function Remove-CheckCopy {
     param([string]$Root, [string]$Path)
     if (Test-Path -LiteralPath $Path) { & git -C $Root worktree remove --force $Path 2>$null }
     $full = [IO.Path]::GetFullPath($Path)
-    # Only a folder this script made: bpm-ship-<id> directly under the temp directory.
+    # Only a folder this script made: bpm-ship-<id> directly under the scratch folder.
     if ((Test-Path -LiteralPath $full) -and (Split-Path -Leaf $full) -match '^bpm-ship-[a-f0-9]{12}$' -and
-        [IO.Path]::GetFullPath((Split-Path -Parent $full)).TrimEnd('\', '/') -ieq [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')) {
+        [IO.Path]::GetFullPath((Split-Path -Parent $full)).TrimEnd('\', '/') -ieq (Get-ScratchRoot).TrimEnd('\', '/')) {
         $null = Remove-Tree $full
     }
     & git -C $Root worktree prune 2>$null
@@ -134,7 +134,7 @@ function Invoke-CheckRun {
     Remove-StaleCheckCopy $Root $recordPath
     # A clean copy, so untracked files in the worktree cannot affect the result. The name is short because the native
     # build's paths must stay under 260 characters on Windows (packages/blackpearl_datachannel/src/CMakeLists.txt).
-    $checkout = Join-Path ([IO.Path]::GetTempPath()) ('bpm-ship-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    $checkout = Join-Path (Get-ScratchRoot) ('bpm-ship-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
     $record = @{
         Commit = $Commit; Branch = $Branch; State = 'running'; Started = [datetime]::UtcNow.ToString('o'); Log = $Log; Checkout = $checkout
         Pid = $PID; ProcessStart = (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks
@@ -547,7 +547,8 @@ try {
         try { Invoke-GitHub "/git/refs/heads/$($pull.head.ref)" -Method Delete | Out-Null }
         catch { Write-Warning "Could not delete merged branch $($pull.head.ref): $($_.Exception.Message)" }
         # No later push of the branch will remove a copy its passed checks had to keep.
-        Remove-StaleCheckCopy $root $localRecord
+        try { Remove-StaleCheckCopy $root $localRecord }
+        catch { Write-Warning "Could not remove the checked copy of ${head}: $($_.Exception.Message)" }
         if ($NoRelease) {
             $record = Join-Path (Get-ShipRecordRoot $root) ('merge-' + $number + '-' + [guid]::NewGuid().ToString('N'))
             New-Item -ItemType Directory -Path $record -Force | Out-Null

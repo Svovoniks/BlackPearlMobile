@@ -2,7 +2,7 @@
 # Offline safety checks for ship.ps1 and review-pr.ps1. No pull request, tag or release is created.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'ship.ps1')
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('bpm-ship-checks-' + [guid]::NewGuid().ToString('N'))
+$testRoot = Join-Path (Get-ScratchRoot) ('bpm-ship-checks-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 # No background gc or maintenance in the fixture repositories, which would hold their files while they are removed.
 $env:GIT_CONFIG_COUNT = '2'
@@ -201,7 +201,7 @@ try {
     [IO.DirectoryInfo]::new($treePath).Attributes = [IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReadOnly
     Check ((Remove-Tree (Join-Path $testRoot 'tree')) -and !(Test-Path -LiteralPath (Join-Path $testRoot 'tree'))) 'a folder with read-only files and folders is removed'
     Check (Remove-Tree (Join-Path $testRoot 'never-made')) 'removing what is not there succeeds'
-    $heldCopy = Join-Path ([IO.Path]::GetTempPath()) ('bpm-ship-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    $heldCopy = Join-Path (Get-ScratchRoot) ('bpm-ship-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
     Invoke-Native git @('-C', $copyRepo, 'worktree', 'add', '--quiet', '--detach', $heldCopy, 'HEAD')
     $held = [IO.File]::Open((Join-Path $heldCopy 'held.txt'), [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
@@ -226,7 +226,7 @@ try {
 finally {
     # This is the exact fresh directory created above, beneath the system temp root.
     $resolved = [IO.Path]::GetFullPath($testRoot)
-    if ($resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase) -and
+    if ($resolved.StartsWith((Get-ScratchRoot), [StringComparison]::OrdinalIgnoreCase) -and
         (Split-Path -Leaf $resolved) -match '^bpm-ship-checks-[a-f0-9]{32}$') {
         # A virus scanner can hold a fixture file for a moment.
         foreach ($attempt in 1..5) {

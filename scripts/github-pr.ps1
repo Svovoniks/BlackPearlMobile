@@ -39,6 +39,16 @@ function Get-PubspecVersion {
     param([string]$Root, [string]$Revision)
     return ConvertFrom-PubspecVersion ((Invoke-Native git @('-C', $Root, 'show', "${Revision}:pubspec.yaml")) -join "`n")
 }
+# Where check copies, review worktrees and fixtures go. On Windows, the user's own temp folder rather than TEMP, which
+# some shells point at C:\Windows\Temp: users cannot list that folder, and Gradle's javac, which resolves real paths by
+# listing each parent, fails there ("AccessDeniedException ... R.jar").
+function Get-ScratchRoot {
+    if ($IsWindows -and $env:LOCALAPPDATA) {
+        $userTemp = Join-Path $env:LOCALAPPDATA 'Temp'
+        if (Test-Path -LiteralPath $userTemp -PathType Container) { return [IO.Path]::GetFullPath($userTemp) }
+    }
+    return [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+}
 # Deletes a file or folder if it can and never throws; returns whether it is gone. It uses .NET rather than Remove-Item,
 # which some temp folders refuse ("Access is denied") when the folder above cannot be listed. Read-only files (git's
 # objects) are made writable first, without following links out of the folder.

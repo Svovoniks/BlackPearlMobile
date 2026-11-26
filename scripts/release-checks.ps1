@@ -34,10 +34,13 @@ try {
     # which needs permission to create symbolic links (Developer Mode). Without it Flutter stops there, after writing
     # everything else; a second run finds the list unchanged and succeeds without the links. Only a Windows build uses
     # them, and these checks make none.
-    $packages = @(& $flutterPath pub get 2>&1 | ForEach-Object { "$_" })
+    $grouped = $env:GITHUB_ACTIONS -eq 'true'
+    if ($grouped) { Write-Host '::group::Packages' }
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $packages = @(& $flutterPath pub get 2>&1 | ForEach-Object { Write-Host $_; "$_" })
     $packagesExit = $LASTEXITCODE
-    $packages | Write-Host
-    if ($packagesExit -eq 0) { Write-Host 'Packages passed' }
+    if ($grouped) { Write-Host '::endgroup::' }
+    if ($packagesExit -eq 0) { Write-Host ("Packages passed in {0:N0} s" -f $watch.Elapsed.TotalSeconds) }
     elseif ($IsWindows -and ($packages -join "`n") -match 'requires symlink support') {
         Write-Host 'This shell cannot create symbolic links, so the Windows plugins are not linked. Running pub get once more.'
         Invoke-Check 'Packages' $flutterPath @('pub', 'get')
