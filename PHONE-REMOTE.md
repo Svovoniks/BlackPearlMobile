@@ -203,9 +203,9 @@ kept running (it wasn't frozen in the background) takes the link as lost and con
 A request that times out, or the app coming back to the foreground, sends a ping at once, and the link is lost if
 nothing comes back within 8 seconds.
 
-The PC closes the session of a phone that has pinged once and then sent nothing for 60 seconds, as a lost link
-(`remote-session-closed` with reason `silent`). Phones that never ping keep their session however long they are
-quiet.
+Only the phone judges the link by pings. The PC never closes a session for silence: a locked phone's timers stop
+while it sleeps, so its pings stop too, and its link must stay for the lock screen's controls. The phone also pings
+while the app is in the background, whenever it is awake.
 
 ### Tracks
 
@@ -552,6 +552,6 @@ session and a phone by the first 8 characters of their random ids, and never hol
 | `remote-session-state` | The connection's state changes, with the candidates gathered on each side by type, and `direct` or `relay` once connected |
 | `remote-session-channel`, `remote-session-greeted`, `remote-session-paired` | The data channel opens, the phone's `hello` is accepted (with its app version), pairing completes |
 | `remote-session-refused` | `protocol` (with the phone's protocol), `pairing-expired`, `already-paired` |
-| `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`, `silent`), its age, its path, and `via` |
+| `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`), its age, its path, and `via` |
 | `remote-lan` | The home-network listener: `started` (its port, whether it moved from the one it tried first, `any` or `loopback`, how many addresses it gives phones), `waiting` (for the other BlackPearl process to let go of the port), `busy` (every port taken), `stopped`; `opened` and `closed` for each connection (a short random id, the reason, whether it proved itself); `refused`, once per reason a minute (`too-many-connections`, `too-many-from-address`, `bad-request`, `wrong-pc`, `protocol`, `too-large`, `rate`, `unproven`), with `evicted` and `superseded` among the reasons connections close; `port-not-saved` when the port couldn't be remembered; and `firewall` when what Windows Firewall decided changes (`allowed`, `off`, `blocked`, `undecided`, `unknown`, the network's category, and other firewalls Windows lists). No addresses. |
 | `phone-read-failed`, `phone-resource-missing` | A read on `media-v1` failed, with the kind of resource; and why the PC had nothing for it (`no-video`, `other-video`, `not-converted`, `other-stream`, `no-such-piece`, `no-such-sound-piece`, `unknown-picture`, `missing-file`, `unreadable:<error>`, `malformed`) |

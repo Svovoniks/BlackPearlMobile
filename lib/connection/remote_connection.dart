@@ -1115,7 +1115,13 @@ class RemoteConnection extends RemoteLink {
     final sent = clock.now();
     _sendLinkPing();
     _probeTimer = Timer(linkProbeWait, () {
-      if (generation == _generation && _status.isConnected && !_lastHeard.isAfter(sent)) _fail(generation, 'Lost the connection to the PC.');
+      if (generation != _generation || !_status.isConnected || _lastHeard.isAfter(sent)) return;
+      // Late: the phone slept while it waited, and the answer may be waiting to be read. It asks again instead.
+      if (clock.now().difference(sent) > linkProbeWait * 2) {
+        _probeLink();
+        return;
+      }
+      _fail(generation, 'Lost the connection to the PC.');
     });
   }
 

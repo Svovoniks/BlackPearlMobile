@@ -875,6 +875,28 @@ void main() {
       });
     });
 
+    test('a check whose wait was cut by sleep asks again rather than judging', () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget, linkSilence: const Duration(minutes: 10));
+        h.connection.start();
+        async.flushMicrotasks();
+        link(async, h, ['ping']);
+        final lost = watchLoss(h);
+        h.connection.resume();
+        expect(pings(h.peer), hasLength(1));
+        // The phone sleeps through the wait; its timer runs only once it wakes.
+        async.elapseBlocking(const Duration(minutes: 2));
+        async.elapse(const Duration(seconds: 1));
+        expect(lost, isEmpty);
+        expect(pings(h.peer).length, greaterThan(1), reason: 'it asks again');
+        answer(h.peer);
+        async.elapse(const Duration(seconds: 9));
+        expect(lost, isEmpty);
+        expect(h.connection.status.isConnected, isTrue);
+        h.connection.dispose();
+      });
+    });
+
     test("silence while the app was frozen isn't taken for a lost link; the phone checks at once instead", () {
       fakeAsync((async) {
         final h = Harness(pairedTarget);
