@@ -351,7 +351,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool get _available => link.features.contains('library');
 
   List<_Section> get _sections => [_homeSection, ..._categories, if (link.features.contains('queues')) _queuesSection];
-  _Section get _section => _sections.firstWhere((section) => section.matches(_mode, _category), orElse: () => _homeSection);
+  // The section shown is named even while the PC offers no queues for now.
+  _Section get _section => [_homeSection, ..._categories, _queuesSection].firstWhere((section) => section.matches(_mode, _category), orElse: () => _homeSection);
 
   @override
   void initState() {
@@ -368,6 +369,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   final ScrollController _homeScroll = ScrollController();
 
   void _toTop() {
+    if (_buttonHidden) setState(() => _buttonHidden = false);
     if (_mode == _Mode.home && _homeScroll.hasClients && _homeScroll.offset > 0) {
       unawaited(_homeScroll.animateTo(0, duration: const Duration(milliseconds: 300), curve: Curves.easeOutCubic));
     } else if (_mode != _Mode.home) {
@@ -473,13 +475,17 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _buttonHidden = false;
   final GlobalKey _buttonKey = GlobalKey();
 
-  bool _scrolled(UserScrollNotification notification) {
-    if (notification.metrics.axis != Axis.vertical) return false;
-    final hide = switch (notification.direction) {
-      ScrollDirection.reverse => true,
-      ScrollDirection.forward => false,
-      ScrollDirection.idle => _buttonHidden,
+  bool _scrolled(ScrollNotification notification) {
+    final metrics = notification.metrics;
+    if (metrics.axis != Axis.vertical) return false;
+    var hide = switch (notification) {
+      UserScrollNotification(direction: ScrollDirection.reverse) => true,
+      UserScrollNotification(direction: ScrollDirection.forward) => false,
+      _ => _buttonHidden,
     };
+    // On a list too short to scroll, or once a list is back at its top, it hides nothing: it shows, being the only way
+    // to another section. (A scroll down starts while the list is still at its top: the moves after it decide.)
+    if (metrics.maxScrollExtent <= metrics.minScrollExtent || (notification is! UserScrollNotification && metrics.pixels <= metrics.minScrollExtent)) hide = false;
     if (hide != _buttonHidden) setState(() => _buttonHidden = hide);
     return false;
   }
@@ -550,7 +556,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
                 ),
                 const SizedBox(height: 6),
                 Expanded(
-                  child: NotificationListener<UserScrollNotification>(onNotification: _scrolled, child: _body()),
+                  child: NotificationListener<ScrollNotification>(onNotification: _scrolled, child: _body()),
                 ),
               ],
             ),
@@ -790,7 +796,7 @@ class _SectionMenu extends PopupRoute<_Section> {
             ),
           );
         }
-  
+
         return Stack(
           children: [
             Positioned(

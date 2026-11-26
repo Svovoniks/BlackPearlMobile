@@ -268,9 +268,14 @@ class AppTabBar extends StatelessWidget {
                         children: [
                           Icon(i == index ? _tabs[i].$2 : _tabs[i].$1, color: i == index ? Palette.accent : Palette.muted, size: 22),
                           const SizedBox(height: 3),
-                          Text(
-                            _tabs[i].$3,
-                            style: TextStyle(color: i == index ? Palette.accent : Palette.muted, fontSize: 11.5, fontWeight: FontWeight.w600),
+                          // Four tabs share a narrow phone: a label too long at large text shrinks rather than breaks.
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              _tabs[i].$3,
+                              maxLines: 1,
+                              style: TextStyle(color: i == index ? Palette.accent : Palette.muted, fontSize: 11.5, fontWeight: FontWeight.w600),
+                            ),
                           ),
                         ],
                       ),

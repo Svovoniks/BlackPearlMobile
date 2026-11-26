@@ -120,6 +120,56 @@ void main() {
     expect(link.asked.length, greaterThan(asked));
   });
 
+  testWidgets('the section button steps aside while the list scrolls down, and is back at the top and on a short list', (tester) async {
+    tester.view.physicalSize = const Size(720, 1280);
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.reset);
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library'};
+    // A Home of many rows, taller than the screen; any category is a single title.
+    link.answer = (type, fields) async => fields['home'] == true
+        ? {
+            'type': 'page', 'total': 8, 'page': 0, 'pageSize': 40, 'location': 'Home',
+            'entries': [
+              for (var i = 0; i < 8; i++) {'id': 's$i', 'title': 'Title $i', 'caption': 'Movie', 'level': 'movie', 'kind': 'Kind $i', 'homeSection': 'suggestions', 'playable': true},
+            ],
+          }
+        : {
+            'type': 'page', 'total': 1, 'page': 0, 'pageSize': 40, 'location': 'Films',
+            'entries': [{'id': 'f', 'title': 'Only film', 'caption': 'Movie', 'level': 'movie', 'kind': 'Movie', 'playable': true}],
+          };
+    final toTop = ValueNotifier(0);
+    addTearDown(toTop.dispose);
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(),
+      home: LibraryScreen(
+        link: link,
+        toTop: toTop,
+        actions: LibraryActions(watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {}, playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    bool shown() => tester.widget<AnimatedOpacity>(find.ancestor(of: find.byType(SectionButton), matching: find.byType(AnimatedOpacity)).first).opacity == 1;
+    expect(shown(), isTrue);
+    await tester.drag(find.text('Kind 1'), const Offset(0, -300));
+    await tester.pumpAndSettle();
+    expect(shown(), isFalse, reason: 'scrolled down, it steps aside');
+    // The Library tab tapped again: Home goes to its top, and the button comes back with it.
+    toTop.value++;
+    await tester.pumpAndSettle();
+    expect(shown(), isTrue);
+
+    await tester.tap(find.byType(SectionButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Films'));
+    await tester.pumpAndSettle();
+    final asked = link.asked.length;
+    // A list too short to scroll: pushing it up moves nothing, and the button stays.
+    await tester.drag(find.text('Only film'), const Offset(0, -300));
+    await tester.pumpAndSettle();
+    expect(shown(), isTrue);
+    expect(link.asked.length, asked);
+  });
+
   testWidgets('Search is a tab of its own: it searches as one types, and clears', (tester) async {
     final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch'};
     link.answer = (type, fields) async => type == 'browse' ? homePage() : {'type': 'done'};
