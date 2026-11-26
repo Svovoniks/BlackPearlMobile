@@ -121,9 +121,9 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 ### Opening
 
 1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>"}`
-2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","unwatched","mark-watched","shuffle","tracks","sound"]}`.
-   `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"); a PC from
-   before them sends none. A PC that listens for phones on the home network adds where:
+2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","unwatched","mark-watched","shuffle","tracks","sound","ping"]}`.
+   `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"), and `ping`
+   when it answers pings (see "Checking the link"); a PC from before them sends none. A PC that listens for phones on the home network adds where:
    `"lan":{"port":47830,"addresses":["192.168.1.20"]}` (see "On the home network").
    If the PC can't speak the phone's protocol it sends `{"type":"error","code":"protocol","message":"…"}` saying which
    app to update, and closes.
@@ -192,6 +192,20 @@ paired link) and `protocol`.
 Commands go through the same code as the PC's keys and buttons, so a room's shared-controls rule applies to them
 the same way. With `canControl` false, every action except `volume`, `mute` and `fullscreen` is refused with
 `not-allowed`: those three change only this PC. The track actions follow `canChangeTracks` instead.
+
+### Checking the link
+
+WebRTC can go on calling a link connected after it stopped carrying anything: both ends then wait for each other
+forever, and the phone's requests only time out. So a phone checks the link itself with PCs whose welcome lists
+`ping`: it sends `{"type":"ping","number":n}` on this channel every 10 seconds, and the PC answers at once with
+`{"type":"pong","number":n}`. A phone that has heard nothing at all from the PC for 25 seconds while its own timers
+kept running (it wasn't frozen in the background) takes the link as lost and connects again, as after any lost link.
+A request that times out, or the app coming back to the foreground, sends a ping at once, and the link is lost if
+nothing comes back within 8 seconds.
+
+Only the phone judges the link by pings. The PC never closes a session for silence: a locked phone's timers stop
+while it sleeps, so its pings stop too, and its link must stay for the lock screen's controls. The phone also pings
+while the app is in the background, whenever it is awake.
 
 ### Tracks
 

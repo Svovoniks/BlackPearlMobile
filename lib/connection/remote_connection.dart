@@ -86,6 +86,9 @@ class RemoteConnection extends RemoteLink {
     this.lanTimeout = const Duration(seconds: 4),
     this.lanRetryInterval = const Duration(seconds: 20),
     this.lanRetryLimit = const Duration(minutes: 5),
+    this.linkCheckInterval = const Duration(seconds: 10),
+    this.linkSilence = const Duration(seconds: 25),
+    this.linkProbeWait = const Duration(seconds: 8),
     this.localNetwork,
   }) : _target = target,
        _random = random ?? Random.secure(),
@@ -120,6 +123,13 @@ class RemoteConnection extends RemoteLink {
   final Duration lanRetryInterval;
   final Duration lanRetryLimit;
 
+  /// Checking the link (PHONE-REMOTE.md, "Checking the link"), with PCs whose welcome lists `ping`: a ping every
+  /// [linkCheckInterval]; the link is lost after [linkSilence] without a word from the PC while the phone's timers ran,
+  /// or [linkProbeWait] after a ping sent to check at once (a request that timed out, or the app back from being frozen).
+  final Duration linkCheckInterval;
+  final Duration linkSilence;
+  final Duration linkProbeWait;
+
   /// The phone's Wi-Fi or Ethernet, where the platform has one to offer; null tries every time, on the default network.
   /// A home-network try opens its socket to the PC, and then its ICE sockets, while bound to it.
   final LocalNetworkAccess? localNetwork;
@@ -145,7 +155,12 @@ class RemoteConnection extends RemoteLink {
   // even a return to the app or a network change, until the user asks to try again.
   bool _halted = false;
   int _failures = 0;
-  Timer? _retryTimer, _answerTimer, _helloTimer, _pairTimer, _pingTimer, _pathTimer;
+  Timer? _retryTimer, _answerTimer, _helloTimer, _pairTimer, _pingTimer, _pathTimer, _linkTimer, _probeTimer;
+  // When the PC last sent anything on the link (either channel), and since when the phone's timers have run on time:
+  // silence while the app was frozen in the background says nothing about the link.
+  DateTime _lastHeard = DateTime.fromMillisecondsSinceEpoch(0), _awakeSince = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastLinkCheck = DateTime.fromMillisecondsSinceEpoch(0);
+  int _linkPingNumber = 0;
   SignalingSocket? _socket;
   StreamSubscription<String>? _socketSubscription;
   PeerLink? _peer;
@@ -222,6 +237,8 @@ class RemoteConnection extends RemoteLink {
     return completer.future.whenComplete(_settled).timeout(timeout, onTimeout: () {
       _requests.remove(number);
       _settled();
+      // The link may be gone though WebRTC still calls it connected: find out now rather than wait for the next ping.
+      _probeLink();
       throw const RemoteRequestException('timeout', "The PC didn't answer. Try again.");
     });
   }
@@ -308,6 +325,8 @@ class RemoteConnection extends RemoteLink {
       retryNow();
     } else {
       _checkPath();
+      // A link that WebRTC still calls connected can have stopped carrying anything while the app was away.
+      _probeLink();
     }
   }
 
@@ -809,8 +828,15 @@ class RemoteConnection extends RemoteLink {
       _mediaOpen = true;
       notifyListeners();
     };
-    peer.onMediaBinary = media.onBinary;
-    peer.onMediaText = media.onText;
+    // Video and pictures arriving show the link works as well as any message does.
+    peer.onMediaBinary = (data) {
+      if (generation == _generation && _session == session) _lastHeard = clock.now();
+      media.onBinary(data);
+    };
+    peer.onMediaText = (text) {
+      if (generation == _generation && _session == session) _lastHeard = clock.now();
+      media.onText(text);
+    };
     peer.onMediaClosed = () {
       _mediaOpen = false;
       media.close();
@@ -833,7 +859,9 @@ class RemoteConnection extends RemoteLink {
       });
     };
     peer.onMessage = (text) {
-      if (generation == _generation && _session == session) _onChannelMessage(generation, text);
+      if (generation != _generation || _session != session) return;
+      _lastHeard = clock.now();
+      _onChannelMessage(generation, text);
     };
     peer.onClosed = (reason) {
       if (generation != _generation || _session != session) return;
@@ -1048,6 +1076,59 @@ class RemoteConnection extends RemoteLink {
     _checkPath();
     _pathTimer?.cancel();
     _pathTimer = Timer.periodic(const Duration(seconds: 10), (_) => _checkPath());
+    _linkTimer?.cancel();
+    _probeTimer?.cancel();
+    if (_features.contains('ping')) {
+      final now = clock.now();
+      _lastHeard = _awakeSince = _lastLinkCheck = now;
+      final generation = _generation;
+      _linkTimer = Timer.periodic(linkCheckInterval, (_) => _checkLink(generation));
+    }
+  }
+
+  // WebRTC can go on calling a link connected after it stopped carrying anything; the phone's requests then only time
+  // out, and nothing would connect again. So the phone checks it (PHONE-REMOTE.md, "Checking the link").
+  void _checkLink(int generation) {
+    if (generation != _generation || !_status.isConnected) return;
+    final now = clock.now();
+    // A check that comes late means the app was frozen in the background: the silence meanwhile says nothing about the
+    // link, so it checks at once instead.
+    final late = now.difference(_lastLinkCheck) > linkCheckInterval * 2;
+    _lastLinkCheck = now;
+    if (late) {
+      _awakeSince = now;
+      _probeLink();
+      return;
+    }
+    final since = _lastHeard.isAfter(_awakeSince) ? _lastHeard : _awakeSince;
+    if (now.difference(since) > linkSilence) {
+      _fail(generation, 'Lost the connection to the PC.');
+      return;
+    }
+    _sendLinkPing();
+  }
+
+  // Pings now and takes the link as lost if nothing at all comes back within [linkProbeWait].
+  void _probeLink() {
+    if (!_features.contains('ping') || !_status.isConnected || _peer == null || (_probeTimer?.isActive ?? false)) return;
+    final generation = _generation;
+    final sent = clock.now();
+    _sendLinkPing();
+    _probeTimer = Timer(linkProbeWait, () {
+      if (generation != _generation || !_status.isConnected || _lastHeard.isAfter(sent)) return;
+      // Late: the phone slept while it waited, and the answer may be waiting to be read. It asks again instead.
+      if (clock.now().difference(sent) > linkProbeWait * 2) {
+        _probeLink();
+        return;
+      }
+      _fail(generation, 'Lost the connection to the PC.');
+    });
+  }
+
+  void _sendLinkPing() {
+    try {
+      _peer?.send(jsonEncode({'type': 'ping', 'number': ++_linkPingNumber}));
+    } catch (_) {}
   }
 
   Future<void> _checkPath() async {
@@ -1085,6 +1166,8 @@ class RemoteConnection extends RemoteLink {
     _helloTimer?.cancel();
     _pairTimer?.cancel();
     _pathTimer?.cancel();
+    _linkTimer?.cancel();
+    _probeTimer?.cancel();
     _remoteDescriptionSet = false;
     _session = null;
     _mediaOpen = false;
