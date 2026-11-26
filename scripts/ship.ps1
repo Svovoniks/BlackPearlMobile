@@ -75,6 +75,12 @@ function Invoke-ReleaseChecks {
     param([string]$Checkout, [string]$FlutterPath)
     Push-Location $Checkout
     $failure = Join-Path (Get-ScratchRoot) ('bpm-check-failure-' + [guid]::NewGuid().ToString('N') + '.txt')
+    # The plugin's native build otherwise goes to a folder per checkout path outside the checkout (about 1 GB;
+    # packages/blackpearl_datachannel/android/build.gradle), which a throwaway copy would leave behind. A short path
+    # keeps the native build within Windows' 260 characters.
+    $staging = Join-Path (Get-ScratchRoot) ('bpm-dc-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    $savedStaging = $env:BLACKPEARL_NATIVE_STAGING
+    $env:BLACKPEARL_NATIVE_STAGING = $staging
     try {
         # The same list of checks the workflow runs, from the checked commit itself.
         $shell = (Get-Process -Id $PID).Path
@@ -90,6 +96,8 @@ function Invoke-ReleaseChecks {
     finally {
         # Best effort: a cleanup error must not replace the failing check's.
         $null = Remove-Tree $failure
+        $env:BLACKPEARL_NATIVE_STAGING = $savedStaging
+        if (!(Remove-Tree $staging)) { Write-Warning "Could not remove the native build at $staging." }
         Pop-Location
     }
 }

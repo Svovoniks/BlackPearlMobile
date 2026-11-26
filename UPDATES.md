@@ -69,7 +69,10 @@ checks run in a detached copy of the commit in a temp folder, so untracked files
 affect the result. On Windows that is the user's own (`%LOCALAPPDATA%\Temp`), whatever
 `TEMP` says: Gradle's javac fails in a folder the user cannot list, such as
 `C:\Windows\Temp`. A fresh copy builds libdatachannel for both ABIs from
-source, so they take about ten minutes. Their record and log live in the repository's
+source, so they take about ten minutes. That build (about 1 GB) goes to a folder of the
+copy's own, named by `BLACKPEARL_NATIVE_STAGING`, and is removed with it; without the
+variable, Windows builds keep it in `%LOCALAPPDATA%\bpdc`, one folder per checkout path
+(`packages/blackpearl_datachannel/android/build.gradle`). Their record and log live in the repository's
 shared git directory (`blackpearl-checks/`), so every worktree sees them. Pushing a newer
 commit of the same branch stops the checks of the older one. A commit whose checks already
 passed or are still running is not checked again.

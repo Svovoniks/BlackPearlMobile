@@ -216,17 +216,24 @@ try {
     $fakeCheckout = Join-Path $testRoot 'fake-checkout'
     New-Item -ItemType Directory -Path (Join-Path $fakeCheckout 'scripts') -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $fakeCheckout 'scripts/release-checks.ps1'),
-        "param([string]`$Lane, [string]`$Flutter, [string]`$FailureFile)`n'Tests failed with exit code 1.' | Set-Content -LiteralPath `$FailureFile`nexit 1`n")
+        ("param([string]`$Lane, [string]`$Flutter, [string]`$FailureFile)`n" +
+        "New-Item -ItemType Directory -Path `$env:BLACKPEARL_NATIVE_STAGING -Force | Out-Null`n" +
+        "`$env:BLACKPEARL_NATIVE_STAGING | Set-Content -LiteralPath (Join-Path `$PSScriptRoot 'staging.txt')`n" +
+        "'native build' | Set-Content -LiteralPath (Join-Path `$env:BLACKPEARL_NATIVE_STAGING 'CMakeCache.txt')`n" +
+        "'Tests failed with exit code 1.' | Set-Content -LiteralPath `$FailureFile`nexit 1`n"))
     $message = ''
+    $outerStaging = $env:BLACKPEARL_NATIVE_STAGING
     try { Invoke-ReleaseChecks $fakeCheckout 'flutter' } catch { $message = "$_" }
     Check ($message -ceq 'Tests failed with exit code 1.') "a failed release check is recorded by its own error ($message)"
+    $usedStaging = (Get-Content -LiteralPath (Join-Path $fakeCheckout 'scripts/staging.txt') -Raw).Trim()
+    Check ((Split-Path -Leaf $usedStaging) -match '^bpm-dc-[a-f0-9]{12}$' -and !(Test-Path -LiteralPath $usedStaging) -and $env:BLACKPEARL_NATIVE_STAGING -ceq $outerStaging) 'the native build of a checked copy gets its own folder, which goes with it'
     . (Join-Path $PSScriptRoot 'ship-sync-checks.ps1') -TestRoot $testRoot
     Write-Host "$checks shipping safety checks passed. No releases were created."
 }
 finally {
-    # This is the exact fresh directory created above, beneath the system temp root.
+    # This is the exact fresh directory created above, directly in the scratch folder.
     $resolved = [IO.Path]::GetFullPath($testRoot)
-    if ($resolved.StartsWith((Get-ScratchRoot), [StringComparison]::OrdinalIgnoreCase) -and
+    if ([IO.Path]::GetFullPath((Split-Path -Parent $resolved)).TrimEnd('\', '/') -ieq (Get-ScratchRoot).TrimEnd('\', '/') -and
         (Split-Path -Leaf $resolved) -match '^bpm-ship-checks-[a-f0-9]{32}$') {
         # A virus scanner can hold a fixture file for a moment.
         foreach ($attempt in 1..5) {

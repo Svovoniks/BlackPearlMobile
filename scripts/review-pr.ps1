@@ -30,7 +30,7 @@ if ($Verdict) {
 
 $head = $pull.head.sha
 Invoke-Native git @('-C', $root, 'fetch', '--no-recurse-submodules', 'origin', 'master', "pull/$Pr/head")
-# A short temp path keeps the native build's paths within Windows limits.
+# A fresh worktree in a temp folder the user can list (see Get-ScratchRoot), so the user's checkout stays unchanged.
 $checkout = Join-Path (Get-ScratchRoot) "bpm-review-$Pr-$($head.Substring(0, 8))-$([guid]::NewGuid().ToString('N').Substring(0, 6))"
 Invoke-Native git @('-C', $root, 'worktree', 'add', '--detach', $checkout, $head) | Out-Null
 $base = (Invoke-Native git @('-C', $checkout, 'merge-base', 'origin/master', $head)).Trim()

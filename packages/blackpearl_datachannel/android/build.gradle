@@ -31,8 +31,12 @@ android {
             path = "../src/CMakeLists.txt"
             // On Windows, Ninja can't use paths longer than 260 characters, and the build of libdatachannel and its
             // dependencies nests deep under this folder. A short folder of the user's instead; the build keeps one
-            // folder per checkout and configuration inside it.
-            if (System.getProperty("os.name").toLowerCase().contains("windows")) {
+            // folder per checkout and configuration inside it. BLACKPEARL_NATIVE_STAGING names another one, which the
+            // release checks (scripts/ship.ps1) give each throwaway copy of a commit so its build goes with it.
+            def staging = System.getenv("BLACKPEARL_NATIVE_STAGING")
+            if (staging) {
+                buildStagingDirectory = new File(staging)
+            } else if (System.getProperty("os.name").toLowerCase().contains("windows")) {
                 def base = System.getenv("LOCALAPPDATA") ?: System.getProperty("java.io.tmpdir")
                 buildStagingDirectory = new File(base, "bpdc")
             }
