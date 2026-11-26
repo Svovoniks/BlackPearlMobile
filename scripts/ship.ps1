@@ -546,6 +546,8 @@ try {
         }
         try { Invoke-GitHub "/git/refs/heads/$($pull.head.ref)" -Method Delete | Out-Null }
         catch { Write-Warning "Could not delete merged branch $($pull.head.ref): $($_.Exception.Message)" }
+        # No later push of the branch will remove a copy its passed checks had to keep.
+        Remove-StaleCheckCopy $root $localRecord
         if ($NoRelease) {
             $record = Join-Path (Get-ShipRecordRoot $root) ('merge-' + $number + '-' + [guid]::NewGuid().ToString('N'))
             New-Item -ItemType Directory -Path $record -Force | Out-Null

@@ -72,10 +72,11 @@ shared git directory (`blackpearl-checks/`), so every worktree sees them. Pushin
 commit of the same branch stops the checks of the older one. A commit whose checks already
 passed or are still running is not checked again.
 
-On Windows, `flutter pub get` needs permission to create symbolic links (Developer Mode, or
-an administrator). A command sandbox without it fails with "Building with plugins requires
-symlink support". Run `ship.ps1` itself as an ordinary foreground command: it returns in
-seconds, and the background process it starts keeps the shell's permissions.
+On Windows, a `flutter pub get` in a fresh copy links the Windows plugins, which needs
+permission to create symbolic links (Developer Mode, or an administrator). Without it Flutter
+stops with "Building with plugins requires symlink support" after writing everything else.
+The checks then run `pub get` once more, which succeeds without the links; only a Windows
+build uses them (README.md, Windows), and the checks make none.
 
 **Status** (`-Status`, optionally `-Pr N`). Shows the head's release checks
 (running, passed, failed with the error and log, or interrupted), the workflow,

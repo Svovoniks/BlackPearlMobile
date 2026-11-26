@@ -198,7 +198,8 @@ try {
     $treePath = Join-Path $testRoot 'tree/a/b'
     New-Item -ItemType Directory -Path $treePath -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $treePath 'f.txt'), 'x'); [IO.File]::SetAttributes((Join-Path $treePath 'f.txt'), [IO.FileAttributes]::ReadOnly)
-    Check ((Remove-Tree (Join-Path $testRoot 'tree')) -and !(Test-Path -LiteralPath (Join-Path $testRoot 'tree'))) 'a folder with read-only files is removed'
+    [IO.DirectoryInfo]::new($treePath).Attributes = [IO.FileAttributes]::Directory -bor [IO.FileAttributes]::ReadOnly
+    Check ((Remove-Tree (Join-Path $testRoot 'tree')) -and !(Test-Path -LiteralPath (Join-Path $testRoot 'tree'))) 'a folder with read-only files and folders is removed'
     Check (Remove-Tree (Join-Path $testRoot 'never-made')) 'removing what is not there succeeds'
     $heldCopy = Join-Path ([IO.Path]::GetTempPath()) ('bpm-ship-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
     Invoke-Native git @('-C', $copyRepo, 'worktree', 'add', '--quiet', '--detach', $heldCopy, 'HEAD')

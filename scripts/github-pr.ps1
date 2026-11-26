@@ -54,6 +54,9 @@ function Remove-Tree {
             $options.RecurseSubdirectories = $true; $options.IgnoreInaccessible = $true
             $options.AttributesToSkip = [IO.FileAttributes]::ReparsePoint
             foreach ($file in [IO.Directory]::EnumerateFiles($Path, '*', $options)) { [IO.File]::SetAttributes($file, [IO.FileAttributes]::Normal) }
+            foreach ($folder in @($Path) + @([IO.Directory]::EnumerateDirectories($Path, '*', $options))) {
+                [IO.DirectoryInfo]::new($folder).Attributes = [IO.FileAttributes]::Directory
+            }
             [IO.Directory]::Delete($Path, $true)
         }
     }

@@ -30,7 +30,19 @@ function Invoke-Check {
 Push-Location $root
 try {
     $flutterPath = Resolve-Flutter $Flutter
-    Invoke-Check 'Packages' $flutterPath @('pub', 'get')
+    # On Windows, a pub get that writes a new plugin list links the Windows plugins under windows/flutter/ephemeral,
+    # which needs permission to create symbolic links (Developer Mode). Without it Flutter stops there, after writing
+    # everything else; a second run finds the list unchanged and succeeds without the links. Only a Windows build uses
+    # them, and these checks make none.
+    $packages = @(& $flutterPath pub get 2>&1 | ForEach-Object { "$_" })
+    $packagesExit = $LASTEXITCODE
+    $packages | Write-Host
+    if ($packagesExit -eq 0) { Write-Host 'Packages passed' }
+    elseif ($IsWindows -and ($packages -join "`n") -match 'requires symlink support') {
+        Write-Host 'This shell cannot create symbolic links, so the Windows plugins are not linked. Running pub get once more.'
+        Invoke-Check 'Packages' $flutterPath @('pub', 'get')
+    }
+    else { throw "Packages failed with exit code $packagesExit." }
     Invoke-Check 'Analysis' $flutterPath @('analyze')
     Invoke-Check 'Tests' $flutterPath @('test')
     $shell = (Get-Process -Id $PID).Path
