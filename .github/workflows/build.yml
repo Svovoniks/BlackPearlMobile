@@ -23,9 +23,10 @@ jobs:
           channel: stable
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-      - run: flutter pub get
-      - run: flutter analyze
-      - run: flutter test
+      # pub get, analyze, tests and the shipping script checks: the list ship.ps1 runs too (scripts/release-checks.ps1).
+      - name: Release checks
+        shell: pwsh
+        run: ./scripts/release-checks.ps1 -Lane ci
 
   release:
     name: signed release APK
