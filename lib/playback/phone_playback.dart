@@ -6,6 +6,7 @@ import 'package:media_kit/media_kit.dart';
 import '../connection/remote_link.dart';
 import '../connection/transport.dart';
 import '../diagnostics/crash_reports.dart';
+import '../diagnostics/trail.dart';
 import '../protocol/library.dart';
 import 'media_proxy.dart';
 import 'mpv_reads.dart';
@@ -186,6 +187,8 @@ class PhonePlayback extends ChangeNotifier {
       info = StreamInfo.fromJson(reply);
     } on RemoteRequestException catch (e) {
       if (attempt == _opening) {
+        // The kind of refusal only: the PC's words can name the video or who plays it.
+        Trail.note('playback', 'the PC refused', {'code': e.code});
         trace.failed();
         _switching = false;
         _setPending(null);

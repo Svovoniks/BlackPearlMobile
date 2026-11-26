@@ -114,11 +114,21 @@ Release APKs send errors, crashes and two timings (app start, and `playback.open
 the player shows it) to Sentry, unless Settings › Send crash reports is off. Only a build given
 `--dart-define=SENTRY_DSN=<dsn>` starts Sentry; CI passes the repository secret `SENTRY_DSN`, and local builds and
 tests send nothing. `--dart-define=SENTRY_ENVIRONMENT=<name>` (default `production`) names the environment; outside
-production every transaction is sent, in production one in ten. There are no breadcrumbs, screenshots, replays, logs or
+production every transaction is sent, in production one in ten. There are no screenshots, replays, Sentry logs or
 sessions, the user, device and server names are cleared, and `lib/diagnostics/report_text.dart` replaces paths, web and
 network addresses and long ids in error messages, with the desktop app's rules. Android's native crashes (Java and NDK)
 are sent by Sentry's Android SDK and don't pass through that scrubbing. That SDK names the user and the device with an
 id it keeps per installation, so before Sentry starts, `LinkEngine.kt` sets that id to the same zeros on every phone.
+
+The only breadcrumbs are the app's log (`lib/diagnostics/trail.dart`): the last 100 notes the app wrote itself about
+connecting to the PC, opening videos and updating, in fixed words and codes, never a title, name, address or anything
+the PC or a server said. Sentry's automatic breadcrumbs (web requests, screens, taps, the console, Android's own) are
+off, and anything other than the app's categories is dropped. The notes are scrubbed again with the rules above before
+a report goes; Sentry also copies them to the Android SDK, so its native crashes carry them too. The log also sends two
+kinds of warning that aren't crashes: a link to the PC that fails three times in a row, or for good (a removed phone, an
+expired code and a phone without internet aren't reported), and a request the PC doesn't answer, or an update that
+fails; each by a fixed code, at most once every half hour and twenty times a run. Settings › Send the app's log turns
+all of it off, and clears the notes kept so far; it only works while crash reports are on.
 
 R8 renames the release build's Java and Kotlin classes. Sentry's Gradle plugin (`android/app/build.gradle.kts`) writes
 a mapping id into each release APK, which the Android SDK sends with its crashes, and when `SENTRY_AUTH_TOKEN` is set

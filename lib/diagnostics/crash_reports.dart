@@ -8,10 +8,12 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 import '../connection/remote_link.dart' show RemoteRequestException;
 import '../storage/app_settings.dart';
 import 'report_text.dart';
+import 'trail.dart';
 
 /// Errors, crashes and how long startup and opening videos take, sent to BlackPearl's developer through Sentry unless
 /// Settings › Send crash reports is off. Nothing names the user: file paths, titles, network and web addresses, names
-/// and ids are removed first, and there are no breadcrumbs, screenshots, replays or logs.
+/// and ids are removed first, and there are no screenshots or replays. The only breadcrumbs are the app's own notes
+/// ([Trail]), and only while Settings › Send the app's log is on as well.
 ///
 /// A build without `--dart-define=SENTRY_DSN=…` (a local build, the tests) sends nothing and doesn't start Sentry.
 abstract final class CrashReports {
@@ -42,13 +44,27 @@ abstract final class CrashReports {
   /// and before `runApp`, so startup is measured and nothing is sent when the setting is off.
   static Future<void> start(AppSettings settings) async {
     if (!configured) return;
-    _settings = settings;
-    settings.addListener(_settingChanged);
-    _running = settings.crashReports;
+    follow(settings);
     if (_running) await _init();
   }
 
+  /// Follows [settings] from now on: which reports go, and whether the app's notes are kept ([Trail.enabled]).
+  @visibleForTesting
+  static void follow(AppSettings settings) {
+    _settings?.removeListener(_settingChanged);
+    _settings = settings;
+    settings.addListener(_settingChanged);
+    _running = settings.crashReports;
+    Trail.enabled = _logging;
+  }
+
   static void _settingChanged() {
+    final logging = _logging;
+    if (Trail.enabled && !logging) {
+      // The notes kept so far go too, and the native side's copy of them.
+      _switching = _switching.then((_) => Sentry.configureScope((scope) => scope.clearBreadcrumbs())).catchError((Object _) {});
+    }
+    Trail.enabled = logging;
     final wanted = _settings?.crashReports ?? false;
     if (wanted == _running) return;
     _running = wanted;
@@ -79,7 +95,8 @@ abstract final class CrashReports {
       // Whole transactions rather than streamed spans, so beforeSendTransaction sees them.
       ..traceLifecycle = SentryTraceLifecycle.static
       ..sendDefaultPii = false
-      ..maxBreadcrumbs = 0
+      // The app's own notes (the last this many); Sentry's automatic ones stay off, and beforeBreadcrumb drops any other.
+      ..maxBreadcrumbs = 100
       ..enableAutoNativeBreadcrumbs = false
       ..enableUserInteractionBreadcrumbs = false
       ..enablePrintBreadcrumbs = false
@@ -89,7 +106,7 @@ abstract final class CrashReports {
       ..enableAutoSessionTracking = false
       ..attachScreenshot = false
       ..attachViewHierarchy = false
-      ..beforeBreadcrumb = ((_, _) => null)
+      ..beforeBreadcrumb = ((crumb, _) => crumb != null && Trail.keeps(crumb) ? crumb : null)
       ..beforeSend = ((event, _) => _sending ? scrubEvent(event) : null)
       ..beforeSendTransaction = ((transaction, _) => _sending ? scrubTransaction(transaction) : null)
       ..beforeSendLog = ((_, _) => null)
@@ -115,13 +132,17 @@ abstract final class CrashReports {
   // Off in Settings: nothing more goes, even before Sentry has closed.
   static bool get _sending => _settings?.crashReports ?? true;
 
+  // Both switches on: the app's notes go with reports.
+  static bool get _logging => _sending && (_settings?.appLog ?? true);
+
   /// Takes what could name the user or their library out of an error before it is sent.
   @visibleForTesting
   static SentryEvent scrubEvent(SentryEvent event) {
     event
       ..user = null
       ..serverName = null
-      ..breadcrumbs = null
+      // Only the app's own notes, scrubbed again, while the log is on.
+      ..breadcrumbs = _logging ? Trail.scrubbed(event.breadcrumbs) : null
       ..request = null
       ..transaction = ReportText.scrubOrNull(event.transaction)
       ..culprit = ReportText.scrubOrNull(event.culprit);
@@ -184,12 +205,15 @@ abstract final class CrashReports {
 /// (`deadline_exceeded`). It carries how it was opened, never what.
 class PlaybackOpenTrace {
   PlaybackOpenTrace._(this._span) {
-    if (_span != null) _deadline = Timer(const Duration(minutes: 2), () => _finish(const SpanStatus.deadlineExceeded()));
+    if (_span != null) {
+      _deadline = Timer(const Duration(minutes: 2), () => _finish(const SpanStatus.deadlineExceeded(), 'still not showing after two minutes'));
+    }
   }
 
   /// [kind]: `video` (a new one), `episode` (another in the same player), `quality` (another stream of the video on
   /// screen) or `recovery`; [network]: `home`, `away` or `relayed`.
   factory PlaybackOpenTrace.start({required String kind, required String network}) {
+    Trail.note('playback', 'opening', {'kind': kind, 'network': network});
     if (!Sentry.isEnabled) return PlaybackOpenTrace._(null);
     final span = Sentry.startTransaction('playback.open', 'playback', bindToScope: false)
       ..setTag('playback.kind', kind)
@@ -199,13 +223,18 @@ class PlaybackOpenTrace {
 
   ISentrySpan? _span;
   Timer? _deadline;
+  bool _ended = false;
 
-  void opened() => _finish(const SpanStatus.ok());
-  void failed() => _finish(const SpanStatus.internalError());
-  void cancelled() => _finish(const SpanStatus.cancelled());
+  void opened() => _finish(const SpanStatus.ok(), 'showing');
+  void failed() => _finish(const SpanStatus.internalError(), 'failed to open');
+  void cancelled() => _finish(const SpanStatus.cancelled(), 'opening stopped');
 
-  void _finish(SpanStatus status) {
+  void _finish(SpanStatus status, String outcome) {
     _deadline?.cancel();
+    if (!_ended) {
+      _ended = true;
+      Trail.note('playback', outcome);
+    }
     final span = _span;
     if (span == null) return;
     _span = null;

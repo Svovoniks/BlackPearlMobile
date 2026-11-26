@@ -145,4 +145,46 @@ void main() {
     expect(settings.followPhoneRotation, isFalse);
     expect(tester.getCenter(toggle), where);
   });
+
+  testWidgets("Settings turns the app's log on and off, and only while crash reports are on", (tester) async {
+    final store = MemorySettingsStore();
+    final settings = AppSettings(store);
+    await settings.load();
+    await pump(tester, null, settings: settings);
+    await tester.drag(find.byType(ListView), const Offset(0, -3000));
+    await tester.pumpAndSettle();
+    final log = find.byKey(const ValueKey('app-log'));
+    SwitchListTile tile() => tester.widget<SwitchListTile>(log);
+    expect(find.text("Send the app's log"), findsOneWidget);
+    expect(find.textContaining('never titles, names or addresses'), findsOneWidget);
+    expect(tile().value, isTrue);
+    final where = tester.getCenter(log);
+
+    await tester.tap(log);
+    await tester.pumpAndSettle();
+    expect(settings.appLog, isFalse);
+    expect(tile().value, isFalse);
+    expect(tester.getCenter(log), where);
+    final again = AppSettings(store);
+    await again.load();
+    expect(again.appLog, isFalse);
+
+    await tester.tap(log);
+    await tester.pumpAndSettle();
+    expect(settings.appLog, isTrue);
+
+    // Crash reports off: the log shows off and doesn't turn on, and comes back as it was with them.
+    await tester.tap(find.text('Send crash reports'));
+    await tester.pumpAndSettle();
+    expect(settings.crashReports, isFalse);
+    expect(tile().value, isFalse);
+    expect(tile().onChanged, isNull);
+    await tester.tap(log);
+    await tester.pumpAndSettle();
+    expect(settings.appLog, isTrue, reason: 'unchanged underneath');
+    await tester.tap(find.text('Send crash reports'));
+    await tester.pumpAndSettle();
+    expect(tile().value, isTrue);
+    expect(tester.getCenter(log), where);
+  });
 }
