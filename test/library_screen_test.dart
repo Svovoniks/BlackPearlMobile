@@ -5,7 +5,9 @@ import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/protocol/library.dart';
 import 'package:blackpearl_mobile/protocol/remote_state.dart';
 import 'package:blackpearl_mobile/ui/library_screen.dart';
+import 'package:blackpearl_mobile/ui/queue_widgets.dart';
 import 'package:blackpearl_mobile/ui/remote_screen.dart';
+import 'package:blackpearl_mobile/ui/search_screen.dart';
 import 'package:blackpearl_mobile/ui/theme.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -76,36 +78,67 @@ void main() {
     expect(find.text('Update BlackPearl on the PC'), findsOneWidget);
   });
 
-  testWidgets('categories browse their own listing', (tester) async {
+  testWidgets('categories browse their own listing, chosen with the section button', (tester) async {
     final (link, _) = await pumpLibrary(tester);
+    expect(find.text('Films'), findsNothing, reason: 'no row of pills over the list');
+    await tester.tap(find.byType(SectionButton));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Films'));
     await tester.pumpAndSettle();
     expect(link.asked.last.$2['category'], LibraryCategory.films.number);
     expect(link.asked.last.$2['home'], isFalse);
+    // The title and the button name the section shown.
+    expect(find.text('Films'), findsNWidgets(2));
+    expect(find.text('Library'), findsNothing);
   });
 
-  testWidgets('Search has a button of its own beside the title, and Back closes it rather than the app', (tester) async {
-    // A narrow phone, where a Search pill at the end of the row was out of sight.
+  testWidgets('the section button stays in reach on a narrow phone, offers Queues, and Back closes its menu', (tester) async {
     tester.view.physicalSize = const Size(720, 1560);
     tester.view.devicePixelRatio = 2;
     addTearDown(tester.view.reset);
     final (link, _) = await pumpLibrary(tester, features: const {'library', 'watch', 'queues'});
-    final button = find.bySemanticsLabel('Search');
+    final button = find.byType(SectionButton);
     expect(tester.getRect(button).right, lessThanOrEqualTo(360));
     expect(tester.getSize(button).height, greaterThanOrEqualTo(48));
+    expect(find.bySemanticsLabel('Section: Home. Choose another'), findsOneWidget);
     await tester.tap(button);
     await tester.pumpAndSettle();
-    expect(find.text('Library'), findsNothing);
+    for (final label in ['Home', 'Films', 'Shows', 'Anime', 'Queues']) {
+      expect(find.text(label), findsWidgets, reason: label);
+    }
+    // The system's Back closes the menu and leaves Home as it was.
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+    expect(find.text('Queues'), findsNothing);
+    expect(find.text('Continue watching'), findsOneWidget);
+    final asked = link.asked.length;
+    await tester.tap(button);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Queues'));
+    await tester.pumpAndSettle();
+    expect(find.byType(QueuesView), findsOneWidget);
+    expect(link.asked.length, greaterThan(asked));
+  });
+
+  testWidgets('Search is a tab of its own: it searches as one types, and clears', (tester) async {
+    final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch'};
+    link.answer = (type, fields) async => type == 'browse' ? homePage() : {'type': 'done'};
+    await tester.pumpWidget(MaterialApp(
+      theme: buildTheme(),
+      home: SearchScreen(link: link, actions: LibraryActions(watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {}, playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null)),
+    ));
+    await tester.pump();
+    expect(find.text('Search the library'), findsOneWidget);
+    expect(link.asked, isEmpty, reason: 'nothing is asked before anything is typed');
     await tester.enterText(find.byType(TextField), 'night');
     await tester.pump(const Duration(milliseconds: 400));
     await tester.pumpAndSettle();
-    expect(link.asked.last.$2['query'], 'night');
-    // The system's Back.
-    await tester.binding.handlePopRoute();
+    expect(link.asked.single.$2['query'], 'night');
+    expect(find.text('Asteroid City'), findsOneWidget);
+    await tester.tap(find.byTooltip('Clear'));
     await tester.pumpAndSettle();
-    expect(find.text('Library'), findsOneWidget);
-    expect(find.byType(TextField), findsNothing);
-    expect(find.text('Continue watching'), findsOneWidget, reason: 'back on Home, where the search was opened');
+    expect(find.text('Search the library'), findsOneWidget);
+    expect(find.text('Asteroid City'), findsNothing);
   });
 
   testWidgets("without a connection the Library says how it is going and can try again", (tester) async {

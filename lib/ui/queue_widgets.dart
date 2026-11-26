@@ -343,7 +343,8 @@ class _QueuesViewState extends State<QueuesView> {
       onRefresh: _load,
       child: ListView.separated(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        // Clear of the Library's section button.
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, sectionButtonClearance),
         itemCount: queues.length,
         separatorBuilder: (_, _) => const SizedBox(height: 10),
         itemBuilder: (context, index) => _QueueCard(

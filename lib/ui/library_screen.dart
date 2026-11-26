@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/rendering.dart' show RenderAbstractViewport;
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -273,19 +273,62 @@ class LibraryListing extends ChangeNotifier {
   }
 }
 
-enum _Mode { home, category, queues, search }
+enum _Mode { home, category, queues }
 
-/// The Library tab: Home's rows, each category as a grid of posters, and search.
+/// One of what the Library tab shows: Home, a category, or the queues.
+class _Section {
+  const _Section(this.mode, this.label, this.icon, [this.category]);
+  final _Mode mode;
+  final String label;
+  final IconData icon;
+  final LibraryCategory? category;
+
+  bool matches(_Mode mode, LibraryCategory category) => this.mode == mode && (mode != _Mode.category || this.category == category);
+}
+
+const _homeSection = _Section(_Mode.home, 'Home', Icons.home_rounded);
+const _queuesSection = _Section(_Mode.queues, 'Queues', Icons.queue_play_next_rounded);
+const _categories = [
+  _Section(_Mode.category, 'Films', Icons.movie_outlined, LibraryCategory.films),
+  _Section(_Mode.category, 'Shows', Icons.tv_rounded, LibraryCategory.shows),
+  _Section(_Mode.category, 'Anime', Icons.animation_rounded, LibraryCategory.anime),
+];
+
+/// The room the section button takes over the bottom of a list, so the list's last row can scroll clear of it.
+const double sectionButtonClearance = 88;
+
+/// What a Library page shows in place of its list when there is none to show: how the connection is going, with a way
+/// to try again, or that the PC's BlackPearl is too old to browse. Null when the list can show; [hasEntries] keeps a
+/// list loaded before the connection dropped.
+Widget? libraryUnavailable(RemoteLink link, {bool hasEntries = false}) {
+  final status = link.status;
+  if (!status.isConnected && !hasEntries) {
+    // How the connection is going, in the Remote's words.
+    final copy = describe(status, link.pcName);
+    final trying = status.phase == LinkPhase.connecting || status.phase == LinkPhase.linking || status.phase == LinkPhase.pairing;
+    return LibraryMessage(
+      icon: trying ? Icons.cloud_sync_outlined : Icons.cloud_off_rounded,
+      title: status.phase == LinkPhase.idle ? 'Not connected' : copy.headline,
+      text: status.needsPairing ? 'The Remote tab pairs this phone with ${link.pcName} again.' : 'The library shows once the phone reaches ${link.pcName}.',
+      action: trying || status.needsPairing ? null : ('Try again', link.retryNow),
+    );
+  }
+  if (status.isConnected && !link.features.contains('library')) {
+    return LibraryMessage(
+      icon: Icons.system_update_alt_rounded,
+      title: 'Update BlackPearl on the PC',
+      text: '${link.pcName} runs a BlackPearl from before the phone could browse it. Update it on the PC to see its library here.',
+    );
+  }
+  return null;
+}
+
+/// The Library tab: Home's rows, each category as a grid of posters, and the queues, chosen with the button at the
+/// bottom. Search is a tab of its own.
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key, required this.link, required this.actions, this.changed, this.active = true, this.toTop, this.onBack});
+  const LibraryScreen({super.key, required this.link, required this.actions, this.changed, this.toTop});
   final RemoteLink link;
   final LibraryActions actions;
-
-  /// Whether this tab is the one showing: only then does the system's Back close its search.
-  final bool active;
-
-  /// Where the system's Back goes when no search is open: the tab shown before. Null lets Back close the app.
-  final VoidCallback? onBack;
 
   /// Fires when the Library tab is tapped while it shows: the list goes to its top, and from there back to Home.
   final Listenable? toTop;
@@ -300,15 +343,15 @@ class LibraryScreen extends StatefulWidget {
 class _LibraryScreenState extends State<LibraryScreen> {
   _Mode _mode = _Mode.home;
   LibraryCategory _category = LibraryCategory.films;
-  final TextEditingController _search = TextEditingController();
-  final FocusNode _searchFocus = FocusNode();
-  Timer? _searchDebounce;
   LibraryListing? _listing;
   bool _wasConnected = false;
   int _seed = DateTime.now().millisecondsSinceEpoch & 0xffff;
 
   RemoteLink get link => widget.link;
   bool get _available => link.features.contains('library');
+
+  List<_Section> get _sections => [_homeSection, ..._categories, if (link.features.contains('queues')) _queuesSection];
+  _Section get _section => _sections.firstWhere((section) => section.matches(_mode, _category), orElse: () => _homeSection);
 
   @override
   void initState() {
@@ -331,11 +374,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
       _select(_Mode.home);
     }
   }
-
-  // What search was opened over, which leaving it shows again.
-  _Mode _beforeSearch = _Mode.home;
-
-  void _leaveSearch() => _select(_beforeSearch == _Mode.search ? _Mode.home : _beforeSearch);
 
   // Continue watching on Home: it goes back to its start once playback changed, where the title just watched now is.
   // Left where it was scrolled to, the row showed the titles after it, so it looked as if nothing had changed.
@@ -373,9 +411,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
     link.removeListener(_linkChanged);
     widget.changed?.removeListener(_playbackChanged);
     widget.toTop?.removeListener(_toTop);
-    _searchDebounce?.cancel();
-    _search.dispose();
-    _searchFocus.dispose();
     _continueRow.dispose();
     _homeScroll.dispose();
     _listing?.dispose();
@@ -403,7 +438,6 @@ class _LibraryScreenState extends State<LibraryScreen> {
   BrowseRequest get _request => switch (_mode) {
     _Mode.home => BrowseRequest(home: true, seed: _seed),
     _Mode.category => BrowseRequest(category: _category),
-    _Mode.search => BrowseRequest(query: _search.text.trim()),
     _Mode.queues => const BrowseRequest(),
   };
 
@@ -416,48 +450,50 @@ class _LibraryScreenState extends State<LibraryScreen> {
       return;
     }
     final listing = _listing = LibraryListing(link, _request);
-    if (_mode != _Mode.search || _search.text.trim().isNotEmpty) unawaited(listing.load());
+    unawaited(listing.load());
     if (mounted) setState(() {});
   }
 
   void _select(_Mode mode, [LibraryCategory? category]) {
-    if (mode == _mode && (category == null || category == _category)) return;
-    // A search still waiting to start belongs to the search field, not to the listing chosen now.
-    _searchDebounce?.cancel();
+    // A new section shows the button again, wherever the last one was scrolled to.
+    _buttonHidden = false;
+    if (mode == _Mode.queues && !link.features.contains('queues')) mode = _Mode.home;
+    if (mode == _mode && (category == null || category == _category)) {
+      setState(() {});
+      return;
+    }
     setState(() {
-      if (mode == _Mode.search) _beforeSearch = _mode;
       _mode = mode;
       if (category != null) _category = category;
     });
-    if (mode == _Mode.search) {
-      _searchFocus.requestFocus();
-    } else {
-      _searchFocus.unfocus();
-    }
     _open();
-    _revealPill(_pillKeys[mode == _Mode.category ? category ?? _category : mode]!);
   }
 
-  // The pills' row scrolls to show the chosen one whole.
-  late final Map<Object, GlobalKey> _pillKeys = {
-    for (final key in [..._Mode.values, LibraryCategory.films, LibraryCategory.shows, LibraryCategory.anime]) key: GlobalKey(),
-  };
+  // The section button steps aside while the list scrolls down, and comes back when it scrolls up.
+  bool _buttonHidden = false;
+  final GlobalKey _buttonKey = GlobalKey();
 
-  void _revealPill(GlobalKey key) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final context = key.currentContext;
-      final box = context?.findRenderObject();
-      if (context == null || box is! RenderBox || !box.attached) return;
-      final viewport = RenderAbstractViewport.maybeOf(box);
-      final position = Scrollable.maybeOf(context)?.position;
-      if (viewport == null || position == null) return;
-      // The row's own padding stays beside the pill: 16 before it; after it, the pill's 8 and the row's 8.
-      final start = viewport.getOffsetToReveal(box, 0).offset - 16;
-      final end = viewport.getOffsetToReveal(box, 1).offset + 8;
-      final target = position.pixels > start ? start : position.pixels < end ? end : null;
-      if (target == null) return;
-      unawaited(position.animateTo(target.clamp(position.minScrollExtent, position.maxScrollExtent), duration: const Duration(milliseconds: 250), curve: Curves.easeOutCubic));
-    });
+  bool _scrolled(UserScrollNotification notification) {
+    if (notification.metrics.axis != Axis.vertical) return false;
+    final hide = switch (notification.direction) {
+      ScrollDirection.reverse => true,
+      ScrollDirection.forward => false,
+      ScrollDirection.idle => _buttonHidden,
+    };
+    if (hide != _buttonHidden) setState(() => _buttonHidden = hide);
+    return false;
+  }
+
+  Future<void> _chooseSection() async {
+    final box = _buttonKey.currentContext?.findRenderObject();
+    final navigator = Navigator.of(context);
+    final overlay = navigator.overlay?.context.findRenderObject();
+    if (box is! RenderBox || overlay is! RenderBox || !box.attached) return;
+    final anchor = box.localToGlobal(Offset.zero, ancestor: overlay) & box.size;
+    final current = _section;
+    final chosen = await navigator.push(_SectionMenu(anchor: anchor, sections: _sections, current: current));
+    if (chosen == null || !mounted) return;
+    _select(chosen.mode, chosen.category);
   }
 
   /// Pull to refresh: the list stays as it is until the new one has come, and the spinner stays until then too.
@@ -481,19 +517,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     setState(() => _listing = fresh);
   }
 
-  void _searchChanged(String _) {
-    _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 300), _open);
-    setState(() {});
-  }
-
-  Future<void> _openEntry(LibraryEntry entry) async {
-    if (entry.opensList) {
-      await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => ShowScreen(link: link, show: entry, actions: widget.actions, changed: widget.changed)));
-      return;
-    }
-    await showTitleSheet(context, link: link, entry: entry, actions: widget.actions);
-  }
+  Future<void> _openEntry(LibraryEntry entry) => openLibraryEntry(context, link: link, entry: entry, actions: widget.actions, changed: widget.changed);
 
   void _openUnwatched() => unawaited(Navigator.of(context).push(MaterialPageRoute<void>(
     builder: (_) => UnwatchedScreen(link: link, actions: widget.actions, changed: widget.changed),
@@ -503,186 +527,87 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final searching = _mode == _Mode.search;
-    // In search, the system's Back closes the search, as its arrow does, rather than the app. Outside it, Back goes
-    // where onBack says.
-    return PopScope(
-      canPop: !(widget.active && (searching || widget.onBack != null)),
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop || !widget.active) return;
-        if (_mode == _Mode.search) {
-          _leaveSearch();
-        } else {
-          widget.onBack?.call();
-        }
-      },
-      child: Scaffold(
-        body: SafeArea(
-          bottom: false,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 12, 0),
-                child: SizedBox(
-                  height: 48,
-                  child: Row(
-                    children: [
-                      if (searching) ...[
-                        Pebble(
-                          width: 40,
-                          height: 40,
-                          tapArea: Pebble.fingertip,
-                          onTap: _leaveSearch,
-                          semanticLabel: 'Close search',
-                          child: const Icon(Icons.arrow_back_rounded, size: 20),
-                        ),
-                        const SizedBox(width: 6),
-                        Expanded(child: _searchField()),
-                        const SizedBox(width: 4),
-                      ] else ...[
-                        Expanded(child: Text('Library', style: display(28), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                        // Always in view, where the pills' row scrolled it out of sight.
-                        Pebble(
-                          width: 44,
-                          height: 44,
-                          tapArea: Pebble.fingertip,
-                          onTap: () => _select(_Mode.search),
-                          semanticLabel: 'Search',
-                          child: const Icon(Icons.search_rounded, size: 22),
-                        ),
-                      ],
-                    ],
+    final section = _section;
+    final showButton = _available && (link.status.isConnected || (_listing?.entries.isNotEmpty ?? false));
+    return Scaffold(
+      body: Stack(
+        children: [
+          SafeArea(
+            bottom: false,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                  child: SizedBox(
+                    height: 48,
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      // Home is the Library itself; any other section names itself, as its pill did when lit.
+                      child: Text(section.mode == _Mode.home ? 'Library' : section.label, style: display(28), maxLines: 1, overflow: TextOverflow.ellipsis),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Expanded(
+                  child: NotificationListener<UserScrollNotification>(onNotification: _scrolled, child: _body()),
+                ),
+              ],
+            ),
+          ),
+          // Over the list's bottom corner, where a thumb reaches it.
+          if (showButton)
+            Positioned(
+              right: 16,
+              bottom: 16,
+              child: IgnorePointer(
+                ignoring: _buttonHidden,
+                child: AnimatedSlide(
+                  offset: _buttonHidden ? const Offset(0, 1.6) : Offset.zero,
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOutCubic,
+                  child: AnimatedOpacity(
+                    opacity: _buttonHidden ? 0 : 1,
+                    duration: const Duration(milliseconds: 160),
+                    child: SectionButton(key: _buttonKey, label: section.label, icon: section.icon, onTap: _chooseSection),
                   ),
                 ),
               ),
-              const SizedBox(height: 8),
-              _modes(),
-              const SizedBox(height: 6),
-              Expanded(child: _body()),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _searchField() => SizedBox(
-    height: 44,
-    child: TextField(
-      controller: _search,
-      focusNode: _searchFocus,
-      onChanged: _searchChanged,
-      textInputAction: TextInputAction.search,
-      style: const TextStyle(color: Palette.ink, fontSize: 16),
-      decoration: InputDecoration(
-        hintText: 'Search ${link.pcName}',
-        hintStyle: const TextStyle(color: Palette.muted),
-        prefixIcon: const Icon(Icons.search_rounded, color: Palette.muted),
-        suffixIcon: _search.text.isEmpty
-            ? null
-            : IconButton(
-                tooltip: 'Clear',
-                icon: const Icon(Icons.close_rounded, color: Palette.muted),
-                onPressed: () {
-                  _search.clear();
-                  _open();
-                },
-              ),
-        filled: true,
-        fillColor: Palette.well,
-        contentPadding: EdgeInsets.zero,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(22), borderSide: BorderSide.none),
-      ),
-    ),
-  );
-
-  Widget _modes() {
-    Widget pill(Object key, String label, bool selected, VoidCallback onTap, {IconData? icon}) => Padding(
-      key: _pillKeys[key],
-      padding: const EdgeInsets.only(right: 8),
-      child: Pebble(
-        height: 38,
-        lit: selected,
-        tapArea: Pebble.fingertip,
-        onTap: onTap,
-        semanticLabel: label,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (icon != null) ...[Icon(icon, size: 18), const SizedBox(width: 6)],
-            Text(label, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-          ],
-        ),
-      ),
-    );
-    // The pills are 38 dp in a row a fingertip high. Search has its own button beside the title.
-    return SizedBox(
-      height: 48,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.only(left: 16, right: 8),
-        children: [
-          pill(_Mode.home, 'Home', _mode == _Mode.home, () => _select(_Mode.home)),
-          for (final category in [LibraryCategory.films, LibraryCategory.shows, LibraryCategory.anime])
-            pill(category, category.label, _mode == _Mode.category && _category == category, () => _select(_Mode.category, category)),
-          if (link.features.contains('queues'))
-            pill(_Mode.queues, 'Queues', _mode == _Mode.queues, () => _select(_Mode.queues), icon: Icons.queue_play_next_rounded),
+            ),
         ],
       ),
     );
   }
 
   Widget _body() {
-    if (!link.status.isConnected && (_listing == null || _listing!.entries.isEmpty)) {
-      // How the connection is going, in the Remote's words, and a way to try again from here.
-      final status = link.status;
-      final copy = describe(status, link.pcName);
-      final trying = status.phase == LinkPhase.connecting || status.phase == LinkPhase.linking || status.phase == LinkPhase.pairing;
-      return _Message(
-        icon: trying ? Icons.cloud_sync_outlined : Icons.cloud_off_rounded,
-        title: status.phase == LinkPhase.idle ? 'Not connected' : copy.headline,
-        text: status.needsPairing
-            ? 'The Remote tab pairs this phone with ${link.pcName} again.'
-            : 'The library shows once the phone reaches ${link.pcName}.',
-        action: trying || status.needsPairing ? null : ('Try again', link.retryNow),
-      );
-    }
-    if (link.status.isConnected && !_available) {
-      return _Message(
-        icon: Icons.system_update_alt_rounded,
-        title: 'Update BlackPearl on the PC',
-        text: '${link.pcName} runs a BlackPearl from before the phone could browse it. Update it on the PC to see its library here.',
-      );
-    }
+    final unavailable = libraryUnavailable(link, hasEntries: _listing?.entries.isNotEmpty ?? false);
+    if (unavailable != null) return unavailable;
     if (_mode == _Mode.queues) return QueuesView(link: link, actions: widget.actions, changed: widget.changed);
     final listing = _listing;
     if (listing == null) return const SizedBox.shrink();
-    if (_mode == _Mode.search && _search.text.trim().isEmpty) {
-      return const _Message(icon: Icons.search_rounded, title: 'Search the library', text: 'Titles, shows and episodes on the PC.');
-    }
     return ListenableBuilder(
       listenable: listing,
       builder: (context, _) {
         if (listing.entries.isEmpty) {
           if (listing.loading || !listing.started) return const Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5));
           if (listing.error != null) {
-            return _Message(icon: Icons.error_outline_rounded, title: "Couldn't load the library", text: listing.error!, action: ('Try again', _open));
+            return LibraryMessage(icon: Icons.error_outline_rounded, title: "Couldn't load the library", text: listing.error!, action: ('Try again', _open));
           }
-          return _Message(
+          return LibraryMessage(
             icon: Icons.video_library_outlined,
-            title: _mode == _Mode.search ? 'Nothing found' : 'Nothing here yet',
-            text: _mode == _Mode.search ? 'Try another word.' : 'Titles appear here once the PC has them in its library.',
+            title: 'Nothing here yet',
+            text: 'Titles appear here once the PC has them in its library.',
             // A PC that has just started may not have read its library yet.
-            action: _mode == _Mode.search ? null : ('Refresh', _open),
+            action: ('Refresh', _open),
           );
         }
         return RefreshIndicator(
           color: Palette.accent,
           backgroundColor: Palette.elevated,
           onRefresh: _refresh,
-          child: _mode == _Mode.home ? _home(listing) : PosterGrid(link: link, listing: listing, onOpen: _openEntry, onHold: _holdEntry),
+          child: _mode == _Mode.home
+              ? _home(listing)
+              : PosterGrid(link: link, listing: listing, onOpen: _openEntry, onHold: _holdEntry, bottomPadding: sectionButtonClearance),
         );
       },
     );
@@ -712,7 +637,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     return ListView(
       controller: _homeScroll,
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.only(bottom: 24),
+      padding: const EdgeInsets.only(bottom: sectionButtonClearance),
       children: [
         if (continuing.isNotEmpty) ...[
           const _RowTitle('Continue watching'),
@@ -763,6 +688,138 @@ class _LibraryScreenState extends State<LibraryScreen> {
       ],
     );
   }
+}
+
+/// Opens [entry] from a list: a show's or a season's page, or a title's sheet.
+Future<void> openLibraryEntry(BuildContext context, {required RemoteLink link, required LibraryEntry entry, required LibraryActions actions, Listenable? changed}) async {
+  if (entry.opensList) {
+    await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => ShowScreen(link: link, show: entry, actions: actions, changed: changed)));
+    return;
+  }
+  await showTitleSheet(context, link: link, entry: entry, actions: actions);
+}
+
+/// The Library's floating button: the section shown, which opens the others to choose from.
+class SectionButton extends StatelessWidget {
+  const SectionButton({super.key, required this.label, required this.icon, required this.onTap, this.open = false});
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  /// Drawn over the open menu, where it closes it.
+  final bool open;
+
+  @override
+  Widget build(BuildContext context) => Pebble(
+    lit: true,
+    height: 52,
+    onTap: onTap,
+    semanticLabel: open ? 'Close sections' : 'Section: $label. Choose another',
+    padding: const EdgeInsets.only(left: 16, right: 14),
+    child: ExcludeSemantics(
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 20),
+          const SizedBox(width: 8),
+          Flexible(child: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15))),
+          const SizedBox(width: 6),
+          AnimatedRotation(turns: open ? 0.5 : 0, duration: const Duration(milliseconds: 200), child: const Icon(Icons.expand_less_rounded, size: 20)),
+        ],
+      ),
+    ),
+  );
+}
+
+/// The sections, stacked above the section button over a dimmed Library. The one shown is lit.
+class _SectionMenu extends PopupRoute<_Section> {
+  _SectionMenu({required this.anchor, required this.sections, required this.current});
+
+  /// Where the section button is, in the navigator's overlay.
+  final Rect anchor;
+  final List<_Section> sections;
+  final _Section current;
+
+  @override
+  Color? get barrierColor => const Color(0xB3000000);
+
+  @override
+  bool get barrierDismissible => true;
+
+  @override
+  String? get barrierLabel => 'Close sections';
+
+  @override
+  Duration get transitionDuration => const Duration(milliseconds: 220);
+
+  @override
+  Widget buildPage(BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation) => Material(
+    // The text style a page has, which a route of its own lacks.
+    type: MaterialType.transparency,
+    child: LayoutBuilder(
+      builder: (context, constraints) {
+        final size = constraints.biggest;
+        // The nearest the button first, each a moment after the one below it.
+        Widget item(int index, _Section section) {
+          final from = (sections.length - 1 - index) * 0.08;
+          final shown = CurvedAnimation(parent: animation, curve: Interval(from, math.min(1, from + 0.6), curve: Curves.easeOutCubic));
+          return FadeTransition(
+            opacity: shown,
+            child: SlideTransition(
+              position: Tween(begin: const Offset(0, 0.4), end: Offset.zero).animate(shown),
+              child: Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Pebble(
+                  height: 48,
+                  lit: identical(section, current),
+                  onTap: () => Navigator.of(context).pop(section),
+                  semanticLabel: section.label,
+                  padding: const EdgeInsets.symmetric(horizontal: 18),
+                  child: ExcludeSemantics(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(section.icon, size: 20),
+                        const SizedBox(width: 10),
+                        Flexible(child: Text(section.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 15))),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+  
+        return Stack(
+          children: [
+            Positioned(
+              right: size.width - anchor.right,
+              bottom: size.height - anchor.top + 6,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: math.max(0, anchor.right - 16), maxHeight: math.max(0, anchor.top - MediaQuery.paddingOf(context).top - 6)),
+                child: SingleChildScrollView(
+                  reverse: true,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [for (final (index, section) in sections.indexed) item(index, section)],
+                  ),
+                ),
+              ),
+            ),
+            // The button stays where it was, above the dimming, and closes the menu.
+            Positioned(
+              right: size.width - anchor.right,
+              top: anchor.top,
+              height: anchor.height,
+              child: SectionButton(label: current.label, icon: current.icon, open: true, onTap: () => Navigator.of(context).pop()),
+            ),
+          ],
+        );
+      },
+    ),
+  );
 }
 
 /// Under a list with more to load: a spinner while the next page comes, or why it didn't, with Try again.
@@ -829,8 +886,9 @@ class _RowTitle extends StatelessWidget {
   }
 }
 
-class _Message extends StatelessWidget {
-  const _Message({required this.icon, required this.title, required this.text, this.action});
+/// A message in place of a list: an icon, a title, why, and an action when there is one.
+class LibraryMessage extends StatelessWidget {
+  const LibraryMessage({super.key, required this.icon, required this.title, required this.text, this.action});
   final IconData icon;
   final String title;
   final String text;
@@ -947,11 +1005,14 @@ double cardCaptionHeight(BuildContext context) {
 
 /// A listing as a grid of posters that loads more as it scrolls.
 class PosterGrid extends StatelessWidget {
-  const PosterGrid({super.key, required this.link, required this.listing, required this.onOpen, this.onHold});
+  const PosterGrid({super.key, required this.link, required this.listing, required this.onOpen, this.onHold, this.bottomPadding = 16});
   final RemoteLink link;
   final LibraryListing listing;
   final void Function(LibraryEntry entry) onOpen;
   final void Function(LibraryEntry entry)? onHold;
+
+  /// The room under the last row, which can scroll clear of a button over the list.
+  final double bottomPadding;
 
   @override
   Widget build(BuildContext context) {
@@ -977,6 +1038,7 @@ class PosterGrid extends StatelessWidget {
             ),
           ),
           if (listing.hasMore) SliverToBoxAdapter(child: ListingFooter(listing: listing)),
+          if (bottomPadding > 16) SliverToBoxAdapter(child: SizedBox(height: bottomPadding - 16)),
         ],
       ),
     );
@@ -1172,7 +1234,7 @@ class _UnwatchedScreenState extends State<UnwatchedScreen> {
       builder: (context, _) {
         if (_listing.entries.isEmpty) {
           if (_listing.loading || !_listing.started) return const Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5));
-          return _Message(
+          return LibraryMessage(
             icon: _listing.error == null ? Icons.done_all_rounded : Icons.error_outline_rounded,
             title: _listing.error == null ? 'Nothing left to start' : "Couldn't load the list",
             text: _listing.error ?? 'Every title on the PC has been started or watched.',
@@ -1322,7 +1384,7 @@ class _ShowScreenState extends State<ShowScreen> {
         builder: (context, _) {
           if (_listing.entries.isEmpty) {
             if (_listing.loading || !_listing.started) return const Center(child: CircularProgressIndicator(color: Palette.accent, strokeWidth: 2.5));
-            return _Message(
+            return LibraryMessage(
               icon: Icons.error_outline_rounded,
               title: _listing.error == null ? 'No episodes' : "Couldn't load this show",
               text: _listing.error ?? 'The PC has no episodes of this show.',

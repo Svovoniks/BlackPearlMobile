@@ -33,7 +33,8 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   When the PC plays a video of its own library, **Watch here** moves it to the phone: the PC stops and the phone carries
   on from the same moment.
 - **Library.** The PC's Home (Continue watching, the titles not started yet newest first with See all, suggestions for
-  each kind, a random pick), films, shows and anime as posters, search (the button beside the title), and a show's
+  each kind, a random pick), films, shows and anime as posters, chosen with the section button at the bottom corner,
+  search in a tab of its own, and a show's
   seasons and episodes, with the PC's
   resume points and watched marks. A title's sheet plays it on the phone (resume or start over) or on the PC, and marks
   it watched or unwatched; a show's or a season's page marks all its episodes. A long press on a title offers the same
@@ -54,7 +55,7 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   player already on screen, which shows what it is waiting for. Each video opens in its own shape, sideways for a wide
   one and upright for a tall one (from the size its file gives, turned and stretched as the file says), and keeps it
   however the phone is held; Settings › Turn the player with the phone makes the player turn with the phone instead.
-- **Queues.** The PC's saved queues (its Queues page) are in Library › Queues: each opens its videos in order, with Play
+- **Queues.** The PC's saved queues (its Queues page) are in the Library's Queues section: each opens its videos in order, with Play
   on the phone or on the PC from where it continues. A video played from a queue steps through the queue: Previous,
   Next, the up-next card and Loop all follow it, on the phone and on the PC. The player's Up next page lists the show's
   episodes or a queue and switches between them, as the PC's queue menu does, and the Remote tab's Up next lists what

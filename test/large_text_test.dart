@@ -54,6 +54,15 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
+        // The section button's menu.
+        await tester.tap(find.byType(SectionButton));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Anime'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.byType(SectionButton));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Home').last);
+        await tester.pumpAndSettle();
         await tester.tap(find.text('Asteroid City'));
         await tester.pumpAndSettle();
       });
