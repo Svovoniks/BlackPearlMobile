@@ -227,6 +227,23 @@ try {
     Check ($message -ceq 'Tests failed with exit code 1.') "a failed release check is recorded by its own error ($message)"
     $usedStaging = (Get-Content -LiteralPath (Join-Path $fakeCheckout 'scripts/staging.txt') -Raw).Trim()
     Check ((Split-Path -Leaf $usedStaging) -match '^bpm-dc-[a-f0-9]{12}$' -and !(Test-Path -LiteralPath $usedStaging) -and $env:BLACKPEARL_NATIVE_STAGING -ceq $outerStaging) 'the native build of a checked copy gets its own folder, which goes with it'
+    # Checks killed by a newer push never reach their own cleanup: their copy's native build goes with the copy.
+    $killedId = [guid]::NewGuid().ToString('N').Substring(0, 12)
+    $killedCopy = Join-Path (Get-ScratchRoot) "bpm-ship-$killedId"
+    $killedStaging = Join-Path (Get-ScratchRoot) "bpm-dc-$killedId"
+    Check ((Get-NativeStagingPath $killedCopy) -ceq $killedStaging) "a check copy's native build is named after it"
+    Invoke-Native git @('-C', $copyRepo, 'worktree', 'add', '--quiet', '--detach', $killedCopy, 'HEAD')
+    New-Item -ItemType Directory -Path (Join-Path $killedStaging 'arm64-v8a') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $killedStaging 'arm64-v8a/CMakeCache.txt'), 'native build')
+    $running = Start-Process -FilePath $self.Path -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 120') -PassThru
+    try {
+        Write-CheckRecord (Join-Path $copyRecords "$('d' * 40).json") @{ Commit = 'd' * 40; Branch = 't3/killed'; State = 'running'; Pid = $running.Id; ProcessStart = $running.StartTime.ToUniversalTime().Ticks; Checkout = $killedCopy }
+        Stop-SupersededChecks $copyRepo 't3/killed' $headB
+        $killed = Get-CheckState (Join-Path $copyRecords "$('d' * 40).json")
+        Check ($running.HasExited -and $killed.State -eq 'superseded' -and !(Test-Path -LiteralPath $killedCopy) -and !(Test-Path -LiteralPath $killedStaging) -and !$killed.PSObject.Properties['Checkout']) 'superseded checks that were killed leave neither their copy nor its native build'
+    }
+    finally { if (!$running.HasExited) { $running.Kill($true) }; $null = Remove-CheckCopy $copyRepo $killedCopy }
+    Check (!(Test-ScratchFolder (Join-Path $testRoot 'bpm-dc-0123456789ab') 'bpm-dc') -and !(Test-ScratchFolder (Join-Path (Get-ScratchRoot) 'bpm-dc-other') 'bpm-dc')) 'only folders this script makes are removed'
     . (Join-Path $PSScriptRoot 'ship-sync-checks.ps1') -TestRoot $testRoot
     Write-Host "$checks shipping safety checks passed. No releases were created."
 }

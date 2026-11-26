@@ -77,8 +77,9 @@ function Invoke-ReleaseChecks {
     $failure = Join-Path (Get-ScratchRoot) ('bpm-check-failure-' + [guid]::NewGuid().ToString('N') + '.txt')
     # The plugin's native build otherwise goes to a folder per checkout path outside the checkout (about 1 GB;
     # packages/blackpearl_datachannel/android/build.gradle), which a throwaway copy would leave behind. A short path
-    # keeps the native build within Windows' 260 characters.
-    $staging = Join-Path (Get-ScratchRoot) ('bpm-dc-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    # keeps the native build within Windows' 260 characters. It is named after the copy, so Remove-CheckCopy removes it
+    # too when this process is killed before its finally runs.
+    $staging = Get-NativeStagingPath $Checkout
     $savedStaging = $env:BLACKPEARL_NATIVE_STAGING
     $env:BLACKPEARL_NATIVE_STAGING = $staging
     try {
@@ -108,19 +109,32 @@ function Get-ShipRecordRoot {
     $common = (Invoke-Native git @('-C', $Root, 'rev-parse', '--path-format=absolute', '--git-common-dir')).Trim()
     return Join-Path $common 'blackpearl-ship'
 }
-# Removes a copy of a commit made for release checks. Git deletes what it can and forgets the worktree even when a file
-# is still in use; the rest goes once nothing holds it. Returns whether the copy is gone.
+# Whether a path is a folder this script makes: bpm-ship-<id> or bpm-dc-<id> directly in the scratch folder.
+function Test-ScratchFolder {
+    param([string]$Path, [string]$Prefix)
+    $full = [IO.Path]::GetFullPath($Path)
+    return (Split-Path -Leaf $full) -match "^$Prefix-[a-f0-9]{12}$" -and
+        [IO.Path]::GetFullPath((Split-Path -Parent $full)).TrimEnd('\', '/') -ieq (Get-ScratchRoot).TrimEnd('\', '/')
+}
+# The native build folder of a check copy bpm-ship-<id>: bpm-dc-<id> beside it. Any other checkout gets a new one.
+function Get-NativeStagingPath {
+    param([string]$Checkout)
+    $id = if ((Split-Path -Leaf $Checkout) -match '^bpm-ship-([a-f0-9]{12})$') { $Matches[1] } else { [guid]::NewGuid().ToString('N').Substring(0, 12) }
+    return Join-Path (Get-ScratchRoot) "bpm-dc-$id"
+}
+# Removes a copy of a commit made for release checks, and its native build. Git deletes what it can and forgets the
+# worktree even when a file is still in use; the rest goes once nothing holds it. Returns whether both are gone.
 function Remove-CheckCopy {
     param([string]$Root, [string]$Path)
     if (Test-Path -LiteralPath $Path) { & git -C $Root worktree remove --force $Path 2>$null }
-    $full = [IO.Path]::GetFullPath($Path)
-    # Only a folder this script made: bpm-ship-<id> directly under the scratch folder.
-    if ((Test-Path -LiteralPath $full) -and (Split-Path -Leaf $full) -match '^bpm-ship-[a-f0-9]{12}$' -and
-        [IO.Path]::GetFullPath((Split-Path -Parent $full)).TrimEnd('\', '/') -ieq (Get-ScratchRoot).TrimEnd('\', '/')) {
-        $null = Remove-Tree $full
-    }
+    if ((Test-Path -LiteralPath $Path) -and (Test-ScratchFolder $Path 'bpm-ship')) { $null = Remove-Tree $Path }
     & git -C $Root worktree prune 2>$null
-    return !(Test-Path -LiteralPath $Path)
+    $staging = $null
+    if (Test-ScratchFolder $Path 'bpm-ship') {
+        $staging = Get-NativeStagingPath $Path
+        if (Test-ScratchFolder $staging 'bpm-dc') { $null = Remove-Tree $staging } else { $staging = $null }
+    }
+    return !(Test-Path -LiteralPath $Path) -and !($staging -and (Test-Path -LiteralPath $staging))
 }
 # A run that was interrupted or failed keeps its copy of the commit for investigation until the commit is checked again
 # or a newer commit of the branch replaces it. The record names the copy until it is gone.

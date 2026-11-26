@@ -70,7 +70,8 @@ affect the result. On Windows that is the user's own (`%LOCALAPPDATA%\Temp`), wh
 `TEMP` says: Gradle's javac fails in a folder the user cannot list, such as
 `C:\Windows\Temp`. A fresh copy builds libdatachannel for both ABIs from
 source, so they take about ten minutes. That build (about 1 GB) goes to a folder of the
-copy's own, named by `BLACKPEARL_NATIVE_STAGING`, and is removed with it; without the
+copy's own (`bpm-dc-<id>` beside `bpm-ship-<id>`, named by `BLACKPEARL_NATIVE_STAGING`), and is
+removed with the copy, also when its checks were stopped or interrupted; without the
 variable, Windows builds keep it in `%LOCALAPPDATA%\bpdc`, one folder per checkout path
 (`packages/blackpearl_datachannel/android/build.gradle`). Their record and log live in the repository's
 shared git directory (`blackpearl-checks/`), so every worktree sees them. Pushing a newer
