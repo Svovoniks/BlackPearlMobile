@@ -39,6 +39,27 @@ function Get-PubspecVersion {
     param([string]$Root, [string]$Revision)
     return ConvertFrom-PubspecVersion ((Invoke-Native git @('-C', $Root, 'show', "${Revision}:pubspec.yaml")) -join "`n")
 }
+# Deletes a file or folder if it can and never throws; returns whether it is gone. It uses .NET rather than Remove-Item,
+# which some temp folders refuse ("Access is denied") when the folder above cannot be listed. Read-only files (git's
+# objects) are made writable first, without following links out of the folder.
+function Remove-Tree {
+    param([string]$Path)
+    try {
+        if ([IO.File]::Exists($Path)) {
+            [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal)
+            [IO.File]::Delete($Path)
+        }
+        elseif ([IO.Directory]::Exists($Path)) {
+            $options = [IO.EnumerationOptions]::new()
+            $options.RecurseSubdirectories = $true; $options.IgnoreInaccessible = $true
+            $options.AttributesToSkip = [IO.FileAttributes]::ReparsePoint
+            foreach ($file in [IO.Directory]::EnumerateFiles($Path, '*', $options)) { [IO.File]::SetAttributes($file, [IO.FileAttributes]::Normal) }
+            [IO.Directory]::Delete($Path, $true)
+        }
+    }
+    catch { }
+    return !(Test-Path -LiteralPath $Path)
+}
 function Get-CheckRecordPath {
     param([string]$Root, [string]$Commit)
     # Shared by every worktree, so -Merge and reviewers can run anywhere and still see what was checked.

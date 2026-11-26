@@ -194,6 +194,31 @@ try {
     Stop-SupersededChecks $copyRepo 't3/fixture' $headB
     $replaced = Get-CheckState (Join-Path $copyRecords "$headA.json")
     Check (!(Test-Path -LiteralPath $staleCopy) -and $replaced.State -eq 'interrupted' -and !$replaced.PSObject.Properties['Checkout']) 'a newer commit of the branch removes the copy an interrupted run of an older one left'
+    # Cleanups are best effort: they never throw, and never hide what failed.
+    $treePath = Join-Path $testRoot 'tree/a/b'
+    New-Item -ItemType Directory -Path $treePath -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $treePath 'f.txt'), 'x'); [IO.File]::SetAttributes((Join-Path $treePath 'f.txt'), [IO.FileAttributes]::ReadOnly)
+    Check ((Remove-Tree (Join-Path $testRoot 'tree')) -and !(Test-Path -LiteralPath (Join-Path $testRoot 'tree'))) 'a folder with read-only files is removed'
+    Check (Remove-Tree (Join-Path $testRoot 'never-made')) 'removing what is not there succeeds'
+    $heldCopy = Join-Path ([IO.Path]::GetTempPath()) ('bpm-ship-' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+    Invoke-Native git @('-C', $copyRepo, 'worktree', 'add', '--quiet', '--detach', $heldCopy, 'HEAD')
+    $held = [IO.File]::Open((Join-Path $heldCopy 'held.txt'), [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $gone = $true
+        $threw = $false
+        try { $gone = Remove-CheckCopy $copyRepo $heldCopy } catch { $threw = $true }
+        # Only Windows keeps a file that is open from being deleted.
+        Check (!$threw -and ($gone -eq !$IsWindows)) 'a check copy with a file still open is reported as kept, not as an error'
+    }
+    finally { $held.Dispose() }
+    Check (Remove-CheckCopy $copyRepo $heldCopy) 'the copy goes once nothing holds it'
+    $fakeCheckout = Join-Path $testRoot 'fake-checkout'
+    New-Item -ItemType Directory -Path (Join-Path $fakeCheckout 'scripts') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fakeCheckout 'scripts/release-checks.ps1'),
+        "param([string]`$Lane, [string]`$Flutter, [string]`$FailureFile)`n'Tests failed with exit code 1.' | Set-Content -LiteralPath `$FailureFile`nexit 1`n")
+    $message = ''
+    try { Invoke-ReleaseChecks $fakeCheckout 'flutter' } catch { $message = "$_" }
+    Check ($message -ceq 'Tests failed with exit code 1.') "a failed release check is recorded by its own error ($message)"
     . (Join-Path $PSScriptRoot 'ship-sync-checks.ps1') -TestRoot $testRoot
     Write-Host "$checks shipping safety checks passed. No releases were created."
 }
@@ -202,16 +227,10 @@ finally {
     $resolved = [IO.Path]::GetFullPath($testRoot)
     if ($resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase) -and
         (Split-Path -Leaf $resolved) -match '^bpm-ship-checks-[a-f0-9]{32}$') {
+        # A virus scanner can hold a fixture file for a moment.
         foreach ($attempt in 1..5) {
-            try { Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction Stop; break }
-            catch {
-                # On Windows emptied folders can stay "delete pending" until this process exits, and refuse access
-                # meanwhile. They go with the process.
-                $left = try { @(Get-ChildItem -LiteralPath $resolved -Recurse -File -Force -ErrorAction Stop).Count } catch { 0 }
-                if (!(Test-Path -LiteralPath $resolved) -or !$left) { break }
-                # A virus scanner can hold a fixture file for a moment.
-                if ($attempt -eq 5) { Write-Warning "Could not remove $resolved`: $_" } else { Start-Sleep -Seconds 1 }
-            }
+            if (Remove-Tree $resolved) { break }
+            if ($attempt -eq 5) { Write-Warning "Could not remove $resolved." } else { Start-Sleep -Seconds 1 }
         }
     }
 }

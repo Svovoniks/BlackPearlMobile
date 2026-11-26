@@ -88,7 +88,8 @@ function Invoke-ReleaseChecks {
         Invoke-Native git @('diff', '--exit-code')
     }
     finally {
-        Remove-Item -LiteralPath $failure -ErrorAction SilentlyContinue
+        # Best effort: a cleanup error must not replace the failing check's.
+        $null = Remove-Tree $failure
         Pop-Location
     }
 }
@@ -108,7 +109,7 @@ function Remove-CheckCopy {
     # Only a folder this script made: bpm-ship-<id> directly under the temp directory.
     if ((Test-Path -LiteralPath $full) -and (Split-Path -Leaf $full) -match '^bpm-ship-[a-f0-9]{12}$' -and
         [IO.Path]::GetFullPath((Split-Path -Parent $full)).TrimEnd('\', '/') -ieq [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')) {
-        Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
+        $null = Remove-Tree $full
     }
     & git -C $Root worktree prune 2>$null
     return !(Test-Path -LiteralPath $Path)
@@ -142,8 +143,9 @@ function Invoke-CheckRun {
     try {
         Invoke-Native git @('-C', $Root, 'worktree', 'add', '--detach', $checkout, $Commit)
         Invoke-ReleaseChecks $checkout $FlutterPath
-        $null = Remove-CheckCopy $Root $checkout
-        $record.State = 'passed'; $record.Checked = [datetime]::UtcNow.ToString('o'); $record.Remove('Checkout')
+        $record.State = 'passed'; $record.Checked = [datetime]::UtcNow.ToString('o')
+        # A copy still held open stays named in the record, which the next check of the branch removes it by.
+        if (Remove-CheckCopy $Root $checkout) { $record.Remove('Checkout') }
         Write-CheckRecord $recordPath $record
         Write-Host "Release checks passed on $Commit."
     }
