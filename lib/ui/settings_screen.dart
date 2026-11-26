@@ -181,6 +181,26 @@ class SettingsScreen extends StatelessWidget {
                         style: TextStyle(color: Palette.muted, fontSize: 13, height: 1.35),
                       ),
                     ),
+                    const SizedBox(height: 6),
+                    // It rides on crash reports: with those off it shows off and can't be turned on.
+                    SwitchListTile(
+                      key: const ValueKey('app-log'),
+                      contentPadding: EdgeInsets.zero,
+                      value: settings.crashReports && settings.appLog,
+                      onChanged: settings.crashReports ? (value) => settings.setAppLog(value) : null,
+                      activeThumbColor: Palette.accentInk,
+                      activeTrackColor: Palette.accent,
+                      title: const Text("Send the app's log", style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.w600)),
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.only(right: 8),
+                      child: Text(
+                        'Crash reports also say what the app did just before, such as connecting to the PC, opening a '
+                        "video or updating, and a connection or update that keeps failing is reported. Only the app's own "
+                        'notes, never titles, names or addresses.',
+                        style: TextStyle(color: Palette.muted, fontSize: 13, height: 1.35),
+                      ),
+                    ),
                   ],
                 ),
               ),

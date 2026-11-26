@@ -82,6 +82,12 @@
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
             android:value="barcode" />
+        <!-- Sentry's Android SDK keeps network changes as breadcrumbs (type, bandwidth, signal, VPN) whatever
+             enableAutoNativeBreadcrumbs says, and sends them with native crashes, past the app's own filtering. The
+             only breadcrumbs are the app's log (lib/diagnostics/trail.dart). -->
+        <meta-data
+            android:name="io.sentry.breadcrumbs.network-events"
+            android:value="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

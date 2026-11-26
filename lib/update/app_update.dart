@@ -5,6 +5,8 @@ import 'package:clock/clock.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 
+import '../diagnostics/trail.dart';
+
 /// A newer release of the app, from GitHub.
 @immutable
 class AppRelease {
@@ -213,8 +215,10 @@ class AppUpdater extends ChangeNotifier {
         _dismissed = false;
       }
       if (manual) _dismissed = false;
+      if (newer) Trail.note('update', 'found a newer version', {'version': found.version});
       return 'BlackPearl Mobile ${found.version} is available.';
     } catch (_) {
+      Trail.note('update', 'check failed', {'manual': manual});
       _nextCheck = clock.now().add(retryAfterFailure);
       return "Couldn't check for updates. Check the connection and try again.";
     } finally {
@@ -236,18 +240,21 @@ class AppUpdater extends ChangeNotifier {
   }
 
   Future<void> _update(AppRelease release) async {
+    Trail.note('update', 'update', {'version': release.version});
     try {
       if (!await platform.canInstall()) {
+        Trail.note('update', 'asking to allow installs');
         _phase = UpdatePhase.needsPermission;
         _changed();
         await platform.allowInstalls();
         return;
       }
     } catch (_) {
-      _fail("Couldn't open Android's settings. Allow BlackPearl to install apps there, then try again.");
+      _fail("Couldn't open Android's settings. Allow BlackPearl to install apps there, then try again.", why: 'settings');
       return;
     }
     if (_downloaded != null && await File(_downloaded!).exists()) return _install();
+    Trail.note('update', 'downloading', {'bytes': release.size, 'checksum': release.sha256 != null});
     _phase = UpdatePhase.downloading;
     _progress = 0;
     _error = null;
@@ -266,18 +273,23 @@ class AppUpdater extends ChangeNotifier {
       // Catches a damaged or cut-short download. A changed file would also have to be signed with the app's key, which
       // Android checks before it installs anything.
       final file = File(path);
-      if (await file.length() != release.size ||
+      final length = await file.length();
+      if (length != release.size ||
           (release.sha256 != null && (await sha256.bind(file.openRead()).first).toString() != release.sha256)) {
         await _deleteQuietly(path);
-        _fail('The download was damaged. Try again.');
+        _fail('The download was damaged. Try again.', why: length != release.size ? 'download-short' : 'download-checksum', data: {'bytes': length});
         return;
       }
     } catch (e) {
       if (path != null) await _deleteQuietly(path);
+      final full = _outOfSpace(e);
       _fail(
-        _outOfSpace(e)
+        full
             ? 'This phone is out of storage space. The update needs about ${(release.size / 1e6).ceil()} MB.'
             : "The download didn't finish. Check the connection and try again.",
+        // Only the kind of error: its text can hold the phone's folders.
+        why: full ? 'out-of-space' : 'download-failed',
+        data: {'error': e.runtimeType.toString(), 'progress': (_progress * 100).round()},
       );
       return;
     }
@@ -292,10 +304,11 @@ class AppUpdater extends ChangeNotifier {
   Future<void> _install() async {
     _phase = UpdatePhase.ready;
     _changed();
+    Trail.note('update', "opening Android's installer");
     try {
       await platform.install(_downloaded!);
-    } catch (_) {
-      _fail("Android's installer didn't open. Try again.");
+    } catch (e) {
+      _fail("Android's installer didn't open. Try again.", why: 'installer', data: {'error': e.runtimeType.toString()});
     }
   }
 
@@ -330,7 +343,10 @@ class AppUpdater extends ChangeNotifier {
     _changed();
   }
 
-  void _fail(String message) {
+  /// [why] is a fixed code for the app's log; a full phone isn't reported as a problem, as it says nothing about the app.
+  void _fail(String message, {required String why, Map<String, Object>? data}) {
+    Trail.note('update', 'failed', {'why': why, ...?data});
+    if (why != 'out-of-space') Trail.problem('update', why, data);
     _phase = UpdatePhase.failed;
     _error = message;
     _changed();

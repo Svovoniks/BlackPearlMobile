@@ -48,6 +48,7 @@ class AppSettings extends ChangeNotifier {
   int _soundDelayMs = 0;
   bool _followPhoneRotation = false;
   bool _crashReports = true;
+  bool _appLog = true;
   bool _playOnPc = false;
   bool _volumeKeys = true;
 
@@ -62,6 +63,11 @@ class AppSettings extends ChangeNotifier {
   /// Whether errors, crashes and how long startup and opening videos take go to BlackPearl's developer through Sentry,
   /// with paths, titles, addresses and names removed. On by default.
   bool get crashReports => _crashReports;
+
+  /// Whether crash reports also carry the app's log: notes of what it did just before (connecting to the PC, opening a
+  /// video, updating), and reports of a link to the PC or an update that keeps failing. Only with [crashReports]. On by
+  /// default.
+  bool get appLog => _appLog;
 
   /// Whether the player turns with the phone, as Android's Auto-rotate says. Off by default: each video opens in its
   /// own shape, sideways for a wide video and upright for a tall one, and keeps it however the phone is held.
@@ -101,6 +107,7 @@ class AppSettings extends ChangeNotifier {
       _shuffle = await _store.readBool('shuffle') ?? false;
       _followPhoneRotation = await _store.readBool('followPhoneRotation') ?? false;
       _crashReports = await _store.readBool('crashReports') ?? true;
+      _appLog = await _store.readBool('appLog') ?? true;
       _playOnPc = await _store.readBool('playOnPc') ?? false;
       _volumeKeys = await _store.readBool('volumeKeys') ?? true;
       _soundDelayMs = (int.tryParse(await _store.readString('soundDelayMs') ?? '') ?? 0).clamp(-soundDelayLimitMs, soundDelayLimitMs);
@@ -150,6 +157,13 @@ class AppSettings extends ChangeNotifier {
     _crashReports = value;
     notifyListeners();
     await _quietly(_store.writeBool('crashReports', value));
+  }
+
+  Future<void> setAppLog(bool value) async {
+    if (value == _appLog) return;
+    _appLog = value;
+    notifyListeners();
+    await _quietly(_store.writeBool('appLog', value));
   }
 
   Future<void> setVolumeKeys(bool value) async {

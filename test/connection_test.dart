@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:blackpearl_mobile/connection/remote_connection.dart';
+import 'package:blackpearl_mobile/diagnostics/trail.dart';
+import 'package:sentry_flutter/sentry_flutter.dart' show Breadcrumb;
 import 'package:clock/clock.dart';
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/connection/transport.dart';
@@ -915,6 +918,174 @@ void main() {
           async.elapse(const Duration(seconds: 10));
         }
         expect(h.connection.status.isConnected, isTrue, reason: 'a PC that answers keeps the link after the app wakes');
+        h.connection.dispose();
+      });
+    });
+  });
+
+  group("the app's log", () {
+    late List<Breadcrumb> notes;
+    setUp(() {
+      Trail.reset();
+      notes = Trail.recorded = [];
+    });
+    tearDown(Trail.reset);
+
+    List<Breadcrumb> problems() => notes.where((n) => n.message?.startsWith('problem: ') ?? false).toList();
+    String everything() => jsonEncode([
+      for (final n in notes) {'message': n.message, 'data': n.data},
+    ]);
+
+    test('notes how a link came up, and nothing that names the PC, the server, the session or what plays', () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget);
+        h.connection.start();
+        async.flushMicrotasks();
+        h.socket.receive({
+          'type': 'remote-welcome',
+          'data': jsonEncode({
+            'iceServers': ['stun:stun.example.com:3478'],
+            'forceRelay': false,
+          }),
+        });
+        h.socket.receive({'type': 'remote-online'});
+        async.flushMicrotasks();
+        final session = h.socket.signals().first.session;
+        h.pcSignal(secret, phoneId, session, 'sdp', jsonEncode({'type': 'answer', 'sdp': 'v=0'}));
+        async.flushMicrotasks();
+        h.peer.open();
+        h.peer.receive({'type': 'welcome', 'protocol': 1, 'pc': 'Living room', 'features': ['ping']});
+        async.flushMicrotasks();
+        h.peer.receive({'type': 'state', 'media': true, 'title': 'Night Signal', 'playing': true, 'positionMs': 0, 'durationMs': 1});
+        async.flushMicrotasks();
+
+        expect(notes.map((n) => n.message), [
+          'start',
+          'connecting through the room server',
+          'room server socket open',
+          'room server: the PC is online',
+          'offering a link',
+          'the PC answered the offer',
+          'channel open',
+          'welcomed',
+          'connected',
+          'path',
+        ]);
+        expect(notes.every((n) => n.category == 'link'), isTrue);
+        expect(notes[4].data, {'homeNetwork': false, 'relayOnly': false, 'iceServers': 1});
+        expect(notes.last.data, {'path': 'home'});
+        for (final private in ['Living room', 'example.com', 'Night Signal', 'Test phone', session, secret, phoneId, pcId]) {
+          expect(everything(), isNot(contains(private)));
+        }
+        expect(problems(), isEmpty);
+        h.connection.dispose();
+      });
+    });
+
+    test('a link that keeps failing is reported once, at the third failure in a row, by its code', () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget);
+        h.connection.start();
+        async.flushMicrotasks();
+        for (var i = 1; i <= 5; i++) {
+          h.socket.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+          h.socket.receive({'type': 'remote-online'});
+          async.flushMicrotasks();
+          // No answer within 20 seconds.
+          async.elapse(const Duration(seconds: 20, milliseconds: 500));
+          expect(h.connection.status.phase, LinkPhase.failed);
+          expect(problems(), hasLength(i < 3 ? 0 : 1), reason: 'after failure $i');
+          // The next attempt, after the backoff.
+          async.elapse(const Duration(seconds: 16));
+        }
+        expect(problems().single.message, 'problem: no-answer');
+        expect(problems().single.data, {'failures': 3, 'permanent': false, 'homeNetwork': false});
+        expect(notes.where((n) => n.message == 'failed').map((n) => n.data!['failures']), [1, 2, 3, 4, 5]);
+        h.connection.dispose();
+      });
+    });
+
+    test('a streak that began without internet is reported once a reportable failure comes', () {
+      fakeAsync((async) {
+        final sockets = <FakeSocket>[];
+        var refusals = 3;
+        final connection = RemoteConnection(
+          target: pairedTarget,
+          identity: const PhoneIdentity(appVersion: '1.2.3', device: 'Test phone'),
+          connectSocket: (uri) async {
+            if (refusals-- > 0) throw const SocketException('Network is unreachable');
+            return sockets.last = (sockets..add(FakeSocket())).last;
+          },
+          createPeer: (servers, relay) async => FakePeer(servers, relay),
+        );
+        connection.start();
+        // Three failures without internet (retries after 1, 2 and 4 seconds), then the room server answers.
+        async.elapse(const Duration(seconds: 8));
+        expect(problems(), isEmpty);
+        sockets.single.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+        sockets.single.receive({'type': 'remote-online'});
+        async.flushMicrotasks();
+        async.elapse(const Duration(seconds: 20, milliseconds: 500));
+        expect(problems().single.message, 'problem: no-answer');
+        expect(problems().single.data, containsPair('failures', 4));
+        connection.dispose();
+      });
+    });
+
+    test("a phone without internet is noted but not reported, and the error's text stays out", () {
+      fakeAsync((async) {
+        final connection = RemoteConnection(
+          target: pairedTarget,
+          identity: const PhoneIdentity(appVersion: '1.2.3', device: 'Test phone'),
+          connectSocket: (uri) async => throw SocketException('Failed host lookup: ${uri.host}'),
+          createPeer: (_, _) async => throw UnimplementedError(),
+        );
+        connection.start();
+        async.elapse(const Duration(minutes: 3));
+        expect(connection.status.phase, LinkPhase.failed);
+        final failed = notes.where((n) => n.message == 'failed').toList();
+        expect(failed.length, greaterThan(3));
+        expect(failed.map((n) => n.data!['why']).toSet(), {'room-unreachable'});
+        expect(problems(), isEmpty);
+        expect(everything(), isNot(contains('example.com')));
+        connection.dispose();
+      });
+    });
+
+    test("what the room server says when it refuses stays out of the log", () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget);
+        h.connection.start();
+        async.flushMicrotasks();
+        h.socket.receive({'type': 'error', 'text': 'Room 4F2K for Anna at rooms.example.com is full'});
+        async.flushMicrotasks();
+        expect(notes.last.data, containsPair('why', 'room-error'));
+        expect(everything(), isNot(contains('Anna')));
+        expect(everything(), isNot(contains('4F2K')));
+        h.connection.dispose();
+      });
+    });
+
+    test('a request that times out is reported by its name only, once per half hour', () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget, linkSilence: const Duration(minutes: 10));
+        h.connection.start();
+        async.flushMicrotasks();
+        h.socket.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+        h.socket.receive({'type': 'remote-online'});
+        async.flushMicrotasks();
+        h.pcSignal(secret, phoneId, h.socket.signals().first.session, 'sdp', jsonEncode({'type': 'answer', 'sdp': 'v=0'}));
+        async.flushMicrotasks();
+        h.peer.open();
+        h.peer.receive({'type': 'welcome', 'protocol': 1, 'pc': 'Living room'});
+        async.flushMicrotasks();
+        for (var i = 0; i < 2; i++) {
+          unawaited(h.connection.ask('watch', const {'id': 'Night Signal'}).catchError((Object _) => <String, dynamic>{}));
+          async.elapse(const Duration(seconds: 20, milliseconds: 500));
+        }
+        expect(problems().single.message, 'problem: request-timeout');
+        expect(problems().single.data, {'request': 'watch'});
+        expect(everything(), isNot(contains('Night Signal')));
         h.connection.dispose();
       });
     });

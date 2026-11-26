@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 
+import '../diagnostics/trail.dart';
 import '../protocol/ice_servers.dart';
 import '../protocol/pair_link.dart';
 import '../protocol/remote_state.dart';
@@ -237,6 +238,9 @@ class RemoteConnection extends RemoteLink {
     return completer.future.whenComplete(_settled).timeout(timeout, onTimeout: () {
       _requests.remove(number);
       _settled();
+      // `type` is one of the protocol's request names, never anything about what was asked.
+      Trail.note('link', 'request timed out', {'request': type});
+      Trail.problem('link', 'request-timeout', {'request': type});
       // The link may be gone though WebRTC still calls it connected: find out now rather than wait for the next ping.
       _probeLink();
       throw const RemoteRequestException('timeout', "The PC didn't answer. Try again.");
@@ -283,6 +287,7 @@ class RemoteConnection extends RemoteLink {
 
   void start() {
     if (_running) return;
+    Trail.note('link', 'start', {'pairing': _target.isPairing});
     _running = true;
     _halted = false;
     _failures = 0;
@@ -303,6 +308,7 @@ class RemoteConnection extends RemoteLink {
   /// The user asked to try again: also after a failure that stopped the automatic retries.
   @override
   void retryNow() {
+    Trail.note('link', 'try again', {'halted': _halted});
     _halted = false;
     _lanReset();
     if (!_running) {
@@ -316,6 +322,7 @@ class RemoteConnection extends RemoteLink {
   /// For the app returning to the foreground: starts over unless the link is still healthy, or a failure is waiting
   /// for the user.
   void resume() {
+    Trail.note('link', 'app back in front', {'phase': _status.phase.name, 'halted': _halted});
     if (_halted) return;
     // Back in front of the user: the home network is worth a try at once again.
     _lanReset();
@@ -333,6 +340,7 @@ class RemoteConnection extends RemoteLink {
   /// For a network change: the old path is probably gone, so set up a new link at once.
   void networkChanged() {
     if (!_running || _halted) return;
+    Trail.note('link', 'network changed');
     _failures = 0;
     _lanReset();
     _attempt();
@@ -367,11 +375,18 @@ class RemoteConnection extends RemoteLink {
     // Every attempt starts with the room server.
     _viaLan = false;
     _setStatus(const LinkStatus(LinkPhase.connecting));
+    Trail.note('link', 'connecting through the room server', {'failures': _failures});
     final Uri uri;
     try {
       uri = remoteSocketUri(_target.server);
     } on FormatException {
-      _fail(generation, "The room server address for this PC isn't valid. Pair it again.", permanent: true, needsPairing: true);
+      _fail(
+        generation,
+        "The room server address for this PC isn't valid. Pair it again.",
+        why: 'bad-server-address',
+        permanent: true,
+        needsPairing: true,
+      );
       return;
     }
     final SignalingSocket socket;
@@ -382,9 +397,12 @@ class RemoteConnection extends RemoteLink {
       // phone's internet: it says so, and asks again slowly. Any other answer, such as a hotel Wi-Fi's sign-in page, is.
       final status = int.tryParse(RegExp(r'HTTP status code: (\d+)', caseSensitive: false).firstMatch('$e')?.group(1) ?? '');
       if (status != null && status >= 400) {
-        unawaited(_fallBack(generation, "The room server didn't take the connection. It may be down or need an update.", slow: true));
+        Trail.note('link', 'room server refused the socket', {'status': status});
+        unawaited(
+          _fallBack(generation, "The room server didn't take the connection. It may be down or need an update.", why: 'room-refused', slow: true),
+        );
       } else {
-        unawaited(_fallBack(generation, "Can't reach the room server. Check your internet connection."));
+        unawaited(_fallBack(generation, "Can't reach the room server. Check your internet connection.", why: 'room-unreachable'));
       }
       return;
     }
@@ -392,6 +410,7 @@ class RemoteConnection extends RemoteLink {
       unawaited(socket.close());
       return;
     }
+    Trail.note('link', 'room server socket open');
     _listen(generation, socket, socket.messages.listen(null, cancelOnError: true));
     _send({'type': 'remote-phone', 'target': _target.pcId, 'number': 1});
   }
@@ -433,19 +452,20 @@ class RemoteConnection extends RemoteLink {
   /// The room server couldn't introduce the phone to the PC: it can't be reached, refused, or went before the link was
   /// up. A PC whose home-network address the phone knows gets a try there; failing that, [message] stands as before.
   /// (A pairing session has no address: the PC hasn't said one yet.)
-  Future<void> _fallBack(int generation, String message, {bool slow = false}) async {
+  Future<void> _fallBack(int generation, String message, {required String why, bool slow = false}) async {
     if (generation != _generation) return;
     if (_target.lan == null || _viaLan) {
-      _fail(generation, message, slow: slow);
+      _fail(generation, message, why: why, slow: slow);
       return;
     }
+    Trail.note('link', 'room server failed, trying the home network', {'why': why});
     _lanTimer?.cancel();
     // A link being set up through the room server can't finish without it.
     _dropSocket(close: true);
     await _closePeer();
     if (generation != _generation) return;
     final adopted = await _tryLan(generation);
-    if (!adopted && generation == _generation && !_viaLan) _fail(generation, message, slow: slow);
+    if (!adopted && generation == _generation && !_viaLan) _fail(generation, message, why: why, slow: slow);
   }
 
   /// The room server says the PC is offline, which it also says of a PC that lost its internet: the home network gets a
@@ -514,7 +534,10 @@ class RemoteConnection extends RemoteLink {
     if (network != null && !await Future.any([network.available(), abort.future.then((_) => false)])) {
       limit.cancel();
       if (identical(_lanAbort, abort)) _lanAbort = null;
-      if (generation == _generation) _lanFailed();
+      if (generation == _generation) {
+        Trail.note('link', 'home network: not on Wi-Fi');
+        _lanFailed();
+      }
       return false;
     }
     if (generation != _generation) {
@@ -529,7 +552,10 @@ class RemoteConnection extends RemoteLink {
     limit.cancel();
     if (identical(_lanAbort, abort)) _lanAbort = null;
     if (found == null) {
-      if (generation == _generation) _lanFailed();
+      if (generation == _generation) {
+        Trail.note('link', 'home network: the PC did not answer', {'addresses': lan.addresses.length});
+        _lanFailed();
+      }
       return false;
     }
     // Still wanted: the same attempt, and not linking through the room server meanwhile (the PC came online there).
@@ -538,6 +564,7 @@ class RemoteConnection extends RemoteLink {
       found.discard();
       return false;
     }
+    Trail.note('link', 'home network: the PC answered');
     // Counted as a try that found nothing until the link is up (see [_connected]): a device at the address that answers
     // but never links up then gets the phone back further apart each time, not on every attempt.
     _lanFailed();
@@ -676,9 +703,9 @@ class RemoteConnection extends RemoteLink {
     if (_status.isConnected || _status.phase == LinkPhase.pairing) return;
     if (_status.phase == LinkPhase.failed) return;
     if (_viaLan) {
-      _fail(generation, 'Lost the connection to the PC.');
+      _fail(generation, 'Lost the connection to the PC.', why: 'home-socket-lost');
     } else {
-      unawaited(_fallBack(generation, 'Lost the room server connection.'));
+      unawaited(_fallBack(generation, 'Lost the room server connection.', why: 'room-socket-lost'));
     }
   }
 
@@ -701,8 +728,10 @@ class RemoteConnection extends RemoteLink {
       case 'remote-welcome':
         _readWelcome(message['data']);
       case 'remote-online':
+        Trail.note('link', 'room server: the PC is online');
         if (!_status.isConnected && _status.phase != LinkPhase.pairing) unawaited(_startPeer(generation));
       case 'remote-offline':
+        Trail.note('link', 'room server: the PC is offline');
         if (!_status.isConnected && _status.phase != LinkPhase.pairing) {
           unawaited(_closePeer());
           _setStatus(const LinkStatus(LinkPhase.waitingForPc, message: "Your PC isn't online"));
@@ -713,11 +742,14 @@ class RemoteConnection extends RemoteLink {
       case 'error':
         final reason = message['text'];
         final text = reason is String && reason.isNotEmpty ? reason : 'The room server refused the connection.';
-        unawaited(_fallBack(generation, text, slow: true));
+        // What the server said stays out of the log: only that it refused.
+        unawaited(_fallBack(generation, text, why: 'room-error', slow: true));
       case 'closed':
         final reason = message['text'];
         if (!_status.isConnected) {
-          unawaited(_fallBack(generation, reason is String && reason.isNotEmpty ? reason : 'The room server closed the connection.'));
+          unawaited(
+            _fallBack(generation, reason is String && reason.isNotEmpty ? reason : 'The room server closed the connection.', why: 'room-closed'),
+          );
         }
     }
   }
@@ -758,7 +790,7 @@ class RemoteConnection extends RemoteLink {
     if (_status.isConnected) {
       _dropSocket(close: true);
     } else {
-      _fail(generation, _lanFailure);
+      _fail(generation, _lanFailure, why: 'home-socket-ended');
     }
   }
 
@@ -808,11 +840,12 @@ class RemoteConnection extends RemoteLink {
     _welcomed = false;
     _pendingLocal.clear();
     _pendingRemote.clear();
+    Trail.note('link', 'offering a link', {'homeNetwork': _viaLan, 'relayOnly': _forceRelay, 'iceServers': _iceServers.length});
     final PeerLink peer;
     try {
       peer = await createPeer(_iceServers, _forceRelay);
     } catch (_) {
-      _fail(generation, "Couldn't set up a connection on this phone.");
+      _fail(generation, "Couldn't set up a connection on this phone.", why: 'peer-setup');
       return;
     }
     if (generation != _generation || _session != session) {
@@ -853,9 +886,10 @@ class RemoteConnection extends RemoteLink {
     peer.onOpen = () {
       if (generation != _generation || _session != session) return;
       _answerTimer?.cancel();
+      Trail.note('link', 'channel open');
       peer.send(jsonEncode({'type': 'hello', 'protocol': 1, 'app': identity.appVersion, 'device': identity.device}));
       _helloTimer = Timer(helloTimeout, () {
-        if (generation == _generation && !_welcomed) _fail(generation, "The PC didn't answer. Try again.");
+        if (generation == _generation && !_welcomed) _fail(generation, "The PC didn't answer. Try again.", why: 'no-welcome');
       });
     };
     peer.onMessage = (text) {
@@ -865,7 +899,7 @@ class RemoteConnection extends RemoteLink {
     };
     peer.onClosed = (reason) {
       if (generation != _generation || _session != session) return;
-      _fail(generation, _status.isConnected ? 'Lost the connection to the PC.' : reason);
+      _fail(generation, _status.isConnected ? 'Lost the connection to the PC.' : reason, why: _status.isConnected ? 'link-closed' : 'link-closed-early');
     };
     try {
       // Making the offer opens the ICE sockets. On the home network they open while the phone is bound to the Wi-Fi, as
@@ -881,7 +915,7 @@ class RemoteConnection extends RemoteLink {
       }
       _pendingLocal.clear();
     } catch (_) {
-      _fail(generation, "Couldn't set up a connection on this phone.");
+      _fail(generation, "Couldn't set up a connection on this phone.", why: 'offer');
       return;
     }
     _answerTimer = Timer(answerTimeout, () {
@@ -892,6 +926,7 @@ class RemoteConnection extends RemoteLink {
           _fail(
             generation,
             "The PC didn't answer this code. Show the code on the PC again, or check that Phone remote is on in BlackPearl's Settings › Profile.",
+            why: 'code-unanswered',
             permanent: true,
             needsPairing: true,
           );
@@ -902,6 +937,7 @@ class RemoteConnection extends RemoteLink {
           _answered
               ? "Couldn't reach the PC directly or through the relay."
               : "Your PC didn't answer. Check that Phone remote is on in BlackPearl's Settings › Profile.",
+          why: _answered ? 'no-route' : 'no-answer',
         );
       }
     });
@@ -926,13 +962,13 @@ class RemoteConnection extends RemoteLink {
       // On the home network anything can be answering at the PC's old address, and the PC sends no hints there: one
       // there is a failed try, never a reason to stop. A phone that was really removed hears so through the room server.
       if (_viaLan) {
-        _fail(generation, _lanFailure);
+        _fail(generation, _lanFailure, why: 'home-rejected');
         return;
       }
       if (signal.payload == 'unknown-phone') {
-        _fail(generation, 'This phone was removed from the PC. Pair it again.', permanent: true, needsPairing: true);
+        _fail(generation, 'This phone was removed from the PC. Pair it again.', why: 'removed', permanent: true, needsPairing: true);
       } else if (signal.payload == 'pairing-expired') {
-        _fail(generation, 'That code has expired', permanent: true, needsPairing: true);
+        _fail(generation, 'That code has expired', why: 'code-expired', permanent: true, needsPairing: true);
       }
       return;
     }
@@ -944,6 +980,7 @@ class RemoteConnection extends RemoteLink {
       if (payload is! Map) return;
       if (signal.kind == 'sdp' && payload['type'] == 'answer' && payload['sdp'] is String && !_answered) {
         _answered = true;
+        Trail.note('link', 'the PC answered the offer');
         unawaited(_applyAnswer(generation, session, peer, payload['sdp'] as String));
       } else if (signal.kind == 'ice' && payload['candidate'] is String) {
         final candidate = payload['candidate'] as String;
@@ -969,7 +1006,7 @@ class RemoteConnection extends RemoteLink {
     try {
       await peer.setAnswer(sdp);
     } catch (_) {
-      if (current()) _fail(generation, "Couldn't connect to the PC.");
+      if (current()) _fail(generation, "Couldn't connect to the PC.", why: 'answer-unusable');
       return;
     }
     if (!current()) return;
@@ -998,6 +1035,7 @@ class RemoteConnection extends RemoteLink {
         final features = message['features'];
         _features = features is List ? features.whereType<String>().toSet() : const {};
         _canStart = message['canStart'] != false;
+        Trail.note('link', 'welcomed', {'features': _features.length, 'ping': _features.contains('ping')});
         // Where the PC listens on its home network. Left out by older PCs, and by one not listening just now: what the
         // phone knew stays.
         if (LanEndpoints.fromJson(message['lan']) case final lan?) {
@@ -1015,7 +1053,7 @@ class RemoteConnection extends RemoteLink {
           _pairTimer?.cancel();
           _pairTimer = Timer(pairTimeout, () {
             if (generation == _generation && _status.phase == LinkPhase.pairing) {
-              _fail(generation, "The PC didn't finish pairing this phone", permanent: true, needsPairing: true);
+              _fail(generation, "The PC didn't finish pairing this phone", why: 'pairing-unfinished', permanent: true, needsPairing: true);
             }
           });
         } else {
@@ -1059,9 +1097,9 @@ class RemoteConnection extends RemoteLink {
         final code = message['code'];
         final text = message['message'] is String && (message['message'] as String).isNotEmpty ? message['message'] as String : null;
         if (code == 'protocol') {
-          _fail(generation, text ?? 'The PC and this phone run different versions of the remote. Update both apps.', permanent: true);
+          _fail(generation, text ?? 'The PC and this phone run different versions of the remote. Update both apps.', why: 'protocol', permanent: true);
         } else if (code == 'pairing') {
-          _fail(generation, text ?? 'That code has expired', permanent: true, needsPairing: true);
+          _fail(generation, text ?? 'That code has expired', why: 'code-expired', permanent: true, needsPairing: true);
         } else if (text != null) {
           _notice.value = null;
           _notice.value = text;
@@ -1071,6 +1109,7 @@ class RemoteConnection extends RemoteLink {
 
   void _connected() {
     if (_viaLan) _lanReset();
+    Trail.note('link', 'connected', {'homeNetwork': _viaLan, 'failuresBefore': _failures});
     _failures = 0;
     _setStatus(LinkStatus(LinkPhase.connected, path: _status.path));
     _checkPath();
@@ -1096,13 +1135,14 @@ class RemoteConnection extends RemoteLink {
     final late = now.difference(_lastLinkCheck) > linkCheckInterval * 2;
     _lastLinkCheck = now;
     if (late) {
+      Trail.note('link', 'link check came late, checking now');
       _awakeSince = now;
       _probeLink();
       return;
     }
     final since = _lastHeard.isAfter(_awakeSince) ? _lastHeard : _awakeSince;
     if (now.difference(since) > linkSilence) {
-      _fail(generation, 'Lost the connection to the PC.');
+      _fail(generation, 'Lost the connection to the PC.', why: 'link-silent');
       return;
     }
     _sendLinkPing();
@@ -1121,7 +1161,7 @@ class RemoteConnection extends RemoteLink {
         _probeLink();
         return;
       }
-      _fail(generation, 'Lost the connection to the PC.');
+      _fail(generation, 'Lost the connection to the PC.', why: 'probe-unanswered');
     });
   }
 
@@ -1137,11 +1177,31 @@ class RemoteConnection extends RemoteLink {
     if (peer == null || !_status.isConnected) return;
     final path = await peer.path();
     if (generation != _generation || !_status.isConnected || path == _status.path) return;
+    Trail.note('link', 'path', {'path': path.name});
     _setStatus(LinkStatus(LinkPhase.connected, path: path));
   }
 
-  void _fail(int generation, String message, {bool permanent = false, bool needsPairing = false, bool slow = false}) {
+  // Failures that say nothing about the app: the phone has no internet, or the user removed it or let a code expire.
+  static const _unreportedFailures = {'room-unreachable', 'removed', 'code-expired'};
+
+  /// How many failures in a row make a report (see [Trail.problem]): the first few retries usually connect.
+  static const reportAfterFailures = 3;
+
+  /// [why] is a fixed code for the log and reports: [message] can hold what the PC or the room server said.
+  void _fail(int generation, String message, {required String why, bool permanent = false, bool needsPairing = false, bool slow = false}) {
     if (generation != _generation) return;
+    Trail.note('link', 'failed', {
+      'why': why,
+      'permanent': permanent,
+      'failures': _failures + 1,
+      'phase': _status.phase.name,
+      'homeNetwork': _viaLan,
+    });
+    // Every failure from the third on, so a streak that began with an unreported one still is; the same reason goes at
+    // most once a half hour (see [Trail.problem]).
+    if (!_unreportedFailures.contains(why) && (permanent || _failures + 1 >= reportAfterFailures)) {
+      Trail.problem('link', why, {'failures': _failures + 1, 'permanent': permanent, 'homeNetwork': _viaLan});
+    }
     _generation++;
     unawaited(_teardown());
     if (permanent) _halted = true;

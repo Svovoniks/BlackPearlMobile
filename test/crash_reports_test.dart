@@ -1,9 +1,17 @@
+import 'dart:io';
+
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/diagnostics/crash_reports.dart';
 import 'package:blackpearl_mobile/diagnostics/report_text.dart';
+import 'package:blackpearl_mobile/diagnostics/trail.dart';
 import 'package:blackpearl_mobile/storage/app_settings.dart';
+import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sentry_flutter/sentry_flutter.dart';
+// ignore: implementation_imports, depend_on_referenced_packages
+import 'package:sentry/src/noop_hub.dart';
+// ignore: implementation_imports, depend_on_referenced_packages
+import 'package:sentry/src/telemetry/span/transaction/sentry_tracer.dart';
 
 void main() {
   group('ReportText', () {
@@ -146,11 +154,24 @@ void main() {
       trace.opened();
     });
 
-    test('the options keep personal data, breadcrumbs, screenshots, replays and logs out', () {
+    test('the options keep personal data, screenshots, replays, logs and all but the app\'s own notes out', () {
       final options = SentryFlutterOptions();
       CrashReports.configure(options, version: '0.8.2');
       expect(options.sendDefaultPii, isFalse);
-      expect(options.maxBreadcrumbs, 0);
+      expect(options.maxBreadcrumbs, 100);
+      expect(options.enableAutoNativeBreadcrumbs, isFalse);
+      expect(options.enableUserInteractionBreadcrumbs, isFalse);
+      expect(options.enablePrintBreadcrumbs, isFalse);
+      Breadcrumb? keep(Breadcrumb crumb) => options.beforeBreadcrumb!(crumb, Hint());
+      final note = Breadcrumb(category: 'link', message: 'connected');
+      Trail.enabled = true;
+      expect(keep(note), same(note));
+      expect(keep(Breadcrumb.http(url: Uri.parse('https://rooms.example.com/remote'), method: 'GET')), isNull);
+      expect(keep(Breadcrumb(category: 'navigation', message: 'Library')), isNull);
+      expect(keep(Breadcrumb(category: 'console', message: 'print')), isNull);
+      expect(keep(Breadcrumb(message: 'no category')), isNull);
+      Trail.enabled = false;
+      expect(keep(note), isNull, reason: 'the log is off');
       expect(options.attachScreenshot, isFalse);
       expect(options.attachViewHierarchy, isFalse);
       expect(options.replay.sessionSampleRate, 0);
@@ -161,6 +182,102 @@ void main() {
       expect(options.environment, 'production');
       expect(options.tracesSampleRate, 0.1);
       expect(options.traceLifecycle, SentryTraceLifecycle.static);
+    });
+
+    test("a report keeps the app's own notes, scrubbed again, and no other breadcrumbs", () {
+      final event = SentryEvent(
+        breadcrumbs: [
+          Breadcrumb(category: 'link', message: 'failed', data: {'why': 'no-answer', 'failures': 3}),
+          // Written by mistake with an address in it: scrubbed as error text is.
+          Breadcrumb(category: 'playback', message: 'opening 10.0.0.5:47811', data: {'from': '/storage/emulated/0/Movies/a.mkv'}),
+          Breadcrumb.http(url: Uri.parse('https://rooms.example.com/remote'), method: 'GET'),
+          Breadcrumb(category: 'navigation', message: 'Some Film (2020)'),
+        ],
+      );
+      final original = event.breadcrumbs![1];
+      final kept = CrashReports.scrubEvent(event).breadcrumbs!;
+      expect(kept.map((c) => c.category), ['link', 'playback']);
+      expect(kept[0].data, {'why': 'no-answer', 'failures': 3});
+      expect(kept[1].message, 'opening <address>');
+      expect(kept[1].data, {'from': '<path>'});
+      expect(kept[1].timestamp, original.timestamp);
+      expect(original.message, 'opening 10.0.0.5:47811', reason: "the scope's own note isn't rewritten");
+    });
+
+    test('a timing carries no notes', () {
+      final transaction = SentryTransaction(SentryTracer(SentryTransactionContext('playback.open', 'playback'), NoOpHub()))
+        ..breadcrumbs = [Breadcrumb(category: 'link', message: 'connected')];
+      expect(CrashReports.scrubTransaction(transaction).breadcrumbs, isNull);
+    });
+
+    test("the Android SDK's network breadcrumbs, which enableAutoNativeBreadcrumbs leaves on, are off", () {
+      final manifest = File('android/app/src/main/AndroidManifest.xml').readAsStringSync();
+      expect(
+        RegExp(r'android:name="io\.sentry\.breadcrumbs\.network-events"\s+android:value="false"').hasMatch(manifest),
+        isTrue,
+      );
+    });
+
+    // Last in the group: from here on CrashReports follows these settings.
+    test("with the app's log off, or crash reports off, reports carry no notes and none are kept", () async {
+      final store = MemorySettingsStore();
+      final settings = AppSettings(store);
+      await settings.load();
+      CrashReports.follow(settings);
+      expect(Trail.enabled, isTrue);
+      SentryEvent withNote() => SentryEvent(breadcrumbs: [Breadcrumb(category: 'link', message: 'connected')]);
+      expect(CrashReports.scrubEvent(withNote()).breadcrumbs, hasLength(1));
+
+      await settings.setAppLog(false);
+      expect(Trail.enabled, isFalse);
+      expect(Trail.keeps(Breadcrumb(category: 'link', message: 'connected')), isFalse);
+      expect(CrashReports.scrubEvent(withNote()).breadcrumbs, isNull);
+
+      await settings.setAppLog(true);
+      expect(Trail.enabled, isTrue);
+
+      final off = AppSettings(MemorySettingsStore());
+      await off.load();
+      await off.setCrashReports(false);
+      CrashReports.follow(off);
+      expect(Trail.enabled, isFalse, reason: 'the log rides on crash reports');
+      Trail.reset();
+    });
+  });
+
+  group('Trail', () {
+    tearDown(Trail.reset);
+
+    test('the same problem is reported once every half hour, and at most 20 in a run of the app', () {
+      fakeAsync((async) {
+        Trail.reset();
+        final reported = Trail.recorded = [];
+        Trail.problem('link', 'no-answer');
+        Trail.problem('link', 'no-answer');
+        expect(reported, hasLength(1));
+        Trail.problem('update', 'installer');
+        expect(reported, hasLength(2));
+        async.elapse(const Duration(minutes: 29));
+        Trail.problem('link', 'no-answer');
+        expect(reported, hasLength(2));
+        async.elapse(const Duration(minutes: 1));
+        Trail.problem('link', 'no-answer');
+        expect(reported, hasLength(3));
+        for (var i = 0; i < 30; i++) {
+          Trail.problem('link', 'other-$i');
+        }
+        expect(reported, hasLength(Trail.problemLimit));
+      });
+    });
+
+    test('opening a video is noted with how, never what', () {
+      final notes = Trail.recorded = [];
+      PlaybackOpenTrace.start(kind: 'episode', network: 'away')
+        ..opened()
+        ..failed();
+      PlaybackOpenTrace.start(kind: 'video', network: 'home').cancelled();
+      expect(notes.map((n) => n.message), ['opening', 'showing', 'opening', 'opening stopped']);
+      expect(notes.first.data, {'kind': 'episode', 'network': 'away'});
     });
   });
 
@@ -173,5 +290,17 @@ void main() {
     final again = AppSettings(store);
     await again.load();
     expect(again.crashReports, isFalse);
+  });
+
+  test("the app's log is on until turned off, and the choice is kept", () async {
+    final store = MemorySettingsStore();
+    final settings = AppSettings(store);
+    await settings.load();
+    expect(settings.appLog, isTrue);
+    await settings.setAppLog(false);
+    final again = AppSettings(store);
+    await again.load();
+    expect(again.appLog, isFalse);
+    expect(again.crashReports, isTrue);
   });
 }
