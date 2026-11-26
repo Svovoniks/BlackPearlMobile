@@ -106,8 +106,9 @@ final secret = hexOf(List.generate(32, (i) => i * 7 % 256));
 final code = hexOf(List.generate(16, (i) => 200 - i));
 
 class Harness {
-  Harness(LinkTarget target) {
+  Harness(LinkTarget target, {Duration linkSilence = const Duration(seconds: 25)}) {
     connection = RemoteConnection(
+      linkSilence: linkSilence,
       target: target,
       identity: const PhoneIdentity(appVersion: '1.2.3', device: 'Test phone'),
       connectSocket: (uri) async {
@@ -724,6 +725,176 @@ void main() {
       expect(second.closed, isFalse);
       expect(h.sockets.single.closed, isFalse);
       h.connection.dispose();
+    });
+  });
+
+  group('checking the link (PHONE-REMOTE.md, "Checking the link")', () {
+    // Links up with a PC whose welcome lists [features].
+    void link(FakeAsync async, Harness h, List<String> features) {
+      h.socket.receive({'type': 'remote-welcome', 'data': '{"iceServers":[]}'});
+      h.socket.receive({'type': 'remote-online'});
+      async.flushMicrotasks();
+      h.pcSignal(secret, phoneId, h.socket.signals().first.session, 'sdp', jsonEncode({'type': 'answer', 'sdp': 'v=0'}));
+      async.flushMicrotasks();
+      h.peer.open();
+      h.peer.receive({'type': 'welcome', 'protocol': 1, 'pc': 'Living room', 'features': features});
+      async.flushMicrotasks();
+    }
+
+    // The failures the link reports from now on.
+    List<String> watchLoss(Harness h) {
+      final lost = <String>[];
+      h.connection.addListener(() {
+        if (h.connection.status.phase == LinkPhase.failed) lost.add(h.connection.status.message ?? '');
+      });
+      return lost;
+    }
+
+    List<Map<String, dynamic>> pings(FakePeer peer) => peer.sent.where((m) => m['type'] == 'ping').toList();
+    void answer(FakePeer peer) {
+      for (final ping in pings(peer)) {
+        peer.receive({'type': 'pong', 'number': ping['number']});
+      }
+      peer.sent.removeWhere((m) => m['type'] == 'ping');
+    }
+
+    test('a PC that answers pings keeps the link; one that goes silent loses it, and the phone connects again', () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget);
+        h.connection.start();
+        async.flushMicrotasks();
+        link(async, h, ['library', 'ping']);
+        expect(h.connection.status.isConnected, isTrue);
+
+        for (var i = 0; i < 12; i++) {
+          async.elapse(const Duration(seconds: 10));
+          expect(pings(h.peer), hasLength(1), reason: 'a ping every 10 seconds');
+          answer(h.peer);
+        }
+        expect(h.connection.status.isConnected, isTrue, reason: 'two minutes of answered pings');
+
+        // The link stops carrying anything; WebRTC still calls it connected.
+        async.elapse(const Duration(seconds: 25));
+        expect(h.connection.status.isConnected, isTrue, reason: 'not before 25 seconds of silence');
+        final lost = watchLoss(h);
+        async.elapse(const Duration(seconds: 4));
+        expect(lost, isEmpty, reason: 'not before the check after 25 seconds of silence');
+        async.elapse(const Duration(seconds: 7));
+        expect(lost, ['Lost the connection to the PC.']);
+        expect(h.peers.first.closed, isTrue);
+        async.elapse(const Duration(seconds: 2));
+        expect(h.sockets, hasLength(2), reason: 'it connects again, as after any lost link');
+        h.connection.dispose();
+      });
+    });
+
+    test("anything from the PC counts, not only pongs", () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget);
+        h.connection.start();
+        async.flushMicrotasks();
+        link(async, h, ['ping']);
+        for (var i = 0; i < 10; i++) {
+          async.elapse(const Duration(seconds: 10));
+          h.peer.receive({'type': 'state', 'media': false});
+        }
+        expect(h.connection.status.isConnected, isTrue);
+        h.connection.dispose();
+      });
+    });
+
+    test("a PC from before pings is never pinged, and its silence never ends the link", () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget);
+        h.connection.start();
+        async.flushMicrotasks();
+        link(async, h, ['library']);
+        async.elapse(const Duration(minutes: 10));
+        expect(pings(h.peer), isEmpty);
+        expect(h.connection.status.isConnected, isTrue);
+        unawaited(h.connection.ask('browse', const {}).catchError((Object _) => <String, dynamic>{}));
+        async.elapse(const Duration(seconds: 30));
+        expect(pings(h.peer), isEmpty, reason: 'a request that times out sends no ping either');
+        expect(h.connection.status.isConnected, isTrue);
+        h.connection.dispose();
+      });
+    });
+
+    test('a request that times out checks the link at once', () {
+      fakeAsync((async) {
+        // Silence alone would take ten minutes here: the request's check is what finds the lost link.
+        final h = Harness(pairedTarget, linkSilence: const Duration(minutes: 10));
+        h.connection.start();
+        async.flushMicrotasks();
+        link(async, h, ['ping']);
+        Object? error;
+        unawaited(h.connection.ask('browse', const {}).catchError((Object e) {
+          error = e;
+          return <String, dynamic>{};
+        }));
+        async.elapse(const Duration(seconds: 20));
+        expect((error as RemoteRequestException?)?.code, 'timeout');
+        expect(pings(h.peer), isNotEmpty);
+        expect(h.connection.status.isConnected, isTrue);
+        final lost = watchLoss(h);
+        async.elapse(const Duration(seconds: 9));
+        expect(lost, ['Lost the connection to the PC.']);
+        h.connection.dispose();
+      });
+    });
+
+    test('a request that times out on a live link keeps it', () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget, linkSilence: const Duration(minutes: 10));
+        h.connection.start();
+        async.flushMicrotasks();
+        link(async, h, ['ping']);
+        unawaited(h.connection.ask('browse', const {}).catchError((Object _) => <String, dynamic>{}));
+        async.elapse(const Duration(seconds: 20, milliseconds: 1));
+        answer(h.peer);
+        async.elapse(const Duration(seconds: 10));
+        expect(h.connection.status.isConnected, isTrue);
+        h.connection.dispose();
+      });
+    });
+
+    test('coming back to the app checks the link at once', () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget, linkSilence: const Duration(minutes: 10));
+        h.connection.start();
+        async.flushMicrotasks();
+        link(async, h, ['ping']);
+        final lost = watchLoss(h);
+        h.connection.resume();
+        expect(pings(h.peer), hasLength(1));
+        async.elapse(const Duration(seconds: 7));
+        expect(lost, isEmpty, reason: 'the PC has 8 seconds to answer');
+        async.elapse(const Duration(seconds: 2));
+        expect(lost, ['Lost the connection to the PC.']);
+        h.connection.dispose();
+      });
+    });
+
+    test("silence while the app was frozen isn't taken for a lost link; the phone checks at once instead", () {
+      fakeAsync((async) {
+        final h = Harness(pairedTarget);
+        h.connection.start();
+        async.flushMicrotasks();
+        link(async, h, ['ping']);
+        async.elapse(const Duration(seconds: 10));
+        answer(h.peer);
+        // Frozen for five minutes: no timer runs, though time goes on.
+        async.elapseBlocking(const Duration(minutes: 5));
+        async.elapse(const Duration(seconds: 1));
+        expect(h.connection.status.isConnected, isTrue, reason: 'the late check probes rather than judges');
+        expect(pings(h.peer), isNotEmpty);
+        for (var i = 0; i < 4; i++) {
+          answer(h.peer);
+          async.elapse(const Duration(seconds: 10));
+        }
+        expect(h.connection.status.isConnected, isTrue, reason: 'a PC that answers keeps the link after the app wakes');
+        h.connection.dispose();
+      });
     });
   });
 }

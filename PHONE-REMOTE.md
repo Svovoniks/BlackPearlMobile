@@ -121,9 +121,9 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 ### Opening
 
 1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>"}`
-2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","unwatched","mark-watched","shuffle","tracks","sound"]}`.
-   `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"); a PC from
-   before them sends none. A PC that listens for phones on the home network adds where:
+2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","unwatched","mark-watched","shuffle","tracks","sound","ping"]}`.
+   `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"), and `ping`
+   when it answers pings (see "Checking the link"); a PC from before them sends none. A PC that listens for phones on the home network adds where:
    `"lan":{"port":47830,"addresses":["192.168.1.20"]}` (see "On the home network").
    If the PC can't speak the phone's protocol it sends `{"type":"error","code":"protocol","message":"…"}` saying which
    app to update, and closes.
@@ -192,6 +192,20 @@ paired link) and `protocol`.
 Commands go through the same code as the PC's keys and buttons, so a room's shared-controls rule applies to them
 the same way. With `canControl` false, every action except `volume`, `mute` and `fullscreen` is refused with
 `not-allowed`: those three change only this PC. The track actions follow `canChangeTracks` instead.
+
+### Checking the link
+
+WebRTC can go on calling a link connected after it stopped carrying anything: both ends then wait for each other
+forever, and the phone's requests only time out. So a phone checks the link itself with PCs whose welcome lists
+`ping`: it sends `{"type":"ping","number":n}` on this channel every 10 seconds, and the PC answers at once with
+`{"type":"pong","number":n}`. A phone that has heard nothing at all from the PC for 25 seconds while its own timers
+kept running (it wasn't frozen in the background) takes the link as lost and connects again, as after any lost link.
+A request that times out, or the app coming back to the foreground, sends a ping at once, and the link is lost if
+nothing comes back within 8 seconds.
+
+The PC closes the session of a phone that has pinged once and then sent nothing for 60 seconds, as a lost link
+(`remote-session-closed` with reason `silent`). Phones that never ping keep their session however long they are
+quiet.
 
 ### Tracks
 
@@ -538,6 +552,6 @@ session and a phone by the first 8 characters of their random ids, and never hol
 | `remote-session-state` | The connection's state changes, with the candidates gathered on each side by type, and `direct` or `relay` once connected |
 | `remote-session-channel`, `remote-session-greeted`, `remote-session-paired` | The data channel opens, the phone's `hello` is accepted (with its app version), pairing completes |
 | `remote-session-refused` | `protocol` (with the phone's protocol), `pairing-expired`, `already-paired` |
-| `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`), its age, its path, and `via` |
+| `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`, `silent`), its age, its path, and `via` |
 | `remote-lan` | The home-network listener: `started` (its port, whether it moved from the one it tried first, `any` or `loopback`, how many addresses it gives phones), `waiting` (for the other BlackPearl process to let go of the port), `busy` (every port taken), `stopped`; `opened` and `closed` for each connection (a short random id, the reason, whether it proved itself); `refused`, once per reason a minute (`too-many-connections`, `too-many-from-address`, `bad-request`, `wrong-pc`, `protocol`, `too-large`, `rate`, `unproven`), with `evicted` and `superseded` among the reasons connections close; `port-not-saved` when the port couldn't be remembered; and `firewall` when what Windows Firewall decided changes (`allowed`, `off`, `blocked`, `undecided`, `unknown`, the network's category, and other firewalls Windows lists). No addresses. |
 | `phone-read-failed`, `phone-resource-missing` | A read on `media-v1` failed, with the kind of resource; and why the PC had nothing for it (`no-video`, `other-video`, `not-converted`, `other-stream`, `no-such-piece`, `no-such-sound-piece`, `unknown-picture`, `missing-file`, `unreadable:<error>`, `malformed`) |
