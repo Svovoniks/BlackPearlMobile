@@ -13,10 +13,11 @@ import 'library_screen.dart';
 import 'mini_remote_bar.dart';
 import 'player_screen.dart';
 import 'remote_screen.dart';
+import 'search_screen.dart';
 import 'settings_screen.dart';
 import 'theme.dart';
 
-/// The app once a PC is chosen: Remote, Library and Settings tabs.
+/// The app once a PC is chosen: Remote, Library, Search and Settings tabs.
 class HomeShell extends StatefulWidget {
   const HomeShell({
     super.key,
@@ -42,7 +43,7 @@ class HomeShell extends StatefulWidget {
   /// Every tab chosen, so the app can come back to it.
   final ValueChanged<int>? onTabChanged;
 
-  static const remoteTab = 0, libraryTab = 1, settingsTab = 2;
+  static const remoteTab = 0, libraryTab = 1, searchTab = 2, settingsTab = 3;
 
   @override
   State<HomeShell> createState() => _HomeShellState();
@@ -78,10 +79,14 @@ class _HomeShellState extends State<HomeShell> {
   /// Bumped when the Library tab is tapped while it shows: its list goes back to the top.
   final ValueNotifier<int> _libraryTop = ValueNotifier(0);
 
+  /// Bumped when the Search tab is tapped: its field takes the keyboard.
+  final ValueNotifier<int> _searchChosen = ValueNotifier(0);
+
   @override
   void dispose() {
     _playbackChanged.dispose();
     _libraryTop.dispose();
+    _searchChosen.dispose();
     super.dispose();
   }
 
@@ -189,18 +194,16 @@ class _HomeShellState extends State<HomeShell> {
         link: link,
         actions: _actions,
         changed: _playbackChanged,
-        active: _tab == HomeShell.libraryTab,
         toTop: _libraryTop,
-        onBack: _back,
       ),
+      SearchScreen(link: link, actions: _actions, changed: _playbackChanged, chosen: _searchChosen, active: _tab == HomeShell.searchTab),
       SettingsScreen(model: widget.model, link: link, onChoosePc: widget.onChoosePc, updater: widget.updater),
     ];
-    // The system's Back goes back to the tab shown before rather than closing the app; only the Remote's closes it. The
-    // Library takes its own Back, which closes its search first.
+    // The system's Back goes back to the tab shown before rather than closing the app; only the Remote's closes it.
     return PopScope(
       canPop: _tab == HomeShell.remoteTab,
       onPopInvokedWithResult: (didPop, _) {
-        if (!didPop && _tab == HomeShell.settingsTab) _back();
+        if (!didPop) _back();
       },
       child: Scaffold(
         body: IndexedStack(index: _tab, children: tabs),
@@ -213,6 +216,7 @@ class _HomeShellState extends State<HomeShell> {
               index: _tab,
               onSelect: (index) {
                 if (index == _tab && index == HomeShell.libraryTab) _libraryTop.value++;
+                if (index == HomeShell.searchTab) _searchChosen.value++;
                 _showTab(index);
               },
             ),
@@ -232,6 +236,7 @@ class AppTabBar extends StatelessWidget {
   static const _tabs = [
     (Icons.settings_remote_outlined, Icons.settings_remote, 'Remote'),
     (Icons.video_library_outlined, Icons.video_library, 'Library'),
+    (Icons.search_rounded, Icons.search_rounded, 'Search'),
     (Icons.tune_outlined, Icons.tune, 'Settings'),
   ];
 
@@ -263,9 +268,14 @@ class AppTabBar extends StatelessWidget {
                         children: [
                           Icon(i == index ? _tabs[i].$2 : _tabs[i].$1, color: i == index ? Palette.accent : Palette.muted, size: 22),
                           const SizedBox(height: 3),
-                          Text(
-                            _tabs[i].$3,
-                            style: TextStyle(color: i == index ? Palette.accent : Palette.muted, fontSize: 11.5, fontWeight: FontWeight.w600),
+                          // Four tabs share a narrow phone: a label too long at large text shrinks rather than breaks.
+                          FittedBox(
+                            fit: BoxFit.scaleDown,
+                            child: Text(
+                              _tabs[i].$3,
+                              maxLines: 1,
+                              style: TextStyle(color: i == index ? Palette.accent : Palette.muted, fontSize: 11.5, fontWeight: FontWeight.w600),
+                            ),
                           ),
                         ],
                       ),

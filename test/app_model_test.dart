@@ -268,6 +268,12 @@ void main() {
       expect(await back(tester), isTrue, reason: 'the app stays open');
       expect(shownTab(tester), HomeShell.remoteTab);
 
+      await tester.tap(tab('Search'));
+      await tester.pump();
+      expect(shownTab(tester), HomeShell.searchTab);
+      expect(await back(tester), isTrue, reason: 'the app stays open');
+      expect(shownTab(tester), HomeShell.remoteTab);
+
       expect(await back(tester), isFalse, reason: "the Remote's Back closes the app");
       app.model.dispose();
     });
