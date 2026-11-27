@@ -746,6 +746,10 @@ class _SectionMenu extends PopupRoute<_Section> {
   final List<_Section> sections;
   final _Section current;
 
+  /// Room beside and under the ladder for the lit pebbles' shadows (14 blur, 4 down), which the scroll view would clip
+  /// once the sections don't all fit.
+  static const _shadowRoom = EdgeInsets.fromLTRB(14, 0, 14, 18);
+
   @override
   Color? get barrierColor => const Color(0xB3000000);
 
@@ -803,21 +807,29 @@ class _SectionMenu extends PopupRoute<_Section> {
             // The button stays where it was, above the dimming, and closes the menu. It is the ladder's bottom rung and
             // widens to it as the menu opens. On a screen too short for them all, the sections scroll under it.
             Positioned(
-              right: size.width - anchor.right,
-              bottom: size.height - anchor.bottom,
+              right: size.width - anchor.right - _shadowRoom.right,
+              bottom: size.height - anchor.bottom - _shadowRoom.bottom,
               child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: math.max(0, anchor.right - 16), maxHeight: math.max(0, anchor.bottom - MediaQuery.paddingOf(context).top - 6)),
+                constraints: BoxConstraints(
+                  maxWidth: math.max(0, anchor.right - 16 + _shadowRoom.horizontal),
+                  maxHeight: math.max(0, anchor.bottom - MediaQuery.paddingOf(context).top - 6 + _shadowRoom.bottom),
+                ),
                 child: SingleChildScrollView(
                   reverse: true,
-                  child: SectionLadder(
-                    grow: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
-                    children: [
-                      for (final (index, section) in sections.indexed) item(index, section),
-                      SizedBox(
-                        height: anchor.height,
-                        child: SectionButton(label: current.label, icon: current.icon, open: true, onTap: () => Navigator.of(context).pop()),
-                      ),
-                    ],
+                  // Taps beside the narrower sections, and in the room kept for shadows, reach the dimming that closes the menu.
+                  hitTestBehavior: HitTestBehavior.deferToChild,
+                  child: Padding(
+                    padding: _shadowRoom,
+                    child: SectionLadder(
+                      grow: animation,
+                      children: [
+                        for (final (index, section) in sections.indexed) item(index, section),
+                        SizedBox(
+                          height: anchor.height,
+                          child: SectionButton(label: current.label, icon: current.icon, open: true, onTap: () => Navigator.of(context).pop()),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -835,7 +847,7 @@ class _SectionMenu extends PopupRoute<_Section> {
 class SectionLadder extends MultiChildRenderObjectWidget {
   const SectionLadder({super.key, required this.grow, this.step = 16, required super.children});
 
-  /// How far the last rung has widened, from its own width (0) to its place in the ladder (1).
+  /// How far the last rung has widened, from its own width (0) to its place in the ladder (1), eased out.
   final Animation<double> grow;
   final double step;
 
@@ -923,7 +935,7 @@ class RenderSectionLadder extends RenderBox with ContainerRenderObjectMixin<Rend
     return [
       for (var i = 0; i < last; i++) widest - (last - i) * step,
       // The button widens from its own width as the menu opens.
-      math.min(maxWidth, needed[last] + (widest - needed[last]) * _grow.value),
+      math.min(maxWidth, needed[last] + (widest - needed[last]) * Curves.easeOutCubic.transform(_grow.value)),
     ];
   }
 
@@ -938,6 +950,18 @@ class RenderSectionLadder extends RenderBox with ContainerRenderObjectMixin<Rend
 
   @override
   double computeMaxIntrinsicHeight(double width) => _children.fold(0.0, (sum, child) => sum + child.getMaxIntrinsicHeight(width));
+
+  @override
+  Size computeDryLayout(BoxConstraints constraints) {
+    final children = _children;
+    final rungs = _widths(children, constraints.maxWidth);
+    final width = constraints.constrainWidth(rungs.fold(0.0, math.max));
+    var height = 0.0;
+    for (final (index, child) in children.indexed) {
+      height += child.getDryLayout(BoxConstraints.tightFor(width: math.max(0, math.min(rungs[index], width)))).height;
+    }
+    return constraints.constrain(Size(width, height));
+  }
 
   @override
   void performLayout() {

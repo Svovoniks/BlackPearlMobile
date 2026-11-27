@@ -167,6 +167,16 @@ void main() {
       expect(tester.getRect(find.byType(SectionButton)), closed);
     });
 
+    testWidgets('a tap beside a narrower section, over the wider button, closes the menu', (tester) async {
+      final (ladder, closed) = await open(tester, size: const Size(400, 860));
+      final beside = Offset(ladder.first.left - 30, ladder.first.center.dy);
+      expect(beside.dx, greaterThan(ladder.last.left), reason: 'within the widest rung');
+      await tester.tapAt(beside);
+      await tester.pumpAndSettle();
+      expect(find.byType(SectionLadder), findsNothing);
+      expect(tester.getRect(find.byType(SectionButton)), closed);
+    });
+
     testWidgets('on a narrow phone with large text, the steps shrink to fit and the labels stay whole', (tester) async {
       final (ladder, _) = await open(tester, size: const Size(300, 640), textScale: 2.2);
       expect(ladder.first.left, greaterThanOrEqualTo(16));
