@@ -211,6 +211,15 @@ void main() {
       expect(queues.bottom, greaterThan(closed.bottom), reason: 'laid out past the button: the case to clip');
       final clips = tester.layers.whereType<ClipRectLayer>().map((layer) => ladder.localToGlobal(Offset(0, layer.clipRect!.bottom)).dy);
       expect(clips, contains(moreOrLessEquals(closed.bottom)), reason: 'the sections end at the button\'s bottom');
+
+      // Nor can it be tapped there: a tap just under the button closes the menu and keeps the section.
+      final under = Offset(closed.center.dx, closed.bottom + 8);
+      expect(queues.contains(under), isTrue, reason: 'a hidden section is laid out there');
+      expect(under.dy, lessThan(250));
+      await tester.tapAt(under);
+      await tester.pumpAndSettle();
+      expect(find.byType(SectionLadder), findsNothing);
+      expect(find.bySemanticsLabel('Section: Home. Choose another'), findsOneWidget);
     });
   });
 

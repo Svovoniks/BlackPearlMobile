@@ -987,8 +987,12 @@ class RenderSectionLadder extends RenderBox with ContainerRenderObjectMixin<Rend
 
   @override
   bool hitTestChildren(BoxHitTestResult result, {required Offset position}) {
-    // Top-most first: the button is drawn over the sections that scroll under it.
+    // Top-most first: the button is drawn over the sections that scroll under it. Below it, where they are clipped
+    // (paint), nothing is hit: a tap there reaches the dimming.
+    final button = lastChild;
+    final buttonBottom = button == null ? 0.0 : _drawnAt(button).dy + button.size.height;
     for (var child = lastChild; child != null; child = childBefore(child)) {
+      if (child != button && buttonBottom < size.height && position.dy >= buttonBottom) continue;
       final at = _drawnAt(child);
       if (result.addWithPaintOffset(offset: at, position: position, hitTest: (result, transformed) => child!.hitTest(result, position: transformed))) return true;
     }
