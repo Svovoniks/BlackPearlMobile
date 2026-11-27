@@ -203,7 +203,8 @@ forever, and the phone's requests only time out. So a phone checks the link itse
 `{"type":"pong","number":n}`. A phone that has heard nothing at all from the PC for 25 seconds while its own timers
 kept running (it wasn't frozen in the background) takes the link as lost and connects again, as after any lost link.
 A request that times out, or the app coming back to the foreground, sends a ping at once, and the link is lost if
-nothing comes back within 8 seconds.
+nothing comes back within 8 seconds. The PC's own pings (see "Measuring the link") don't count as hearing from it, for
+either wait: they arrive whether or not the phone's messages reach the PC.
 
 Only the phone judges the link by pings. The PC never closes a session for silence: a locked phone's timers stop
 while it sleeps, so its pings stop too, and its link must stay for the lock screen's controls. The phone also pings
