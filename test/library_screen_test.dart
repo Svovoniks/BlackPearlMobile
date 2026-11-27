@@ -5,10 +5,12 @@ import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/protocol/library.dart';
 import 'package:blackpearl_mobile/protocol/remote_state.dart';
 import 'package:blackpearl_mobile/ui/library_screen.dart';
+import 'package:blackpearl_mobile/ui/pebbles.dart';
 import 'package:blackpearl_mobile/ui/queue_widgets.dart';
 import 'package:blackpearl_mobile/ui/remote_screen.dart';
 import 'package:blackpearl_mobile/ui/search_screen.dart';
 import 'package:blackpearl_mobile/ui/theme.dart';
+import 'package:flutter/rendering.dart' show ClipRectLayer, RenderParagraph;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -118,6 +120,107 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(QueuesView), findsOneWidget);
     expect(link.asked.length, greaterThan(asked));
+  });
+
+  group('the open sections stand as a ladder', () {
+    /// The menu's pebbles, top first, the section button last.
+    List<Rect> rungs(WidgetTester tester) =>
+        tester.widgetList(find.descendant(of: find.byType(SectionLadder), matching: find.byType(Pebble))).map((pebble) => tester.getRect(find.byWidget(pebble))).toList();
+
+    Future<(List<Rect>, Rect)> open(WidgetTester tester, {required Size size, double textScale = 1}) async {
+      tester.view.physicalSize = size * 2;
+      tester.view.devicePixelRatio = 2;
+      tester.platformDispatcher.textScaleFactorTestValue = textScale;
+      addTearDown(tester.view.reset);
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+      await pumpLibrary(tester, features: const {'library', 'watch', 'queues'});
+      final closed = tester.getRect(find.byType(SectionButton));
+      await tester.tap(find.byType(SectionButton));
+      await tester.pumpAndSettle();
+      return (rungs(tester), closed);
+    }
+
+    void expectLabelsWhole(WidgetTester tester) {
+      for (final label in ['Home', 'Films', 'Shows', 'Anime', 'Queues']) {
+        final paragraph = tester.renderObject<RenderParagraph>(find.descendant(of: find.byType(SectionLadder), matching: find.text(label)).first);
+        expect(paragraph.didExceedMaxLines, isFalse, reason: '$label is cut short');
+      }
+    }
+
+    testWidgets('each a step wider than the one above it, the section button widest and where it was', (tester) async {
+      final (ladder, closed) = await open(tester, size: const Size(400, 860));
+      expect(ladder, hasLength(6));
+      for (final rung in ladder) {
+        expect(rung.right, moreOrLessEquals(closed.right), reason: 'the rungs share their right edge');
+      }
+      for (var i = 1; i < ladder.length; i++) {
+        expect(ladder[i].width - ladder[i - 1].width, moreOrLessEquals(16), reason: 'rung $i');
+      }
+      expect(ladder.last.bottom, moreOrLessEquals(closed.bottom));
+      expect(ladder.last.height, moreOrLessEquals(closed.height));
+      expect(ladder.last.width, greaterThan(closed.width), reason: 'the open button widens to its rung');
+      expectLabelsWhole(tester);
+
+      // Closing it gives the button back its own width.
+      await tester.tap(find.descendant(of: find.byType(SectionLadder), matching: find.byType(SectionButton)));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.byType(SectionButton)), closed);
+    });
+
+    testWidgets('a tap beside a narrower section, over the wider button, closes the menu', (tester) async {
+      final (ladder, closed) = await open(tester, size: const Size(400, 860));
+      final beside = Offset(ladder.first.left - 30, ladder.first.center.dy);
+      expect(beside.dx, greaterThan(ladder.last.left), reason: 'within the widest rung');
+      await tester.tapAt(beside);
+      await tester.pumpAndSettle();
+      expect(find.byType(SectionLadder), findsNothing);
+      expect(tester.getRect(find.byType(SectionButton)), closed);
+    });
+
+    testWidgets('on a narrow phone with large text, the steps shrink to fit and the labels stay whole', (tester) async {
+      final (ladder, _) = await open(tester, size: const Size(300, 640), textScale: 2.2);
+      expect(ladder.first.left, greaterThanOrEqualTo(16));
+      final steps = [for (var i = 1; i < ladder.length; i++) ladder[i].width - ladder[i - 1].width];
+      for (final step in steps) {
+        expect(step, moreOrLessEquals(steps.first), reason: 'even steps: $steps');
+      }
+      expect(steps.first, lessThan(16));
+      expectLabelsWhole(tester);
+    });
+
+    testWidgets('on a screen too short for them, the sections scroll under the button, which stays and closes the menu', (tester) async {
+      final (ladder, closed) = await open(tester, size: const Size(800, 300));
+      final button = find.descendant(of: find.byType(SectionLadder), matching: find.byType(SectionButton));
+      expect(ladder.first.top, lessThan(0), reason: 'the top section starts scrolled out of sight');
+      await tester.drag(find.descendant(of: find.byType(SectionLadder), matching: find.text('Anime')), const Offset(0, 300));
+      await tester.pumpAndSettle();
+      expect(tester.getRect(find.descendant(of: find.byType(SectionLadder), matching: find.text('Home')).first).top, greaterThan(0));
+      expect(tester.getRect(button).bottom, moreOrLessEquals(closed.bottom));
+      expect(tester.getRect(button).right, moreOrLessEquals(closed.right));
+      await tester.tap(button);
+      await tester.pumpAndSettle();
+      expect(find.byType(SectionLadder), findsNothing);
+    });
+
+    testWidgets('scrolled far under the button, no section shows again below it', (tester) async {
+      final (_, closed) = await open(tester, size: const Size(800, 250));
+      await tester.drag(find.descendant(of: find.byType(SectionLadder), matching: find.text('Anime')), const Offset(0, 300));
+      await tester.pumpAndSettle();
+      final ladder = tester.renderObject<RenderBox>(find.byType(SectionLadder));
+      final queues = tester.getRect(find.ancestor(of: find.descendant(of: find.byType(SectionLadder), matching: find.text('Queues')), matching: find.byType(Pebble)).first);
+      expect(queues.bottom, greaterThan(closed.bottom), reason: 'laid out past the button: the case to clip');
+      final clips = tester.layers.whereType<ClipRectLayer>().map((layer) => ladder.localToGlobal(Offset(0, layer.clipRect!.bottom)).dy);
+      expect(clips, contains(moreOrLessEquals(closed.bottom)), reason: 'the sections end at the button\'s bottom');
+
+      // Nor can it be tapped there: a tap just under the button closes the menu and keeps the section.
+      final under = Offset(closed.center.dx, closed.bottom + 8);
+      expect(queues.contains(under), isTrue, reason: 'a hidden section is laid out there');
+      expect(under.dy, lessThan(250));
+      await tester.tapAt(under);
+      await tester.pumpAndSettle();
+      expect(find.byType(SectionLadder), findsNothing);
+      expect(find.bySemanticsLabel('Section: Home. Choose another'), findsOneWidget);
+    });
   });
 
   testWidgets('the section button steps aside while the list scrolls down, and is back at the top and on a short list', (tester) async {
