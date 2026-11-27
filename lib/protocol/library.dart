@@ -244,6 +244,7 @@ class StreamInfo {
     this.quality = 'original',
     this.qualities = const ['original'],
     this.note,
+    this.convertible = false,
     this.previous,
     this.next,
     this.first,
@@ -279,6 +280,10 @@ class StreamInfo {
   final List<String> qualities;
   final String? note;
 
+  /// The file itself, sent in place of the conversion asked for only because the file is already as small as the
+  /// conversion would be ([note] says so): asked again with `convertAnyway`, the PC converts it. Older PCs never say.
+  final bool convertible;
+
   /// For an episode: what the PC's Previous and Next would play, and the show's first episode, where Loop all starts
   /// again after the last one. Null for a film, at either end, and from PCs that don't say.
   final EpisodeStep? previous, next, first;
@@ -313,6 +318,7 @@ class StreamInfo {
       quality: text('quality') ?? 'original',
       qualities: qualities is List ? qualities.whereType<String>().toList() : const ['original'],
       note: text('note'),
+      convertible: !hls && json['convertible'] == true,
       previous: EpisodeStep.fromJson(json['previous']),
       next: EpisodeStep.fromJson(json['next']),
       first: EpisodeStep.fromJson(json['first']),

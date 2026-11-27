@@ -279,7 +279,7 @@ back.
 
 ### Watching on the phone
 
-Phone → PC: `{"type":"watch","request":<n>,"id":"<entry id>","quality":"auto|original|1080p|720p|480p","network":"home|away|relayed","takeOver":false,"audio":null}`.
+Phone → PC: `{"type":"watch","request":<n>,"id":"<entry id>","quality":"auto|original|1080p|720p|480p","network":"home|away|relayed","takeOver":false,"audio":null,"convertAnyway":false}`.
 `auto` plays the file itself on the home network and a 720p conversion elsewhere. `takeOver` true, for the video in
 the PC's `mediaId`, makes the PC save where it is and close its player, so the phone continues it. Nothing is left
 loaded on the PC for its Play, a media key or the remote's `play` to start again; the PC's empty player says the video
@@ -290,7 +290,7 @@ PC → phone, for the file itself:
 ```json
 {"type":"stream","request":3,"id":"…","title":"Night Signal","detail":"Season 2 · Episode 3","positionMs":1122000,
  "durationMs":2830000,"kind":"file","resource":"file/<id>","length":1834567890,"extension":".mkv",
- "quality":"original","qualities":["original","1080p","720p","480p"],"note":null}
+ "quality":"original","qualities":["original","1080p","720p","480p"],"note":null,"convertible":false}
 ```
 
 or for a conversion (H.264 and AAC in MPEG-TS pieces of `segmentMs`, the last one shorter):
@@ -319,7 +319,10 @@ Settings › Playback, as two-letter language codes in priority order: `"tracks"
 means no subtitles. The phone picks its starting tracks with them as the PC would. Older PCs send none of these.
 
 `positionMs` is where to start: the PC's saved position, 0 for a watched video. `note` says why the phone got the
-file when it asked for a conversion (no converter, or a file already smaller). The PC keeps one stream per phone; a
+file when it asked for a conversion (no converter, or a file already smaller). `convertible` is true when the only
+reason was a file already as small as the conversion would be: the same `watch` with `"convertAnyway":true` converts
+it anyway, which saves no data but gives a phone that can't play the file itself the PC's H.264 (from 0.3.167; older
+PCs leave both out). The phone asks first, when its user picked that quality. The PC keeps one stream per phone; a
 new `watch` replaces it and `{"type":"stream-stop"}` ends it. A failure is an `error` with the `request` and the code
 `gone` (not in the library, or its drive is disconnected).
 

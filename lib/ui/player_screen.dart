@@ -13,6 +13,7 @@ import '../playback/track_languages.dart';
 import '../playback/video_shape.dart';
 import '../protocol/library.dart' show qualityLabel;
 import '../storage/app_settings.dart';
+import 'app_prompts.dart' show confirmConvertAnyway;
 import 'pebbles.dart';
 import 'player_dock.dart';
 import 'player_options.dart';
@@ -75,6 +76,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     playback.shuffle = widget.settings?.shuffle ?? playback.shuffle;
     playback.addListener(_changed);
     playback.notice.addListener(_notice);
+    playback.convertOffer.addListener(_convertOffered);
     playback.pending.addListener(_rebuild);
     playback.upNext.addListener(_upNextChanged);
     widget.settings?.addListener(_syncShape);
@@ -114,6 +116,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     unawaited(pip.release());
     playback.removeListener(_changed);
     playback.notice.removeListener(_notice);
+    playback.convertOffer.removeListener(_convertOffered);
     playback.pending.removeListener(_rebuild);
     playback.upNext.removeListener(_upNextChanged);
     widget.settings?.removeListener(_syncShape);
@@ -177,7 +180,8 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     final note = playback.stream?.note;
     if (note != null && note != _noteShown) {
       _noteShown = note;
-      WidgetsBinding.instance.addPostFrameCallback((_) => _say(note));
+      // A conversion declined for a quality picked here asks instead (_convertOffered), saying the same.
+      if (playback.convertOffer.value == null) WidgetsBinding.instance.addPostFrameCallback((_) => _say(note));
     }
     if (mounted) setState(() {});
   }
@@ -236,6 +240,26 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     _syncPip();
     unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky));
     if (_orientations.isNotEmpty) unawaited(SystemChrome.setPreferredOrientations(_orientations));
+  }
+
+  bool _askingConvert = false;
+
+  // The PC played the file for the quality picked, as it is already as small: ask whether to convert it anyway.
+  void _convertOffered() {
+    final offer = playback.convertOffer.value;
+    if (offer == null || _askingConvert || !mounted) return;
+    _askingConvert = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final convert = mounted && await confirmConvertAnyway(context, qualityLabel(offer.quality), offer: playback.convertOffer);
+      _askingConvert = false;
+      // Another stream opened meanwhile, which ended the offer.
+      if (!mounted || !identical(playback.convertOffer.value, offer)) return;
+      if (convert) {
+        unawaited(playback.convertAnyway(offer.quality));
+      } else {
+        playback.convertOffer.value = null;
+      }
+    });
   }
 
   void _notice() {
