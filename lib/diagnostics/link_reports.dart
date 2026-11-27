@@ -175,7 +175,8 @@ class LinkStats {
       unanswered: _unanswered,
       rttMedian: percentile(_rtts, 0.5),
       rttP90: percentile(_rtts, 0.9),
-      rttMax: _rtts.isEmpty ? null : _rtts.reduce((a, b) => a > b ? a : b),
+      // Rounded as the percentiles are, so the 90th percentile of a few samples (their largest) never comes out above it.
+      rttMax: percentile(_rtts, 1),
       media: media,
     );
     _rtts.clear();
