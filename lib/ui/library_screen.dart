@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
-import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -774,7 +774,8 @@ class _SectionMenu extends PopupRoute<_Section> {
             child: SlideTransition(
               position: Tween(begin: const Offset(0, 0.4), end: Offset.zero).animate(shown),
               child: Padding(
-                padding: const EdgeInsets.only(top: 10),
+                // The last one is 6 above the button, the others 10 apart.
+                padding: EdgeInsets.only(bottom: index == sections.length - 1 ? 6 : 10),
                 child: Pebble(
                   height: 48,
                   lit: identical(section, current),
@@ -799,33 +800,189 @@ class _SectionMenu extends PopupRoute<_Section> {
 
         return Stack(
           children: [
+            // The button stays where it was, above the dimming, and closes the menu. It is the ladder's bottom rung and
+            // widens to it as the menu opens. On a screen too short for them all, the sections scroll under it.
             Positioned(
               right: size.width - anchor.right,
-              bottom: size.height - anchor.top + 6,
+              bottom: size.height - anchor.bottom,
               child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: math.max(0, anchor.right - 16), maxHeight: math.max(0, anchor.top - MediaQuery.paddingOf(context).top - 6)),
+                constraints: BoxConstraints(maxWidth: math.max(0, anchor.right - 16), maxHeight: math.max(0, anchor.bottom - MediaQuery.paddingOf(context).top - 6)),
                 child: SingleChildScrollView(
                   reverse: true,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [for (final (index, section) in sections.indexed) item(index, section)],
+                  child: SectionLadder(
+                    grow: CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+                    children: [
+                      for (final (index, section) in sections.indexed) item(index, section),
+                      SizedBox(
+                        height: anchor.height,
+                        child: SectionButton(label: current.label, icon: current.icon, open: true, onTap: () => Navigator.of(context).pop()),
+                      ),
+                    ],
                   ),
                 ),
               ),
-            ),
-            // The button stays where it was, above the dimming, and closes the menu.
-            Positioned(
-              right: size.width - anchor.right,
-              top: anchor.top,
-              height: anchor.height,
-              child: SectionButton(label: current.label, icon: current.icon, open: true, onTap: () => Navigator.of(context).pop()),
             ),
           ],
         );
       },
     ),
   );
+}
+
+/// The open sections menu: its pebbles stacked on their right edges, each an even [step] wider than the one above it,
+/// the last (the section button) the widest. Each is at least as wide as its own label needs; when they don't all fit
+/// the width offered, the steps shrink first, and then the labels.
+class SectionLadder extends MultiChildRenderObjectWidget {
+  const SectionLadder({super.key, required this.grow, this.step = 16, required super.children});
+
+  /// How far the last rung has widened, from its own width (0) to its place in the ladder (1).
+  final Animation<double> grow;
+  final double step;
+
+  @override
+  RenderSectionLadder createRenderObject(BuildContext context) => RenderSectionLadder(grow: grow, step: step)..pin = Scrollable.maybeOf(context)?.position;
+
+  @override
+  void updateRenderObject(BuildContext context, RenderSectionLadder renderObject) => renderObject
+    ..grow = grow
+    ..step = step
+    ..pin = Scrollable.maybeOf(context)?.position;
+}
+
+class _LadderParentData extends ContainerBoxParentData<RenderBox> {}
+
+class RenderSectionLadder extends RenderBox with ContainerRenderObjectMixin<RenderBox, _LadderParentData>, RenderBoxContainerDefaultsMixin<RenderBox, _LadderParentData> {
+  RenderSectionLadder({required this._grow, required this._step});
+
+  Animation<double> _grow;
+  set grow(Animation<double> value) {
+    if (identical(value, _grow)) return;
+    if (attached) {
+      _grow.removeListener(markNeedsLayout);
+      value.addListener(markNeedsLayout);
+    }
+    _grow = value;
+    markNeedsLayout();
+  }
+
+  double _step;
+  set step(double value) {
+    if (value == _step) return;
+    _step = value;
+    markNeedsLayout();
+  }
+
+  /// The scroll view the ladder is in, from the bottom: the last rung keeps its place on screen as the others scroll.
+  ViewportOffset? _pin;
+  set pin(ViewportOffset? value) {
+    if (identical(value, _pin)) return;
+    if (attached) {
+      _pin?.removeListener(markNeedsPaint);
+      value?.addListener(markNeedsPaint);
+    }
+    _pin = value;
+    markNeedsPaint();
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _grow.addListener(markNeedsLayout);
+    _pin?.addListener(markNeedsPaint);
+  }
+
+  @override
+  void detach() {
+    _grow.removeListener(markNeedsLayout);
+    _pin?.removeListener(markNeedsPaint);
+    super.detach();
+  }
+
+  @override
+  void setupParentData(RenderBox child) {
+    if (child.parentData is! _LadderParentData) child.parentData = _LadderParentData();
+  }
+
+  List<RenderBox> get _children => [for (var child = firstChild; child != null; child = childAfter(child)) child];
+
+  /// The rungs' widths within [maxWidth], top first: even steps where there is room, each at least its own width.
+  List<double> _widths(List<RenderBox> children, double maxWidth) {
+    if (children.isEmpty) return const [];
+    final needed = [for (final child in children) child.getMaxIntrinsicWidth(double.infinity)];
+    final last = children.length - 1;
+    var step = _step;
+    for (var i = 0; i < last; i++) {
+      step = math.min(step, (maxWidth - needed[i]) / (last - i));
+    }
+    step = math.max(0, step);
+    var widest = 0.0;
+    for (var i = 0; i <= last; i++) {
+      widest = math.max(widest, needed[i] + (last - i) * step);
+    }
+    widest = math.min(widest, maxWidth);
+    return [
+      for (var i = 0; i < last; i++) widest - (last - i) * step,
+      // The button widens from its own width as the menu opens.
+      math.min(maxWidth, needed[last] + (widest - needed[last]) * _grow.value),
+    ];
+  }
+
+  @override
+  double computeMinIntrinsicWidth(double height) => computeMaxIntrinsicWidth(height);
+
+  @override
+  double computeMaxIntrinsicWidth(double height) => _widths(_children, double.infinity).fold(0.0, math.max);
+
+  @override
+  double computeMinIntrinsicHeight(double width) => _children.fold(0.0, (sum, child) => sum + child.getMinIntrinsicHeight(width));
+
+  @override
+  double computeMaxIntrinsicHeight(double width) => _children.fold(0.0, (sum, child) => sum + child.getMaxIntrinsicHeight(width));
+
+  @override
+  void performLayout() {
+    final children = _children;
+    final rungs = _widths(children, constraints.maxWidth);
+    final width = constraints.constrainWidth(rungs.fold(0.0, math.max));
+    var y = 0.0;
+    for (final (index, child) in children.indexed) {
+      child.layout(BoxConstraints.tightFor(width: math.max(0, math.min(rungs[index], width))), parentUsesSize: true);
+      (child.parentData! as _LadderParentData).offset = Offset(width - child.size.width, y);
+      y += child.size.height;
+    }
+    size = constraints.constrain(Size(width, y));
+  }
+
+  /// Where [child] is drawn: the last stays at the scroll view's bottom however far the others have scrolled.
+  Offset _drawnAt(RenderBox child) {
+    final offset = (child.parentData! as _LadderParentData).offset;
+    final pin = _pin;
+    if (child != lastChild || pin == null || !pin.hasPixels) return offset;
+    return offset - Offset(0, pin.pixels);
+  }
+
+  @override
+  bool hitTestChildren(BoxHitTestResult result, {required Offset position}) {
+    // Top-most first: the button is drawn over the sections that scroll under it.
+    for (var child = lastChild; child != null; child = childBefore(child)) {
+      final at = _drawnAt(child);
+      if (result.addWithPaintOffset(offset: at, position: position, hitTest: (result, transformed) => child!.hitTest(result, position: transformed))) return true;
+    }
+    return false;
+  }
+
+  @override
+  void applyPaintTransform(RenderBox child, Matrix4 transform) {
+    final at = _drawnAt(child);
+    transform.translateByDouble(at.dx, at.dy, 0, 1);
+  }
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    for (var child = firstChild; child != null; child = childAfter(child)) {
+      context.paintChild(child, offset + _drawnAt(child));
+    }
+  }
 }
 
 /// Under a list with more to load: a spinner while the next page comes, or why it didn't, with Try again.
