@@ -225,6 +225,51 @@ void main() {
     });
   });
 
+  test('only a read with none ahead of it is timed to its first frame', () {
+    fakeAsync((async) {
+      final reader = MediaReader(send: (_) {});
+      final first = reader.read('file/a', 0, 100000);
+      final queued = reader.read('file/a', 100000, 100000);
+      async.elapse(const Duration(milliseconds: 20));
+      reader.onBinary(frame(first.id, 0, 100000, 1000000, 100000));
+      async.elapse(const Duration(milliseconds: 400));
+      reader.onBinary(frame(queued.id, 0, 100000, 1000000, 100000));
+      final use = reader.takeUse();
+      expect(use.reads, 2);
+      expect(use.firstBytes, [20.0], reason: 'the second waited behind the first reply, which says nothing of the link');
+    });
+  });
+
+  test('stretches with only pings go once an hour; one with video, or the one that ends the link, always', () {
+    fakeAsync((async) {
+      final h = Harness(pairedTarget);
+      h.connection.start();
+      async.flushMicrotasks();
+      link(async, h, ['ping']);
+      void answerFor(Duration time) {
+        for (var spent = Duration.zero; spent < time; spent += const Duration(seconds: 10)) {
+          async.elapse(const Duration(seconds: 10));
+          for (final ping in h.peer.sent.where((m) => m['type'] == 'ping').toList()) {
+            h.peer.receive({'type': 'pong', 'number': ping['number']});
+          }
+          h.peer.sent.removeWhere((m) => m['type'] == 'ping');
+        }
+      }
+
+      answerFor(const Duration(minutes: 75));
+      expect(reports(LinkReports.linkName).map((r) => r.tags['link.end']), ['open', 'open'], reason: 'at 10 minutes, then at 70, an hour later');
+      h.peer.onMediaOpen!();
+      final read = h.connection.media!.read('file/a', 0, 1000);
+      h.peer.onMediaBinary!(frame(read.id, 0, 1000, 1000000, 1000));
+      answerFor(const Duration(minutes: 6));
+      expect(reports(LinkReports.linkName), hasLength(3), reason: 'a stretch with video read in it goes');
+      h.peer.lose();
+      async.flushMicrotasks();
+      expect(reports(LinkReports.linkName).last.tags['link.end'], 'link-closed');
+      h.connection.dispose();
+    });
+  });
+
   test('every report on the link is sent; other timings at the usual rate', () {
     final options = SentryFlutterOptions();
     CrashReports.configure(options, version: '0.12.6');

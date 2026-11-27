@@ -871,6 +871,8 @@ class RemoteConnection extends RemoteLink {
     _pendingLocal.clear();
     _pendingRemote.clear();
     _connectTimes = _ConnectTimes(clock.now(), homeNetwork: _viaLan, pairing: _target.isPairing, failuresBefore: _failures);
+    // Known again from this link's welcome: a setup that fails before it isn't tagged with an earlier PC's version.
+    _pcApp = null;
     Trail.note('link', 'offering a link', {'homeNetwork': _viaLan, 'relayOnly': _forceRelay, 'iceServers': _iceServers.length});
     final PeerLink peer;
     try {
@@ -1265,6 +1267,9 @@ class RemoteConnection extends RemoteLink {
       _windowTimer = null;
     }
     if (!window.measured) return;
+    // A stretch with only pings, as with the phone connected in the background all day, goes once an hour; one with video
+    // read in it, or the one that ends the link, always.
+    if (end == 'open' && window.media.reads == 0 && !LinkReports.mayReportIdle(now)) return;
     LinkReports.send(
       LinkReport(
         name: LinkReports.linkName,

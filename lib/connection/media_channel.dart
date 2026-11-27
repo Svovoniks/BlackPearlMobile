@@ -64,7 +64,7 @@ class MediaReader {
   bool get closed => _closed;
 
   // What the channel did since [takeUse] last asked (PHONE-REMOTE.md, "Measuring the link"): bytes that arrived, reads
-  // finished, how long any read was in flight, and how long each waited for its first frame.
+  // finished, how long any read was in flight, and how long a read with none ahead of it waited for its first frame.
   DateTime? _busySince;
   Duration _busy = Duration.zero;
   int _usedBytes = 0, _usedReads = 0;
@@ -113,9 +113,11 @@ class MediaReader {
       final (read, resource, offset, count) = _waiting.removeFirst();
       if (read._done.isCompleted) continue;
       if (_active.isEmpty) _busySince ??= clock.now();
+      // Only a read with none ahead of it is timed to its first frame: the PC answers in order, so a later one also waits
+      // for the replies before it.
+      read._sentAt = _active.isEmpty ? clock.now() : null;
       _active[read.id] = read;
       read._sent = true;
-      read._sentAt = clock.now();
       try {
         send(jsonEncode({'type': 'read', 'id': read.id, 'resource': resource, 'offset': offset, 'count': count}));
       } catch (_) {

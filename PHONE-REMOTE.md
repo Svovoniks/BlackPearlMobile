@@ -212,7 +212,7 @@ while the app is in the background, whenever it is awake.
 ### Measuring the link
 
 Both apps time the link, for their crash reports (when the person allows them). A phone whose `hello` lists `ping`
-answers the PC's own pings: the PC sends `{"type":"ping","number":n}` on `remote-v1` every 10 seconds once it has
+answers the PC's own pings: the PC sends `{"type":"ping","number":n}` on `remote-v1` every 30 seconds once it has
 accepted the `hello`, and the phone answers at once with `{"type":"pong","number":n}`. The numbers are the PC's own,
 apart from the phone's. A ping unanswered for 10 seconds counts as unanswered; the PC doesn't judge the link by them,
 and pings a phone whose `hello` doesn't list `ping` not at all. The phone times its own pings (see "Checking the link")

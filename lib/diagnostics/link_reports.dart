@@ -58,6 +58,20 @@ abstract final class LinkReports {
   static void reset() {
     recorded = null;
     _failedAt.clear();
+    _idleAt = null;
+  }
+
+  /// How often a stretch with no video read in it goes: a phone left connected in the background would otherwise send
+  /// one every [window] all day.
+  static const idleInterval = Duration(hours: 1);
+  static DateTime? _idleAt;
+
+  /// Whether a stretch with no reads may be reported now.
+  static bool mayReportIdle(DateTime now) {
+    final last = _idleAt;
+    if (last != null && now.difference(last) < idleInterval) return false;
+    _idleAt = now;
+    return true;
   }
 
   /// Whether a setup that failed for [why] may be reported now.
@@ -92,9 +106,11 @@ abstract final class LinkReports {
           _ => SentryMeasurementUnit.none,
         });
       });
-      for (final (stage, start, end) in report.stages) {
+      // The stage under way when a setup failed carries the failure.
+      for (final (index, (stage, start, end)) in report.stages.indexed) {
         final span = transaction.startChild('${report.name}.stage', description: stage, startTimestamp: start);
-        unawaited(span.finish(status: const SpanStatus.ok(), endTimestamp: end).catchError((Object _) {}));
+        final status = index == report.stages.length - 1 ? _status(report.status) : const SpanStatus.ok();
+        unawaited(span.finish(status: status, endTimestamp: end).catchError((Object _) {}));
       }
       unawaited(transaction.finish(status: _status(report.status), endTimestamp: report.end).catchError((Object _) {}));
     } catch (_) {}
@@ -176,7 +192,8 @@ class LinkStats {
 }
 
 /// What the media channel did in a stretch: its bytes, the reads it finished, how long reads were in flight at all, and
-/// how long each waited for its first frame.
+/// how long reads with none ahead of them waited for their first frame (round trip and the PC's own wait; a read behind
+/// others also waits for their replies).
 @immutable
 class MediaUse {
   const MediaUse({this.bytes = 0, this.reads = 0, this.busy = Duration.zero, this.firstBytes = const []});
