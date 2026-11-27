@@ -471,6 +471,45 @@ void main() {
       playback.dispose();
     });
 
+    test('the same video opened again later, away from home, is not converted anyway unasked', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      final first = playback.startViewing();
+      pc.answer = (type, fields) async => file(convertible: false);
+      await playback.watch('film');
+      pc.answer = (type, fields) async => file();
+      await playback.changeQuality('480p');
+      pc.answer = (type, fields) async => converted();
+      await playback.convertAnyway('480p');
+      expect(pc.asked.last.$2, containsPair('convertAnyway', true));
+      await playback.stop(viewing: first);
+
+      pc.answer = (type, fields) async => file();
+      playback.startViewing();
+      await playback.watch('film');
+      expect(pc.asked.last.$2.containsKey('convertAnyway'), isFalse);
+      playback.dispose();
+    });
+
+    test('convert anyway while another quality is on its way says to wait, and asks nothing', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => file(convertible: false);
+      await playback.watch('film');
+      final answer = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => answer.future;
+      final switching = playback.changeQuality('480p');
+      await pumpEventQueue();
+      final said = <String?>[];
+      playback.notice.addListener(() => said.add(playback.notice.value));
+      await playback.convertAnyway('480p');
+      expect(pc.asked, hasLength(2));
+      expect(said.whereType<String>().single, contains('Wait for the switch to finish'));
+      answer.complete(file());
+      await switching;
+      playback.dispose();
+    });
+
     test('declined, the file plays on and nothing more is asked', () async {
       final pc = link();
       final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());

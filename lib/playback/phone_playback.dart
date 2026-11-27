@@ -59,12 +59,16 @@ class PhonePlayback extends ChangeNotifier {
   /// [shuffleOrder]: for tests, an order with a seeded random.
   PhonePlayback({required this.link, MediaProxy? proxy, Player Function()? createPlayer, this.awayQuality = 'auto', ShuffleOrder? shuffleOrder})
     : _createPlayer = createPlayer ?? _defaultPlayer,
+      // Tests' players are no libmpv to set options on.
+      _beforeOpen = createPlayer == null ? _keepHardwareCodecs : _nothingBeforeOpen,
       _shuffleOrder = shuffleOrder ?? ShuffleOrder() {
     // While the phone waits for an answer, new reads hold back for up to 4 seconds; the player plays from its cache.
     this.proxy = proxy ?? MediaProxy(reader: () => link.media, onLost: _streamLost, beforeRead: () => link.answered(const Duration(seconds: 4)));
   }
 
   final RemoteLink link;
+  final Future<void> Function(Player player) _beforeOpen;
+  static Future<void> _nothingBeforeOpen(Player player) async {}
   late final MediaProxy proxy;
   final Player Function() _createPlayer;
 
@@ -130,8 +134,9 @@ class PhonePlayback extends ChangeNotifier {
   /// A conversion the PC declined for a quality picked here, to offer anyway ([convertAnyway]); null otherwise.
   final ValueNotifier<ConvertOffer?> convertOffer = ValueNotifier(null);
 
-  // The video the PC was asked to convert anyway: its recoveries, other audio tracks and qualities are converted anyway
-  // too, rather than falling back to the file. Another video starts without.
+  // The video on screen the PC was asked to convert anyway: its recoveries, other audio tracks and qualities are
+  // converted anyway too, rather than falling back to the file. Anything else starts without: another video, and this
+  // one opened again later, which away from home would otherwise be converted at 720p, larger than the file, unasked.
   String? _convertAnyway;
 
   // Recoveries of a stream that stopped: the times they started, to give up after a few in a short while.
@@ -161,7 +166,7 @@ class PhonePlayback extends ChangeNotifier {
     // Another stream of the video on screen (a quality change, a recovery): the old one plays on until the new one is
     // ready, and stays if the new one can't be had.
     final replacing = _stream?.id == id && hadPlayer;
-    if (!replacing && _convertAnyway != id) _convertAnyway = null;
+    if (!replacing) _convertAnyway = null;
     if (convertAnyway) _convertAnyway = id;
     // How long it takes until the player shows it; one opening at a time, so an earlier one still going was replaced.
     _cancelOpenTrace();
@@ -280,6 +285,7 @@ class PhonePlayback extends ChangeNotifier {
     final play = !replacing || (stalledAt != null ? playedBeforeStall : player.state.playing);
     // The trace ends when the new stream first says where it is: libmpv has the file and shows it.
     if (identical(_openTrace, trace)) _awaitingPicture = true;
+    await _beforeOpen(player);
     await player.open(Media(address.toString(), start: start > 0 ? Duration(milliseconds: start) : null), play: play && !_inBackground);
     _switching = false;
     // Opened paused (another stream of a paused video, or in the background), it may not say where it is until it plays,
@@ -372,10 +378,21 @@ class PhonePlayback extends ChangeNotifier {
   Future<void> convertAnyway(String quality) async {
     convertOffer.value = null;
     final current = _stream;
-    if (current == null || current.hls || pending.value != null) return;
+    if (current == null || current.hls) return;
+    if (pending.value != null) {
+      _say('Wait for the switch to finish, then pick ${qualityLabel(quality)} again.');
+      return;
+    }
     final player = _player;
     final position = _stalledAt ?? (player == null ? current.positionMs : _positionOf(player));
     if (await watch(current.id, quality: quality, startAt: position, convertAnyway: true)) _chosenQuality = quality;
+  }
+
+  // The codec list again, just before a file opens: once media_kit's VideoController is attached, this waits for it,
+  // so its own list can't land between this one and the decoder starting.
+  static Future<void> _keepHardwareCodecs(Player player) async {
+    final native = player.platform;
+    if (native is NativePlayer) await native.setProperty('hwdec-codecs', hardwareCodecs).catchError((_) {});
   }
 
   /// Waits until the link is connected, or [limit] has passed.

@@ -52,53 +52,90 @@ class StorageProblem extends StatelessWidget {
 }
 
 /// Asks whether to convert a video whose file is already smaller than [quality] would be. Converting saves no data, but
-/// the phone then plays the PC's H.264 rather than the file, which helps with a file the phone can't play well.
-Future<bool> confirmConvertAnyway(BuildContext context, String quality) async {
+/// the phone then plays the PC's H.264 rather than the file, which helps with a file the phone can't play well. It closes
+/// by itself, answering no, once [offer] changes: another stream (a recovery, the next episode) ended the question.
+Future<bool> confirmConvertAnyway(BuildContext context, String quality, {Listenable? offer}) async {
   final result = await showDialog<bool>(
     context: context,
-    builder: (context) => AlertDialog(
-      backgroundColor: Palette.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-      // The player is usually sideways: a short screen with large text scrolls rather than cutting the buttons off.
-      scrollable: true,
-      title: Text('Convert anyway?', style: display(22)),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            "This file is already smaller than $quality would be, so converting it won't save data or play smoother on a "
-            'slow connection.',
-            style: const TextStyle(color: Palette.ink, fontWeight: FontWeight.w600, height: 1.4),
+    builder: (context) => _ClosesOnChange(
+      listenable: offer,
+      child: AlertDialog(
+        backgroundColor: Palette.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        // The player is usually sideways: a short screen with large text scrolls rather than cutting the buttons off.
+        scrollable: true,
+        title: Text('Convert anyway?', style: display(22)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "This file is already smaller than $quality would be, so converting it won't save data or play smoother on a "
+              'slow connection.',
+              style: const TextStyle(color: Palette.ink, fontWeight: FontWeight.w600, height: 1.4),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Convert it anyway if the phone has trouble with the file itself, such as a picture that freezes while the '
+              'sound plays on. The PC converts it as you watch.',
+              style: TextStyle(color: Palette.muted, height: 1.4),
+            ),
+          ],
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        actionsOverflowButtonSpacing: 8,
+        actions: [
+          Pebble(
+            height: 42,
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            onTap: () => Navigator.of(context).pop(false),
+            child: const Text('Play as it is'),
           ),
-          const SizedBox(height: 8),
-          const Text(
-            'Convert it anyway if the phone has trouble with the file itself, such as a picture that freezes while the '
-            'sound plays on. The PC converts it as you watch.',
-            style: TextStyle(color: Palette.muted, height: 1.4),
+          Pebble(
+            height: 42,
+            lit: true,
+            padding: const EdgeInsets.symmetric(horizontal: 18),
+            onTap: () => Navigator.of(context).pop(true),
+            child: const Text('Convert anyway'),
           ),
         ],
       ),
-      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      actionsOverflowButtonSpacing: 8,
-      actions: [
-        Pebble(
-          height: 42,
-          padding: const EdgeInsets.symmetric(horizontal: 18),
-          onTap: () => Navigator.of(context).pop(false),
-          child: const Text('Play as it is'),
-        ),
-        Pebble(
-          height: 42,
-          lit: true,
-          padding: const EdgeInsets.symmetric(horizontal: 18),
-          onTap: () => Navigator.of(context).pop(true),
-          child: const Text('Convert anyway'),
-        ),
-      ],
     ),
   );
   return result == true;
+}
+
+/// Removes the dialog it is in, once [listenable] notifies.
+class _ClosesOnChange extends StatefulWidget {
+  const _ClosesOnChange({required this.listenable, required this.child});
+  final Listenable? listenable;
+  final Widget child;
+
+  @override
+  State<_ClosesOnChange> createState() => _ClosesOnChangeState();
+}
+
+class _ClosesOnChangeState extends State<_ClosesOnChange> {
+  @override
+  void initState() {
+    super.initState();
+    widget.listenable?.addListener(_changed);
+  }
+
+  @override
+  void dispose() {
+    widget.listenable?.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    widget.listenable?.removeListener(_changed);
+    final route = ModalRoute.of(context);
+    if (mounted && route != null && route.isActive) Navigator.of(context).removeRoute(route);
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
 }
 
 /// The host part of a room server address, for showing where a link would send the phone.

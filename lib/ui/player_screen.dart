@@ -250,7 +250,7 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
     if (offer == null || _askingConvert || !mounted) return;
     _askingConvert = true;
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final convert = mounted && await confirmConvertAnyway(context, qualityLabel(offer.quality));
+      final convert = mounted && await confirmConvertAnyway(context, qualityLabel(offer.quality), offer: playback.convertOffer);
       _askingConvert = false;
       // Another stream opened meanwhile, which ended the offer.
       if (!mounted || !identical(playback.convertOffer.value, offer)) return;
