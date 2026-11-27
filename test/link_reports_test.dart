@@ -187,6 +187,17 @@ void main() {
       expect(window.measured, isFalse);
     });
 
+    test("a stretch's largest round trip is rounded as its percentiles are, so the 90th never comes out above it", () {
+      final start = DateTime(2026, 11, 27, 20);
+      final stats = LinkStats(start);
+      stats.pingSent(1, start);
+      stats.pong(1, start.add(const Duration(microseconds: 812)));
+      stats.pingSent(2, start.add(const Duration(seconds: 1)));
+      stats.pong(2, start.add(const Duration(seconds: 1, microseconds: 2484)));
+      final window = stats.take(start.add(const Duration(seconds: 2)), MediaUse.none);
+      expect((window.rttMedian, window.rttP90, window.rttMax), (0.8, 2.5, 2.5));
+    });
+
     test('percentiles take the nearest rank', () {
       expect(LinkStats.percentile([1, 2, 3, 4], 0.5), 2);
       expect(LinkStats.percentile([for (var i = 1; i <= 10; i++) i.toDouble()], 0.9), 9);
