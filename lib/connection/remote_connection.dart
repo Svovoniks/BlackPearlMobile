@@ -929,8 +929,10 @@ class RemoteConnection extends RemoteLink {
     };
     peer.onMessage = (text) {
       if (generation != _generation || _session != session) return;
-      _lastHeard = clock.now();
-      _onChannelMessage(generation, text);
+      final heard = clock.now();
+      // The PC's own pings arrive whether or not the phone's messages reach it: they say nothing of the way back, which
+      // the phone's pings check (see [_checkLink]). Everything else from the PC counts.
+      if (!_onChannelMessage(generation, text)) _lastHeard = heard;
     };
     peer.onClosed = (reason) {
       if (generation != _generation || _session != session) return;
@@ -1054,18 +1056,27 @@ class RemoteConnection extends RemoteLink {
     _pendingRemote.clear();
   }
 
-  void _onChannelMessage(int generation, String text) {
+  /// Handles a message on `remote-v1`; true when it was the PC's own ping.
+  bool _onChannelMessage(int generation, String text) {
     final Map<String, dynamic> message;
     try {
       final decoded = jsonDecode(text);
-      if (decoded is! Map<String, dynamic>) return;
+      if (decoded is! Map<String, dynamic>) return false;
       message = decoded;
     } on FormatException {
-      return;
+      return false;
+    }
+    if (message['type'] == 'ping') {
+      if (message['number'] is num) {
+        try {
+          _peer?.send(jsonEncode({'type': 'pong', 'number': message['number']}));
+        } catch (_) {}
+      }
+      return true;
     }
     switch (message['type']) {
       case 'welcome':
-        if (_welcomed) return;
+        if (_welcomed) return false;
         _welcomed = true;
         _helloTimer?.cancel();
         _answerTimer?.cancel();
@@ -1099,9 +1110,9 @@ class RemoteConnection extends RemoteLink {
           _connected();
         }
       case 'paired':
-        if (!_target.isPairing) return;
+        if (!_target.isPairing) return false;
         final phoneId = message['phoneId'], secret = message['secret'];
-        if (!Signing.isHex(phoneId is String ? phoneId : null, 32) || !Signing.isHex(secret is String ? secret : null, 64)) return;
+        if (!Signing.isHex(phoneId is String ? phoneId : null, 32) || !Signing.isHex(secret is String ? secret : null, 64)) return false;
         final pcName = message['pc'] is String && (message['pc'] as String).trim().isNotEmpty ? (message['pc'] as String).trim() : _pcName;
         final pcId = message['pcId'] is String && Signing.isHex(message['pcId'] as String, 32)
             ? (message['pcId'] as String).toUpperCase()
@@ -1126,11 +1137,6 @@ class RemoteConnection extends RemoteLink {
         final code = message['code'] is String ? message['code'] as String : 'failed';
         final text = message['message'] is String && (message['message'] as String).isNotEmpty ? message['message'] as String : "The PC couldn't do that.";
         _requests.remove((message['request'] as num).toInt())?.completeError(RemoteRequestException(code, text));
-      // The PC timing the link (PHONE-REMOTE.md, "Measuring the link"): answered at once.
-      case 'ping' when message['number'] is num:
-        try {
-          _peer?.send(jsonEncode({'type': 'pong', 'number': message['number']}));
-        } catch (_) {}
       case 'pong' when message['number'] is num:
         _linkStats?.pong((message['number'] as num).toInt(), clock.now());
       case 'sound':
@@ -1151,6 +1157,7 @@ class RemoteConnection extends RemoteLink {
           _notice.value = text;
         }
     }
+    return false;
   }
 
   void _connected() {

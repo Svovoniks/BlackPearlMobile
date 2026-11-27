@@ -120,8 +120,8 @@ the PC app's version, never an id, a name, an address or what was read. A failed
 and a stretch with no video read in it (a phone left connected in the background) once an hour. Only a build given
 `--dart-define=SENTRY_DSN=<dsn>` starts Sentry; CI passes the repository secret `SENTRY_DSN`, and local builds and
 tests send nothing. `--dart-define=SENTRY_ENVIRONMENT=<name>` (default `production`) names the environment; outside
-production every transaction is sent, in production one in ten, except the link's timings, which all go. There are no screenshots, replays, Sentry logs or
-sessions, the user, device and server names are cleared, and `lib/diagnostics/report_text.dart` replaces paths, web and
+production every transaction is sent, in production one in ten, except the link's timings, which all go. There are no
+screenshots, replays, Sentry logs or sessions, the user, device and server names are cleared, and `lib/diagnostics/report_text.dart` replaces paths, web and
 network addresses and long ids in error messages, with the desktop app's rules. Android's native crashes (Java and NDK)
 are sent by Sentry's Android SDK and don't pass through that scrubbing. That SDK names the user and the device with an
 id it keeps per installation, so before Sentry starts, `LinkEngine.kt` sets that id to the same zeros on every phone.

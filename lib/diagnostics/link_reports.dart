@@ -21,7 +21,8 @@ class LinkReport {
   final String name;
   final DateTime start, end;
 
-  /// `ok`, `unavailable` (the link failed), `deadline_exceeded` (something didn't answer in time) or `aborted`.
+  /// `ok`, `unavailable` (the link failed), `deadline_exceeded` (something didn't answer in time),
+  /// `failed_precondition` (the two apps' protocols don't match) or `aborted`.
   final String status;
   final Map<String, String> tags;
 
@@ -32,8 +33,9 @@ class LinkReport {
   final List<(String, DateTime, DateTime)> stages;
 }
 
-/// Where [LinkReport]s go: to Sentry while crash reports are on. Each one goes, unlike other timings (see
-/// `CrashReports.configure`): a phone links up a few times a day.
+/// Where [LinkReport]s go: to Sentry while crash reports are on. Each one that is made goes, unlike other timings (see
+/// `CrashReports.configure`): a phone links up a few times a day, a failed setup is made once per reason a half hour,
+/// and a stretch with only pings once an hour.
 abstract final class LinkReports {
   static const connectName = 'remote.connect', linkName = 'remote.link';
 

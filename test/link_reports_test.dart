@@ -225,6 +225,23 @@ void main() {
     });
   });
 
+  test("the PC's own pings don't keep a link alive whose way back is gone", () {
+    fakeAsync((async) {
+      final h = Harness(pairedTarget);
+      h.connection.start();
+      async.flushMicrotasks();
+      link(async, h, ['ping']);
+      // The phone's pings go unanswered; only the PC's own pings arrive, more often than the silence the phone allows.
+      for (var i = 0; i < 6; i++) {
+        async.elapse(const Duration(seconds: 5));
+        h.peer.receive({'type': 'ping', 'number': i});
+      }
+      expect(h.connection.status.phase, LinkPhase.failed);
+      expect(h.connection.status.message, 'Lost the connection to the PC.');
+      h.connection.dispose();
+    });
+  });
+
   test('only a read with none ahead of it is timed to its first frame', () {
     fakeAsync((async) {
       final reader = MediaReader(send: (_) {});
