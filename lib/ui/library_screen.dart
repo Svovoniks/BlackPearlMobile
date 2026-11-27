@@ -1003,9 +1003,32 @@ class RenderSectionLadder extends RenderBox with ContainerRenderObjectMixin<Rend
 
   @override
   void paint(PaintingContext context, Offset offset) {
-    for (var child = firstChild; child != null; child = childAfter(child)) {
-      context.paintChild(child, offset + _drawnAt(child));
+    final button = lastChild;
+    if (button == null) return;
+    // Scrolled under the button, the sections end at its bottom: none shows again below it, in the room kept there for
+    // its shadow.
+    final buttonBottom = _drawnAt(button).dy + button.size.height;
+    void sections(PaintingContext context, Offset offset) {
+      for (var child = firstChild; child != button; child = childAfter(child)) {
+        context.paintChild(child!, offset + _drawnAt(child));
+      }
     }
+
+    if (buttonBottom < size.height) {
+      _sectionsClip.layer = context.pushClipRect(needsCompositing, offset, Rect.fromLTRB(-size.width, -size.height, size.width * 2, buttonBottom), sections, oldLayer: _sectionsClip.layer);
+    } else {
+      _sectionsClip.layer = null;
+      sections(context, offset);
+    }
+    context.paintChild(button, offset + _drawnAt(button));
+  }
+
+  final _sectionsClip = LayerHandle<ClipRectLayer>();
+
+  @override
+  void dispose() {
+    _sectionsClip.layer = null;
+    super.dispose();
   }
 }
 

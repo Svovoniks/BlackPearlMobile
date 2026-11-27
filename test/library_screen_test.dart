@@ -10,7 +10,7 @@ import 'package:blackpearl_mobile/ui/queue_widgets.dart';
 import 'package:blackpearl_mobile/ui/remote_screen.dart';
 import 'package:blackpearl_mobile/ui/search_screen.dart';
 import 'package:blackpearl_mobile/ui/theme.dart';
-import 'package:flutter/rendering.dart' show RenderParagraph;
+import 'package:flutter/rendering.dart' show ClipRectLayer, RenderParagraph;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -200,6 +200,17 @@ void main() {
       await tester.tap(button);
       await tester.pumpAndSettle();
       expect(find.byType(SectionLadder), findsNothing);
+    });
+
+    testWidgets('scrolled far under the button, no section shows again below it', (tester) async {
+      final (_, closed) = await open(tester, size: const Size(800, 250));
+      await tester.drag(find.descendant(of: find.byType(SectionLadder), matching: find.text('Anime')), const Offset(0, 300));
+      await tester.pumpAndSettle();
+      final ladder = tester.renderObject<RenderBox>(find.byType(SectionLadder));
+      final queues = tester.getRect(find.ancestor(of: find.descendant(of: find.byType(SectionLadder), matching: find.text('Queues')), matching: find.byType(Pebble)).first);
+      expect(queues.bottom, greaterThan(closed.bottom), reason: 'laid out past the button: the case to clip');
+      final clips = tester.layers.whereType<ClipRectLayer>().map((layer) => ladder.localToGlobal(Offset(0, layer.clipRect!.bottom)).dy);
+      expect(clips, contains(moreOrLessEquals(closed.bottom)), reason: 'the sections end at the button\'s bottom');
     });
   });
 
