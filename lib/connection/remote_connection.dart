@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:clock/clock.dart';
 import 'package:flutter/foundation.dart';
 
+import '../diagnostics/link_reports.dart';
 import '../diagnostics/trail.dart';
 import '../protocol/ice_servers.dart';
 import '../protocol/pair_link.dart';
@@ -54,6 +55,28 @@ class _LanLink {
   void discard() {
     unawaited(subscription.cancel());
     unawaited(socket.close());
+  }
+}
+
+/// When each stage of setting up a link ended, for its report (PHONE-REMOTE.md, "Measuring the link").
+class _ConnectTimes {
+  _ConnectTimes(this.start, {required this.homeNetwork, required this.pairing, required this.failuresBefore});
+  final DateTime start;
+  final bool homeNetwork, pairing;
+  final int failuresBefore;
+  DateTime? offered, answered, opened, welcomed;
+
+  /// The stages that ended, and the one under way ending at [end].
+  List<(String, DateTime, DateTime)> stages(DateTime end) {
+    final ends = [('offer', offered), ('answer', answered), ('link', opened), ('welcome', welcomed), if (pairing) ('pair', null)];
+    final stages = <(String, DateTime, DateTime)>[];
+    var from = start;
+    for (final (name, at) in ends) {
+      stages.add((name, from, at ?? end));
+      if (at == null) break;
+      from = at;
+    }
+    return stages;
   }
 }
 
@@ -180,6 +203,12 @@ class RemoteConnection extends RemoteLink {
   bool _canStart = true;
   MediaReader? _media;
   bool _mediaOpen = false;
+  // Reports on the link (PHONE-REMOTE.md, "Measuring the link"): how the current one is being set up, the stretch of the
+  // one that is up, and the PC app's version from its welcome.
+  _ConnectTimes? _connectTimes;
+  LinkStats? _linkStats;
+  Timer? _windowTimer;
+  String? _pcApp;
   int _requestNumber = 0;
   final Map<int, Completer<Map<String, dynamic>>> _requests = {};
 
@@ -298,6 +327,7 @@ class RemoteConnection extends RemoteLink {
   /// user stays on screen.
   Future<void> stop() async {
     _running = false;
+    _reportLink('stopped');
     final generation = ++_generation;
     _retryTimer?.cancel();
     await _teardown();
@@ -840,6 +870,7 @@ class RemoteConnection extends RemoteLink {
     _welcomed = false;
     _pendingLocal.clear();
     _pendingRemote.clear();
+    _connectTimes = _ConnectTimes(clock.now(), homeNetwork: _viaLan, pairing: _target.isPairing, failuresBefore: _failures);
     Trail.note('link', 'offering a link', {'homeNetwork': _viaLan, 'relayOnly': _forceRelay, 'iceServers': _iceServers.length});
     final PeerLink peer;
     try {
@@ -886,8 +917,10 @@ class RemoteConnection extends RemoteLink {
     peer.onOpen = () {
       if (generation != _generation || _session != session) return;
       _answerTimer?.cancel();
+      _connectTimes?.opened = clock.now();
       Trail.note('link', 'channel open');
-      peer.send(jsonEncode({'type': 'hello', 'protocol': 1, 'app': identity.appVersion, 'device': identity.device}));
+      // `ping`: this phone answers the PC's pings (PHONE-REMOTE.md, "Measuring the link").
+      peer.send(jsonEncode({'type': 'hello', 'protocol': 1, 'app': identity.appVersion, 'device': identity.device, 'features': ['ping']}));
       _helloTimer = Timer(helloTimeout, () {
         if (generation == _generation && !_welcomed) _fail(generation, "The PC didn't answer. Try again.", why: 'no-welcome');
       });
@@ -910,6 +943,7 @@ class RemoteConnection extends RemoteLink {
       if (generation != _generation || _session != session) return;
       _signal('sdp', jsonEncode({'type': 'offer', 'sdp': sdp}));
       _offerSent = true;
+      _connectTimes?.offered = clock.now();
       for (final (candidate, mid) in _pendingLocal) {
         _signal('ice', jsonEncode({'candidate': candidate, 'mid': mid}));
       }
@@ -980,6 +1014,7 @@ class RemoteConnection extends RemoteLink {
       if (payload is! Map) return;
       if (signal.kind == 'sdp' && payload['type'] == 'answer' && payload['sdp'] is String && !_answered) {
         _answered = true;
+        _connectTimes?.answered = clock.now();
         Trail.note('link', 'the PC answered the offer');
         unawaited(_applyAnswer(generation, session, peer, payload['sdp'] as String));
       } else if (signal.kind == 'ice' && payload['candidate'] is String) {
@@ -1035,6 +1070,8 @@ class RemoteConnection extends RemoteLink {
         final features = message['features'];
         _features = features is List ? features.whereType<String>().toSet() : const {};
         _canStart = message['canStart'] != false;
+        _connectTimes?.welcomed = clock.now();
+        _pcApp = LinkReports.version(message['app']);
         Trail.note('link', 'welcomed', {'features': _features.length, 'ping': _features.contains('ping')});
         // Where the PC listens on its home network. Left out by older PCs, and by one not listening just now: what the
         // phone knew stays.
@@ -1087,6 +1124,13 @@ class RemoteConnection extends RemoteLink {
         final code = message['code'] is String ? message['code'] as String : 'failed';
         final text = message['message'] is String && (message['message'] as String).isNotEmpty ? message['message'] as String : "The PC couldn't do that.";
         _requests.remove((message['request'] as num).toInt())?.completeError(RemoteRequestException(code, text));
+      // The PC timing the link (PHONE-REMOTE.md, "Measuring the link"): answered at once.
+      case 'ping' when message['number'] is num:
+        try {
+          _peer?.send(jsonEncode({'type': 'pong', 'number': message['number']}));
+        } catch (_) {}
+      case 'pong' when message['number'] is num:
+        _linkStats?.pong((message['number'] as num).toInt(), clock.now());
       case 'sound':
         _pushes.add(message);
       case 'state':
@@ -1110,6 +1154,10 @@ class RemoteConnection extends RemoteLink {
   void _connected() {
     if (_viaLan) _lanReset();
     Trail.note('link', 'connected', {'homeNetwork': _viaLan, 'failuresBefore': _failures});
+    _reportConnect('connected');
+    _linkStats = LinkStats(clock.now());
+    _windowTimer?.cancel();
+    _windowTimer = Timer.periodic(LinkReports.window, (_) => _reportLink('open', next: true));
     _failures = 0;
     _setStatus(LinkStatus(LinkPhase.connected, path: _status.path));
     _checkPath();
@@ -1167,8 +1215,70 @@ class RemoteConnection extends RemoteLink {
 
   void _sendLinkPing() {
     try {
-      _peer?.send(jsonEncode({'type': 'ping', 'number': ++_linkPingNumber}));
+      final number = ++_linkPingNumber;
+      _peer?.send(jsonEncode({'type': 'ping', 'number': number}));
+      _linkStats?.pingSent(number, clock.now());
     } catch (_) {}
+  }
+
+  // How the link under way was set up, once: connected, or failed for [why]. A setup cut short by a new attempt or the app
+  // going away isn't reported, and neither are failures that say nothing about the link (see [_unreportedFailures]).
+  void _reportConnect(String outcome, {bool failed = false}) {
+    final times = _connectTimes;
+    _connectTimes = null;
+    if (times == null) return;
+    final now = clock.now();
+    if (failed && (_unreportedFailures.contains(outcome) || !LinkReports.mayReportFailure(outcome, now))) return;
+    LinkReports.send(
+      LinkReport(
+        name: LinkReports.connectName,
+        start: times.start,
+        end: now,
+        status: !failed
+            ? 'ok'
+            : outcome.startsWith('no-') || outcome.endsWith('-unanswered') || outcome.endsWith('-unfinished')
+            ? 'deadline_exceeded'
+            : outcome == 'protocol'
+            ? 'failed_precondition'
+            : 'unavailable',
+        tags: {
+          'link.outcome': outcome,
+          'link.network': times.homeNetwork ? 'lan' : 'server',
+          'link.pairing': times.pairing ? 'yes' : 'no',
+          'pc.app': ?_pcApp,
+        },
+        measurements: {'failures_before': (times.failuresBefore, '')},
+        stages: times.stages(now),
+      ),
+    );
+  }
+
+  // The stretch of the link so far, when something was measured in it; [next] starts the next stretch.
+  void _reportLink(String end, {bool next = false}) {
+    final stats = _linkStats;
+    if (stats == null) return;
+    final now = clock.now();
+    final window = stats.take(now, _media?.takeUse() ?? MediaUse.none);
+    if (!next) {
+      _linkStats = null;
+      _windowTimer?.cancel();
+      _windowTimer = null;
+    }
+    if (!window.measured) return;
+    LinkReports.send(
+      LinkReport(
+        name: LinkReports.linkName,
+        start: window.start,
+        end: now,
+        tags: {
+          'link.path': _status.path.name,
+          'link.network': _viaLan ? 'lan' : 'server',
+          'link.end': end,
+          'pc.app': ?_pcApp,
+        },
+        measurements: window.measurements,
+      ),
+    );
   }
 
   Future<void> _checkPath() async {
@@ -1202,6 +1312,8 @@ class RemoteConnection extends RemoteLink {
     if (!_unreportedFailures.contains(why) && (permanent || _failures + 1 >= reportAfterFailures)) {
       Trail.problem('link', why, {'failures': _failures + 1, 'permanent': permanent, 'homeNetwork': _viaLan});
     }
+    _reportConnect(why, failed: true);
+    _reportLink(why);
     _generation++;
     unawaited(_teardown());
     if (permanent) _halted = true;
@@ -1222,6 +1334,9 @@ class RemoteConnection extends RemoteLink {
   }
 
   Future<void> _closePeer() async {
+    // A link closed without a failure: a new attempt (a network change, the app back in front) or the app going away.
+    _reportLink('closed');
+    _connectTimes = null;
     _answerTimer?.cancel();
     _helloTimer?.cancel();
     _pairTimer?.cancel();

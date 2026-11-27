@@ -176,8 +176,8 @@ class SettingsScreen extends StatelessWidget {
                     const Padding(
                       padding: EdgeInsets.only(right: 8),
                       child: Text(
-                        "Errors, crashes and how long startup and opening videos take go to BlackPearl's developer through "
-                        'Sentry. File paths, titles, addresses and names are removed first.',
+                        'Errors, crashes, how long startup and opening videos take, and how fast the connection to the PC is '
+                        "go to BlackPearl's developer through Sentry. File paths, titles, addresses and names are removed first.",
                         style: TextStyle(color: Palette.muted, fontSize: 13, height: 1.35),
                       ),
                     ),
