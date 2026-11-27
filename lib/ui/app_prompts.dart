@@ -51,6 +51,56 @@ class StorageProblem extends StatelessWidget {
   );
 }
 
+/// Asks whether to convert a video whose file is already smaller than [quality] would be. Converting saves no data, but
+/// the phone then plays the PC's H.264 rather than the file, which helps with a file the phone can't play well.
+Future<bool> confirmConvertAnyway(BuildContext context, String quality) async {
+  final result = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      backgroundColor: Palette.surface,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      // The player is usually sideways: a short screen with large text scrolls rather than cutting the buttons off.
+      scrollable: true,
+      title: Text('Convert anyway?', style: display(22)),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "This file is already smaller than $quality would be, so converting it won't save data or play smoother on a "
+            'slow connection.',
+            style: const TextStyle(color: Palette.ink, fontWeight: FontWeight.w600, height: 1.4),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Convert it anyway if the phone has trouble with the file itself, such as a picture that freezes while the '
+            'sound plays on. The PC converts it as you watch.',
+            style: TextStyle(color: Palette.muted, height: 1.4),
+          ),
+        ],
+      ),
+      actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      actionsOverflowButtonSpacing: 8,
+      actions: [
+        Pebble(
+          height: 42,
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          onTap: () => Navigator.of(context).pop(false),
+          child: const Text('Play as it is'),
+        ),
+        Pebble(
+          height: 42,
+          lit: true,
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          onTap: () => Navigator.of(context).pop(true),
+          child: const Text('Convert anyway'),
+        ),
+      ],
+    ),
+  );
+  return result == true;
+}
+
 /// The host part of a room server address, for showing where a link would send the phone.
 String serverHost(String server) {
   final uri = Uri.tryParse(server.trim());

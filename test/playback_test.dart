@@ -423,6 +423,80 @@ void main() {
     playback.dispose();
   });
 
+  group('a file already smaller than the quality picked', () {
+    Map<String, dynamic> file({bool convertible = true}) => {
+      'type': 'stream', 'id': 'film', 'kind': 'file', 'resource': 'file/film', 'length': 1000, 'extension': '.avi', 'durationMs': 40000,
+      'quality': 'original', 'qualities': ['original', '480p'], 'convertible': convertible,
+      'note': 'This file is already smaller than 480p would be, so the phone plays it as it is.',
+    };
+    Map<String, dynamic> converted() => {
+      'type': 'stream', 'id': 'film', 'kind': 'hls', 'streamId': 'a' * 32, 'segments': 10, 'segmentMs': 4000, 'durationMs': 40000,
+      'quality': '480p', 'qualities': ['original', '480p'], 'audioTracks': [{'index': 0, 'language': null, 'title': null, 'codec': 'mp3', 'layout': 'mono'}],
+      'audioTrack': 0,
+    };
+
+    test('is offered to convert anyway, and once converted stays converted through a recovery and another track', () async {
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => file(convertible: false);
+      await playback.watch('film');
+      expect(playback.convertOffer.value, isNull, reason: 'the file was asked for');
+
+      pc.answer = (type, fields) async => file();
+      await playback.changeQuality('480p');
+      expect(pc.asked.last.$2.containsKey('convertAnyway'), isFalse);
+      expect(playback.convertOffer.value?.quality, '480p');
+
+      player.positionMs = 30000;
+      player.positions.add(const Duration(milliseconds: 30000));
+      await pumpEventQueue();
+      pc.answer = (type, fields) async => converted();
+      await playback.convertAnyway('480p');
+      expect(pc.asked.last.$2, containsPair('convertAnyway', true));
+      expect(pc.asked.last.$2, containsPair('quality', '480p'));
+      expect(playback.stream?.hls, isTrue);
+      expect(player.opened.last.start, const Duration(milliseconds: 30000));
+      expect(playback.convertOffer.value, isNull);
+
+      // Another stream of this video, such as after a stall or for another track, is converted anyway too.
+      await playback.watch('film', quality: '480p', audio: 0);
+      expect(pc.asked.last.$2, containsPair('convertAnyway', true));
+
+      // Another video isn't.
+      pc.answer = (type, fields) async => {...file(), 'id': 'other', 'resource': 'file/other'};
+      await playback.watch('other', quality: '480p');
+      expect(pc.asked.last.$2.containsKey('convertAnyway'), isFalse);
+      expect(playback.convertOffer.value, isNull, reason: 'only a quality picked in the player asks');
+      playback.dispose();
+    });
+
+    test('declined, the file plays on and nothing more is asked', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => file(convertible: false);
+      await playback.watch('film');
+      pc.answer = (type, fields) async => file();
+      await playback.changeQuality('480p');
+      expect(playback.convertOffer.value, isNotNull);
+      playback.convertOffer.value = null;
+      expect(pc.asked, hasLength(2));
+      expect(playback.stream?.hls, isFalse);
+      playback.dispose();
+    });
+
+    test("a PC that doesn't say the file can be converted offers nothing", () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => file(convertible: false);
+      await playback.watch('film');
+      pc.answer = (type, fields) async => {...file()}..remove('convertible');
+      await playback.changeQuality('480p');
+      expect(playback.convertOffer.value, isNull);
+      playback.dispose();
+    });
+  });
+
   test('a refused watch says why', () async {
     final pc = link();
     pc.answer = (type, fields) => Future.error(const RemoteRequestException('gone', 'Its drive may be disconnected.'));

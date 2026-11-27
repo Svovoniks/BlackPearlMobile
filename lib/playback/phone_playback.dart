@@ -8,6 +8,7 @@ import '../connection/transport.dart';
 import '../diagnostics/crash_reports.dart';
 import '../diagnostics/trail.dart';
 import '../protocol/library.dart';
+import 'hardware_decoding.dart';
 import 'media_proxy.dart';
 import 'mpv_reads.dart';
 import 'shuffle_order.dart';
@@ -33,6 +34,14 @@ class PendingSwitch {
       : audio != null
       ? 'Switching to $audioName…'
       : 'Opening ${episode!.detail ?? episode!.title}…';
+}
+
+/// A quality picked in the player that the PC didn't convert to, as the file is already as small as the conversion would
+/// be: the player asks whether to convert it anyway, which saves no data but gives the phone a picture it can always
+/// play.
+class ConvertOffer {
+  const ConvertOffer(this.quality);
+  final String quality;
 }
 
 /// The next episode, offered when one ends; it plays when [deadline] passes unless the offer is canceled.
@@ -76,6 +85,7 @@ class PhonePlayback extends ChangeNotifier {
       unawaited(native.setProperty('network-timeout', '120').catchError((_) {}));
       unawaited(native.setProperty('cache', 'yes').catchError((_) {}));
       unawaited(native.setProperty('demuxer-readahead-secs', '60').catchError((_) {}));
+      keepHardwareCodecs(native.setProperty, native.videoControllerCompleter.future);
     }
     return player;
   }
@@ -117,6 +127,13 @@ class PhonePlayback extends ChangeNotifier {
   /// A short message for the player to show, such as a quality change that didn't work.
   final ValueNotifier<String?> notice = ValueNotifier(null);
 
+  /// A conversion the PC declined for a quality picked here, to offer anyway ([convertAnyway]); null otherwise.
+  final ValueNotifier<ConvertOffer?> convertOffer = ValueNotifier(null);
+
+  // The video the PC was asked to convert anyway: its recoveries, other audio tracks and qualities are converted anyway
+  // too, rather than falling back to the file. Another video starts without.
+  String? _convertAnyway;
+
   // Recoveries of a stream that stopped: the times they started, to give up after a few in a short while.
   final List<DateTime> _recoveries = [];
 
@@ -135,12 +152,17 @@ class PhonePlayback extends ChangeNotifier {
   ///
   /// [audio]: for a conversion, the file's audio track to convert with. Another stream of the video on screen keeps the
   /// track playing now unless [audio] names another; a new video starts with the one the PC's preferences pick.
-  Future<bool> watch(String id, {bool takeOver = false, String? quality, int? startAt, EpisodeStep? step, QueueRef? queue, int? audio}) async {
+  ///
+  /// [convertAnyway]: convert even a file already as small as the conversion would be. [offerConversion]: the quality
+  /// was picked here, so a conversion the PC declines for that reason is offered in [convertOffer].
+  Future<bool> watch(String id, {bool takeOver = false, String? quality, int? startAt, EpisodeStep? step, QueueRef? queue, int? audio, bool convertAnyway = false, bool offerConversion = false}) async {
     final attempt = ++_opening;
     final hadPlayer = _player != null;
     // Another stream of the video on screen (a quality change, a recovery): the old one plays on until the new one is
     // ready, and stays if the new one can't be had.
     final replacing = _stream?.id == id && hadPlayer;
+    if (!replacing && _convertAnyway != id) _convertAnyway = null;
+    if (convertAnyway) _convertAnyway = id;
     // How long it takes until the player shows it; one opening at a time, so an earlier one still going was replaced.
     _cancelOpenTrace();
     final trace = _openTrace = PlaybackOpenTrace.start(
@@ -183,6 +205,7 @@ class PhonePlayback extends ChangeNotifier {
         // A video played as part of a queue: the PC's Previous, Next and Loop all follow the queue.
         if ((queue ?? (replacing ? _followed : null)) case final inQueue?) ...{'queue': inQueue.id, 'queueIndex': ?inQueue.index},
         'audio': ?audio,
+        if (_convertAnyway == id) 'convertAnyway': true,
       }, timeout: const Duration(seconds: 45));
       info = StreamInfo.fromJson(reply);
     } on RemoteRequestException catch (e) {
@@ -230,6 +253,8 @@ class PhonePlayback extends ChangeNotifier {
       _chosenSubtitle = null;
     }
     _stream = info;
+    final asked = quality;
+    convertOffer.value = offerConversion && info.convertible && asked != null && asked != 'original' ? ConvertOffer(asked) : null;
     // Another video's answer says what comes next; another stream of this one keeps the list the player follows, unless
     // a list asked for it (the same video at another place of a queue).
     if (!replacing || queue != null) {
@@ -339,7 +364,18 @@ class PhonePlayback extends ChangeNotifier {
     // Where it stopped while stalled; the opening position until the player has said where it is.
     final position = _stalledAt ?? (player == null ? current.positionMs : _positionOf(player));
     // The next episode opens at the quality chosen here, once the PC has given it.
-    if (await watch(current.id, quality: quality, startAt: position)) _chosenQuality = quality;
+    if (await watch(current.id, quality: quality, startAt: position, offerConversion: true)) _chosenQuality = quality;
+  }
+
+  /// Converts the video on screen at [quality] though the PC said the file is already as small: for a file the phone
+  /// can't play itself. Its recoveries and other tracks stay converted.
+  Future<void> convertAnyway(String quality) async {
+    convertOffer.value = null;
+    final current = _stream;
+    if (current == null || current.hls || pending.value != null) return;
+    final player = _player;
+    final position = _stalledAt ?? (player == null ? current.positionMs : _positionOf(player));
+    if (await watch(current.id, quality: quality, startAt: position, convertAnyway: true)) _chosenQuality = quality;
   }
 
   /// Waits until the link is connected, or [limit] has passed.
@@ -1179,6 +1215,7 @@ class PhonePlayback extends ChangeNotifier {
     unawaited(proxy.dispose());
     _upNextTimer?.cancel();
     notice.dispose();
+    convertOffer.dispose();
     pending.dispose();
     upNext.dispose();
     super.dispose();
