@@ -110,13 +110,20 @@ the published APKs: see UPDATES.md.
 
 ### Crash reports
 
-Release APKs send errors, crashes and two timings (app start, and `playback.open`: from asking to play a video until
-the player shows it) to Sentry, unless Settings › Send crash reports is off. Only a build given
+Release APKs send errors, crashes and timings to Sentry, unless Settings › Send crash reports is off: app start,
+`playback.open` (from asking to play a video until the player shows it), and the link to the PC
+(`lib/diagnostics/link_reports.dart`, PHONE-REMOTE.md "Measuring the link"). `remote.connect` times setting a link up,
+stage by stage, and `remote.link` a stretch of a link that is up (at most 10 minutes, or until it ends): round trips of
+the phone's pings, unanswered pings, bytes and reads on `media-v1`, how fast they arrived while reads were in flight,
+and how long a read with none ahead of it waited for its first frame. They carry fixed codes, the path's kind, numbers
+and the PC app's version, never an id, a name, an address or what was read. A failed setup goes once per reason a half
+hour, and a stretch with no video read in it (a phone left connected in the background) once an hour. Only a build given
 `--dart-define=SENTRY_DSN=<dsn>` starts Sentry; CI passes the repository secret `SENTRY_DSN`, and local builds and
 tests send nothing. `--dart-define=SENTRY_ENVIRONMENT=<name>` (default `production`) names the environment; outside
-production every transaction is sent, in production one in ten. There are no screenshots, replays, Sentry logs or
-sessions, the user, device and server names are cleared, and `lib/diagnostics/report_text.dart` replaces paths, web and
-network addresses and long ids in error messages, with the desktop app's rules. Android's native crashes (Java and NDK)
+production every transaction is sent, in production one in ten, except the link's timings, which all go. There are no
+screenshots, replays, Sentry logs or sessions, the user, device and server names are cleared, and
+`lib/diagnostics/report_text.dart` replaces paths, web and network addresses and long ids in error messages, with the
+desktop app's rules. Android's native crashes (Java and NDK)
 are sent by Sentry's Android SDK and don't pass through that scrubbing. That SDK names the user and the device with an
 id it keeps per installation, so before Sentry starts, `LinkEngine.kt` sets that id to the same zeros on every phone.
 

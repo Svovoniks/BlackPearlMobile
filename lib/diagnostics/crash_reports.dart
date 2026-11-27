@@ -7,10 +7,11 @@ import 'package:sentry_flutter/sentry_flutter.dart';
 
 import '../connection/remote_link.dart' show RemoteRequestException;
 import '../storage/app_settings.dart';
+import 'link_reports.dart';
 import 'report_text.dart';
 import 'trail.dart';
 
-/// Errors, crashes and how long startup and opening videos take, sent to BlackPearl's developer through Sentry unless
+/// Errors, crashes, how long startup and opening videos take and how fast the link to the PC is, sent to BlackPearl's developer through Sentry unless
 /// Settings › Send crash reports is off. Nothing names the user: file paths, titles, network and web addresses, names
 /// and ids are removed first, and there are no screenshots or replays. The only breadcrumbs are the app's own notes
 /// ([Trail]), and only while Settings › Send the app's log is on as well.
@@ -92,6 +93,8 @@ abstract final class CrashReports {
       // PackageInfo's version is pubspec's without the build number.
       ..release = 'blackpearl-mobile@$version'
       ..tracesSampleRate = environment == 'production' ? 0.1 : 1.0
+      // Every report on the link to the PC, which are few (see [LinkReports]); others at the rate above.
+      ..tracesSampler = ((context) => const {LinkReports.connectName, LinkReports.linkName}.contains(context.transactionContext.name) ? 1.0 : null)
       // Whole transactions rather than streamed spans, so beforeSendTransaction sees them.
       ..traceLifecycle = SentryTraceLifecycle.static
       ..sendDefaultPii = false

@@ -3,6 +3,10 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:clock/clock.dart';
+
+import '../diagnostics/link_reports.dart';
+
 /// What a read returned: its bytes (shorter than asked at the end of the resource) and the whole resource's length.
 class MediaReply {
   const MediaReply(this.bytes, this.resourceLength);
@@ -31,6 +35,7 @@ class MediaRead {
   Uint8List? _bytes;
   int _received = 0;
   bool _sent = false;
+  DateTime? _sentAt;
 
   Future<MediaReply> get future => _done.future;
   void cancel() => _reader._cancel(this);
@@ -58,6 +63,37 @@ class MediaReader {
 
   bool get closed => _closed;
 
+  // What the channel did since [takeUse] last asked (PHONE-REMOTE.md, "Measuring the link"): bytes that arrived, reads
+  // finished, how long any read was in flight, and how long a read with none ahead of it waited for its first frame.
+  DateTime? _busySince;
+  Duration _busy = Duration.zero;
+  int _usedBytes = 0, _usedReads = 0;
+  final List<double> _firstBytes = [];
+
+  /// What the channel did since the last call, for the link's report.
+  MediaUse takeUse() {
+    final now = clock.now();
+    final since = _busySince;
+    final use = MediaUse(
+      bytes: _usedBytes,
+      reads: _usedReads,
+      busy: _busy + (since == null ? Duration.zero : now.difference(since)),
+      firstBytes: List.of(_firstBytes),
+    );
+    if (since != null) _busySince = now;
+    _busy = Duration.zero;
+    _usedBytes = _usedReads = 0;
+    _firstBytes.clear();
+    return use;
+  }
+
+  void _idleIfDone() {
+    final since = _busySince;
+    if (_active.isNotEmpty || since == null) return;
+    _busy += clock.now().difference(since);
+    _busySince = null;
+  }
+
   /// Reads [count] bytes of [resource] from [offset].
   MediaRead read(String resource, int offset, int count) {
     if (count < 1 || count > maxRead || offset < 0) throw ArgumentError('Invalid read');
@@ -76,6 +112,10 @@ class MediaReader {
     while (!_closed && _active.length < window && _waiting.isNotEmpty) {
       final (read, resource, offset, count) = _waiting.removeFirst();
       if (read._done.isCompleted) continue;
+      if (_active.isEmpty) _busySince ??= clock.now();
+      // Only a read with none ahead of it is timed to its first frame: the PC answers in order, so a later one also waits
+      // for the replies before it.
+      read._sentAt = _active.isEmpty ? clock.now() : null;
       _active[read.id] = read;
       read._sent = true;
       try {
@@ -113,6 +153,7 @@ class MediaReader {
     _waiting.removeWhere((waiting) => identical(waiting.$1, read));
     if (identical(_active[read.id], read)) {
       _active.remove(read.id);
+      _idleIfDone();
       if (read._sent && !_closed) {
         try {
           send(jsonEncode({'type': 'cancel', 'id': read.id}));
@@ -125,6 +166,8 @@ class MediaReader {
 
   void _finish(MediaRead read, {MediaReply? reply, MediaReadException? error}) {
     _active.remove(read.id);
+    if (reply != null) _usedReads++;
+    _idleIfDone();
     if (!read._done.isCompleted) {
       if (reply != null) {
         read._done.complete(reply);
@@ -157,7 +200,12 @@ class MediaReader {
       return;
     }
     bytes.setRange(offset, offset + data, frame, headerBytes);
+    final sentAt = read._sentAt;
+    if (read._received == 0 && sentAt != null && _firstBytes.length < 4096) {
+      _firstBytes.add(clock.now().difference(sentAt).inMicroseconds / 1000);
+    }
     read._received += data;
+    _usedBytes += data;
     if (read._received >= total) _finish(read, reply: MediaReply(bytes, resourceLength));
   }
 
@@ -183,6 +231,7 @@ class MediaReader {
     _closedReason = reason;
     final all = [..._active.values, ..._waiting.map((w) => w.$1)];
     _active.clear();
+    _idleIfDone();
     _waiting.clear();
     for (final read in all) {
       if (!read._done.isCompleted) read._done.completeError(MediaReadException('closed', reason));

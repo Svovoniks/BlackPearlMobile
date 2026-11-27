@@ -120,7 +120,9 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 
 ### Opening
 
-1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>"}`
+1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>","features":["ping"]}`.
+   `features` lists what the phone does beyond the remote: `ping` when it answers the PC's pings (see "Measuring the
+   link"). Phones before it send none.
 2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","unwatched","mark-watched","shuffle","tracks","sound","ping"]}`.
    `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"), and `ping`
    when it answers pings (see "Checking the link"); a PC from before them sends none. A PC that listens for phones on the home network adds where:
@@ -201,11 +203,24 @@ forever, and the phone's requests only time out. So a phone checks the link itse
 `{"type":"pong","number":n}`. A phone that has heard nothing at all from the PC for 25 seconds while its own timers
 kept running (it wasn't frozen in the background) takes the link as lost and connects again, as after any lost link.
 A request that times out, or the app coming back to the foreground, sends a ping at once, and the link is lost if
-nothing comes back within 8 seconds.
+nothing comes back within 8 seconds. The PC's own pings (see "Measuring the link") don't count as hearing from it, for
+either wait: they arrive whether or not the phone's messages reach the PC.
 
 Only the phone judges the link by pings. The PC never closes a session for silence: a locked phone's timers stop
 while it sleeps, so its pings stop too, and its link must stay for the lock screen's controls. The phone also pings
 while the app is in the background, whenever it is awake.
+
+### Measuring the link
+
+Both apps time the link, for their crash reports (when the person allows them). A phone whose `hello` lists `ping`
+answers the PC's own pings: the PC sends `{"type":"ping","number":n}` on `remote-v1` every 30 seconds once it has
+accepted the `hello`, and the phone answers at once with `{"type":"pong","number":n}`. The numbers are the PC's own,
+apart from the phone's. A ping unanswered for 10 seconds counts as unanswered; the PC doesn't judge the link by them,
+and pings a phone whose `hello` doesn't list `ping` not at all. The phone times its own pings (see "Checking the link")
+and its reads on `media-v1` the same way. What either side reports holds the link's numbers and kinds only: the round
+trips, how many pings went unanswered, the bytes and reads and how long they took, how long setting the link up took,
+the path's kind (`direct` or `relay` on the PC, `home`, `away` or `relayed` on the phone), how the phone was introduced,
+and the app versions. Never ids, names, addresses or what was read.
 
 ### Tracks
 
@@ -550,7 +565,7 @@ session and a phone by the first 8 characters of their random ids, and never hol
 | `remote-signal-refused` | A signal the PC turned away, once per session and reason: `unknown-phone`, `pairing-expired`, `bad-signature`, `too-many-sessions`, and for signals sent again `wrong-session` (on the home network, not the session its connection handed out), `lan-session` (through the room server, a session handed out on the home network), `repeated-offer` (an offer seen before) |
 | `remote-session-opened` | A phone's offer starts a session: whether it pairs, replaces an earlier session, how many STUN and TURN servers it may use, and `via` (`server` or `lan`), with `relayIgnored` on the home network when the room server asks for relay only |
 | `remote-session-state` | The connection's state changes, with the candidates gathered on each side by type, and `direct` or `relay` once connected |
-| `remote-session-channel`, `remote-session-greeted`, `remote-session-paired` | The data channel opens, the phone's `hello` is accepted (with its app version), pairing completes |
+| `remote-session-channel`, `remote-session-greeted`, `remote-session-paired` | The data channel opens, the phone's `hello` is accepted (with its app version, and `pings` when it answers the PC's), pairing completes |
 | `remote-session-refused` | `protocol` (with the phone's protocol), `pairing-expired`, `already-paired` |
 | `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`), its age, its path, and `via` |
 | `remote-lan` | The home-network listener: `started` (its port, whether it moved from the one it tried first, `any` or `loopback`, how many addresses it gives phones), `waiting` (for the other BlackPearl process to let go of the port), `busy` (every port taken), `stopped`; `opened` and `closed` for each connection (a short random id, the reason, whether it proved itself); `refused`, once per reason a minute (`too-many-connections`, `too-many-from-address`, `bad-request`, `wrong-pc`, `protocol`, `too-large`, `rate`, `unproven`), with `evicted` and `superseded` among the reasons connections close; `port-not-saved` when the port couldn't be remembered; and `firewall` when what Windows Firewall decided changes (`allowed`, `off`, `blocked`, `undecided`, `unknown`, the network's category, and other firewalls Windows lists). No addresses. |

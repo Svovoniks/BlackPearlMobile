@@ -154,6 +154,9 @@ void main() {
     await tester.drag(find.byType(ListView), const Offset(0, -3000));
     await tester.pumpAndSettle();
     final log = find.byKey(const ValueKey('app-log'));
+    // A fixed scroll lands it wherever the text above it ends; this brings it into view whatever that text says.
+    await tester.ensureVisible(log);
+    await tester.pumpAndSettle();
     SwitchListTile tile() => tester.widget<SwitchListTile>(log);
     expect(find.text("Send the app's log"), findsOneWidget);
     expect(find.textContaining('never titles, names or addresses'), findsOneWidget);

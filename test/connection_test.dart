@@ -204,7 +204,7 @@ void main() {
       expect(h.peer.remoteCandidates, [('candidate:2 1 UDP 1 192.168.1.5 6000 typ host', '0')]);
 
       h.peer.open();
-      expect(h.peer.sent.single, {'type': 'hello', 'protocol': 1, 'app': '1.2.3', 'device': 'Test phone'});
+      expect(h.peer.sent.single, {'type': 'hello', 'protocol': 1, 'app': '1.2.3', 'device': 'Test phone', 'features': ['ping']});
       h.peer.receive({'type': 'welcome', 'protocol': 1, 'app': '0.4.0', 'pc': 'Living room', 'pcId': pcId, 'canStart': true});
       async.flushMicrotasks();
       expect(h.connection.status.phase, LinkPhase.connected);

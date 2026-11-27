@@ -60,8 +60,8 @@ class AppSettings extends ChangeNotifier {
   /// lists start the next one in the same place.
   bool get playOnPc => _playOnPc;
 
-  /// Whether errors, crashes and how long startup and opening videos take go to BlackPearl's developer through Sentry,
-  /// with paths, titles, addresses and names removed. On by default.
+  /// Whether errors, crashes, how long startup and opening videos take and how fast the link to the PC is go to
+  /// BlackPearl's developer through Sentry, with paths, titles, addresses and names removed. On by default.
   bool get crashReports => _crashReports;
 
   /// Whether crash reports also carry the app's log: notes of what it did just before (connecting to the PC, opening a
