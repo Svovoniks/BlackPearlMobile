@@ -205,6 +205,12 @@ class PhonePlayback extends ChangeNotifier {
       final chosen = _chosenSubtitle;
       subtitle ??= chosen == null ? null : (chosen.off ? -1 : chosen.index);
     }
+    // Tracks picked by hand go with this video's other streams, and with the next episode of this viewing ([step]): by
+    // language, as another file lists its tracks in its own order. Another video starts from the PC's preferences.
+    final carries = replacing || step != null;
+    final pickedAudio = carries ? _chosenAudio : null, pickedSubtitle = carries ? _chosenSubtitle : null;
+    // Subtitles turned off by hand: off is the same in every file.
+    if (!replacing && pickedSubtitle?.off == true) subtitle ??= -1;
     _handedOver = false;
     _switching = true;
     if (!replacing) {
@@ -237,6 +243,10 @@ class PhonePlayback extends ChangeNotifier {
         if ((queue ?? (replacing ? _followed : null)) case final inQueue?) ...{'queue': inQueue.id, 'queueIndex': ?inQueue.index},
         'audio': ?audio,
         'subtitle': ?subtitle,
+        // Another episode: a conversion starts with the tracks picked by hand earlier in this viewing, by language, as
+        // its file has tracks of its own. PCs before 0.3.171 ignore this; [_applyTrackPreferences] then asks for them.
+        if (pickedAudio case final picked? when audio == null && picked.language != null) ...{'audioLanguage': picked.language, 'audioTitle': ?picked.title},
+        if (pickedSubtitle case final picked? when subtitle == null && !picked.off && picked.language != null) ...{'subtitleLanguage': picked.language, 'subtitleTitle': ?picked.title},
         if (_convertAnyway == id) 'convertAnyway': true,
       }, timeout: const Duration(seconds: 45));
       info = StreamInfo.fromJson(reply);
@@ -280,9 +290,11 @@ class PhonePlayback extends ChangeNotifier {
     _endRecovery();
     final previousAddress = _address;
     if (!replacing) {
-      // Track choices belong to a video; another episode starts from the PC's preferences again.
-      _chosenAudio = null;
-      _chosenSubtitle = null;
+      // The next episode starts with the tracks picked for the last one, ahead of the PC's preferences; their places
+      // were the last file's.
+      _chosenAudio = pickedAudio == null ? null : (language: pickedAudio.language, title: pickedAudio.title, index: null);
+      _chosenSubtitle = pickedSubtitle == null ? null : (off: pickedSubtitle.off, language: pickedSubtitle.language, title: pickedSubtitle.title, index: null);
+      _tracksCarried = pickedAudio != null || pickedSubtitle != null;
     }
     _stream = info;
     final asked = quality;
@@ -368,8 +380,10 @@ class PhonePlayback extends ChangeNotifier {
     if (notify) notifyListeners();
   }
 
-  // The quality the user chose in this viewing; the next episode opens at it too.
+  // The quality the user chose in this viewing; the next episode opens at it too. [_chosenAnyway]: it was converted
+  // though the file was already as small, for a file the phone can't play itself, and so is the next episode.
   String? _chosenQuality;
+  bool _chosenAnyway = false;
 
   // Where a recovered stream started; data running out there again means the file is shorter than its header says.
   int? _endsAt;
@@ -401,7 +415,10 @@ class PhonePlayback extends ChangeNotifier {
     // Where it stopped while stalled; the opening position until the player has said where it is.
     final position = _stalledAt ?? (player == null ? current.positionMs : _positionOf(player));
     // The next episode opens at the quality chosen here, once the PC has given it.
-    if (await watch(current.id, quality: quality, startAt: position, offerConversion: true)) _chosenQuality = quality;
+    if (await watch(current.id, quality: quality, startAt: position, offerConversion: true)) {
+      _chosenQuality = quality;
+      _chosenAnyway = false;
+    }
   }
 
   /// Converts the video on screen at [quality] though the PC said the file is already as small: for a file the phone
@@ -416,7 +433,10 @@ class PhonePlayback extends ChangeNotifier {
     }
     final player = _player;
     final position = _stalledAt ?? (player == null ? current.positionMs : _positionOf(player));
-    if (await watch(current.id, quality: quality, startAt: position, convertAnyway: true)) _chosenQuality = quality;
+    if (await watch(current.id, quality: quality, startAt: position, convertAnyway: true)) {
+      _chosenQuality = quality;
+      _chosenAnyway = true;
+    }
   }
 
   // The codec list again, just before a file opens: once media_kit's VideoController is attached, this waits for it,
@@ -794,7 +814,7 @@ class PhonePlayback extends ChangeNotifier {
   Future<bool> playListed(LibraryEntry entry, QueueRef? queue) async {
     final step = EpisodeStep.ofEntry(entry, inQueue: queue != null);
     if (pending.value?.episode?.id == step.id) return false;
-    return watch(step.id, quality: _chosenQuality, step: step, queue: queue?.at(entry.index));
+    return watch(step.id, quality: _chosenQuality, convertAnyway: _chosenAnyway, step: step, queue: queue?.at(entry.index));
   }
 
   /// Whether Previous goes back to the start of this video rather than to the episode before: once it has played more
@@ -831,11 +851,11 @@ class PhonePlayback extends ChangeNotifier {
     if (step != null) await playEpisode(step);
   }
 
-  /// Plays another episode on the same player, at the quality chosen in this viewing.
+  /// Plays another episode on the same player, with the quality and tracks chosen in this viewing.
   Future<bool> playEpisode(EpisodeStep step) async {
     if (pending.value?.episode?.id == step.id) return false;
     final followed = _followed;
-    return watch(step.id, quality: _chosenQuality, step: step, queue: followed != null && step.queueIndex != null ? followed.at(step.queueIndex) : null);
+    return watch(step.id, quality: _chosenQuality, convertAnyway: _chosenAnyway, step: step, queue: followed != null && step.queueIndex != null ? followed.at(step.queueIndex) : null);
   }
 
   /// The next episode, offered when this one ends.
@@ -904,6 +924,68 @@ class PhonePlayback extends ChangeNotifier {
   ({bool off, String? language, String? title, int? index})? _chosenSubtitle;
   bool _tracksApplied = false;
   String? _defaultSubtitle;
+  // The video on screen is another episode, and [_chosenAudio] or [_chosenSubtitle] came with it from an earlier one.
+  bool _tracksCarried = false;
+  // The audio of such an episode was switched to the one picked; its subtitles follow once the new conversion is open.
+  bool _subtitlesToFollow = false;
+
+  // The track of another file that is the one picked, as the PC finds it from the language and title the phone sends
+  // (SessionTracks.Match): one in the same language, the same title first, else the first in it. Titles compare without
+  // case and without what isn't the track's own ([trackTitle]). With no language known, the same title only.
+  static T? _matchPicked<T>(List<T> tracks, String? language, String? title, String? Function(T) languageOf, String? Function(T) titleOf) {
+    final name = trackTitle(title)?.toLowerCase();
+    bool sameName(T t) => name != null && trackTitle(titleOf(t))?.toLowerCase() == name;
+    if (language == null) return tracks.where(sameName).firstOrNull;
+    final inLanguage = tracks.where((t) => languageOf(t) == language).toList();
+    return inLanguage.where(sameName).firstOrNull ?? inLanguage.firstOrNull;
+  }
+
+  /// A track's own title, as the PC reads it (ChosenTrack.Title): without the language a player appends
+  /// ("Full - [English]") and never its number ("Track 3"), which another file gives to another track. Null for none.
+  @visibleForTesting
+  static String? trackTitle(String? name) {
+    var title = (name ?? '').replaceFirst(RegExp(r'\s*-\s*\[[^\]]+\]$'), '').trim();
+    title = title.replaceFirst(RegExp(r'\s*·\s*(detected|identifying language)$', caseSensitive: false), '').trim();
+    return title.isEmpty || RegExp(r'^(Track\s*\d+|Track|Detected)$', caseSensitive: false).hasMatch(title) ? null : title;
+  }
+
+  static AudioTrack? _matchChosen(List<AudioTrack> tracks, ({String? language, String? title, int? index}) chosen) =>
+      _matchPicked(tracks, chosen.language, chosen.title, (t) => TrackLanguages.languageOf(t.language, t.title), (t) => t.title);
+
+  static SubtitleTrack? _matchChosenSubtitle(List<SubtitleTrack> tracks, ({bool off, String? language, String? title, int? index}) chosen) =>
+      _matchPicked(tracks, chosen.language, chosen.title, (t) => TrackLanguages.languageOf(t.language, t.title), (t) => t.title);
+
+  // A conversion of another episode that a PC before 0.3.171 started on its own preferences, as it didn't hear which
+  // tracks were picked for the last one: the phone asks for them, audio first, as each takes the PC a moment.
+  // Another audio track is another conversion, which brings the subtitles' turn with it ([_subtitlesToFollow]).
+  // Subtitles the PC would have to draw into the picture are left as the PC started: drawing them in again can take it
+  // long enough that it answers with none, which would turn the pick off for the episodes after.
+  Future<void> _followCarried(({String? language, String? title, int? index})? audio, ({bool off, String? language, String? title, int? index})? subtitle) async {
+    // Something the user asked for is on its way: it decides, and nothing is said about a pick they didn't make here.
+    if (pending.value != null) return;
+    final converted = _convertedAudio, stream = _stream;
+    if (audio?.language != null && converted != null && stream?.audioTrack != null) {
+      final want = _matchChosen(converted, audio!);
+      if (want != null && want.id != '${stream!.audioTrack! + 1}') {
+        _subtitlesToFollow = subtitle != null;
+        await chooseAudio(want);
+        // Refused, or not asked for after all: the subtitles follow on the conversion playing now, not on a later one.
+        if (!identical(_stream, stream)) return;
+        _subtitlesToFollow = false;
+      }
+    }
+    final now = _stream, listed = _convertedSubtitles;
+    if (subtitle == null || now == null || listed == null || pending.value != null) return;
+    final shown = now.subtitleTrack == null ? null : '${now.subtitleTrack! + 1}';
+    final burned = now.burnedSubtitle != null;
+    if (subtitle.off) {
+      if (shown != null && !burned) await chooseSubtitle(null);
+    } else if (subtitle.language != null) {
+      final want = _matchChosenSubtitle(listed, subtitle);
+      final index = want == null ? null : int.tryParse(want.id);
+      if (want != null && want.id != shown && !burned && index != null && now.sourceSubtitle(index - 1)?.burn == false) await chooseSubtitle(want);
+    }
+  }
 
   static List<AudioTrack> audioChoices(Tracks tracks) => tracks.audio.where((t) => t.id != 'auto' && t.id != 'no').toList();
   static List<SubtitleTrack> subtitleChoices(Tracks tracks) => tracks.subtitle.where((t) => t.id != 'auto' && t.id != 'no').toList();
@@ -1190,10 +1272,17 @@ class PhonePlayback extends ChangeNotifier {
       _tracksApplied = true;
       final shown = stream.sourceSubtitle(stream.subtitleTrack);
       if (shown != null && !shown.burn) await _showSubtitleFile(player, stream, shown, _subtitlePick);
+      // Picked for an earlier episode: what the PC converted with is checked against them, once.
+      if (_tracksCarried || _subtitlesToFollow) {
+        final carriedAudio = _tracksCarried ? _chosenAudio : null;
+        _tracksCarried = _subtitlesToFollow = false;
+        unawaited(_followCarried(carriedAudio, _chosenSubtitle));
+      }
       return;
     }
     if (audio.isEmpty) return;
     _tracksApplied = true;
+    _tracksCarried = _subtitlesToFollow = false;
     final selected = await selectedTracks();
     _defaultSubtitle = selected.subtitle;
     String? language(AudioTrack t) => TrackLanguages.languageOf(t.language, t.title);
@@ -1202,10 +1291,11 @@ class PhonePlayback extends ChangeNotifier {
     if (chosen != null) {
       // A choice belongs to this video, whose file lists its tracks in the same order every time: the place picked is
       // the track, whatever language libmpv gives it (one the PC identified is untagged to libmpv).
+      // Carried from an earlier episode, it has no place, and is found by its language and title.
       final place = chosen.index;
-      pick = (place != null && place < audio.length ? audio[place] : null) ??
-          audio.where((t) => language(t) == chosen.language && t.title == chosen.title).firstOrNull ??
-          audio.where((t) => language(t) == chosen.language).firstOrNull;
+      pick = (place != null && place < audio.length ? audio[place] : null) ?? _matchChosen(audio, chosen);
+      // None in that language: the PC's preferences pick, as for a video nothing was picked for.
+      pick ??= place == null ? TrackLanguages.select(audio, stream.tracks.audio, language, named: (t) => (tag: t.language, title: t.title)) : null;
     } else {
       pick = TrackLanguages.select(audio, stream.tracks.audio, language, named: (t) => (tag: t.language, title: t.title));
     }
@@ -1214,15 +1304,17 @@ class PhonePlayback extends ChangeNotifier {
     final subtitle = _chosenSubtitle;
     if (subtitle != null) {
       final tracks = subtitleChoices(_tracks);
-      String? subtitleLanguage(SubtitleTrack t) => TrackLanguages.languageOf(t.language, t.title);
       // As for audio, the place picked is the track; the file lists them in the same order every time.
       final place = subtitle.index;
       final match = subtitle.off
           ? SubtitleTrack.no()
-          : (place != null && place < tracks.length ? tracks[place] : null) ??
-              tracks.where((t) => subtitleLanguage(t) == subtitle.language && t.title == subtitle.title).firstOrNull ??
-              tracks.where((t) => subtitleLanguage(t) == subtitle.language).firstOrNull;
-      if (match != null) await player.setSubtitleTrack(match);
+          : (place != null && place < tracks.length ? tracks[place] : null) ?? _matchChosenSubtitle(tracks, subtitle);
+      if (match != null) {
+        await player.setSubtitleTrack(match);
+      } else {
+        // Picked for an earlier episode, and this one has none in that language: the PC's preferences pick.
+        await _applySubtitlePreference(playing == null ? null : language(playing));
+      }
     } else {
       await _applySubtitlePreference(playing == null ? null : language(playing));
     }
@@ -1310,6 +1402,8 @@ class PhonePlayback extends ChangeNotifier {
     _setPending(null, notify: false);
     _switching = false;
     _chosenQuality = null;
+    _chosenAnyway = false;
+    _tracksCarried = _subtitlesToFollow = false;
     _chosenAudio = null;
     _chosenSubtitle = null;
     _followed = null;

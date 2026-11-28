@@ -334,6 +334,15 @@ audio track. Without one the PC starts with the track its own player would: the 
 default, else none. A track that can't be drawn in after all (it takes the PC more than 25 seconds to prepare) is
 answered as none. Older PCs send neither, and their conversions carry no subtitles.
 
+From 0.3.171 `watch` also takes the language of the tracks picked by hand for an earlier episode of the same viewing,
+as the phone sends for the next one: `"audioLanguage":"ja","audioTitle":"Original"` and `"subtitleLanguage":"en",
+"subtitleTitle":"Full"` (a two-letter code, and the track's title or none). Another file lists its tracks in its own
+order, so an index from the last one would name another track. The conversion starts with the track in that language,
+the one with that title first, ahead of Settings › Playback, even where it says otherwise; with none in that language,
+Settings › Playback decides. Subtitles turned off by hand come as `"subtitle":-1`, which means the same in every file.
+An `audio` or `subtitle` index wins over these. Older PCs ignore them, and the phone then switches to the track once the
+conversion has started.
+
 Both also carry, for an episode, the episodes the PC's own Previous and Next would play and the show's first episode,
 which Loop all starts again from after the last one, each as `{"id":"…","title":"…","detail":"Season 2 · Episode 4"}`
 or null (`previous`, `next`, `first`; `first` only when there is no `next`), and the PC's track preferences from
