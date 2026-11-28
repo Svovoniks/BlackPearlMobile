@@ -311,6 +311,38 @@ or with an index the file doesn't have, the PC starts with the track its own pla
 Settings › Playback that a track has, else the track the file marks as default, else the first. Before 0.3.143 a
 conversion had no sound, and the answer listed no tracks.
 
+From 0.3.169 a conversion also lists the file's subtitle tracks, in the file's order, and says which one to show:
+
+```json
+"subtitleTracks":[{"index":0,"language":"eng","title":"Full","codec":"subrip","default":true,"forced":false,"burn":false},
+                  {"index":1,"language":"eng","title":"Signs","codec":"ass","default":false,"forced":false,"burn":true}],
+"subtitleTrack":0
+```
+
+`language` and `title` are as for audio. A track with `burn` false is sent as a file: the phone reads it on `media-v1`
+as `subtitle/<streamId>/<index>` and its player draws it, so it turns on and off at once. The file is ASS for an ASS
+track and SubRip for any other text, with times from 0:00 at the start of the video, as the player counts once it has
+moved the conversion's first timestamp to 0:00 (its pieces carry the video's own timestamps plus 10 seconds). The PC
+reads it out of the whole video the first time it is asked for, and answers `busy` until then. A track with `burn` true
+can only be shown drawn into the picture by the PC: pictures (PGS, VobSub, DVB), and ASS when the video brings fonts of
+its own, which the phone doesn't have. `subtitleTrack` is the `index` of the track to show, or null for none: a `burn`
+track the conversion already has in its picture, or a file the phone reads and shows. `watch` takes `"subtitle":<index>`
+for the track the phone shows, or `-1` for none, as it sends when its Subtitles menu turns a drawn track on or off (the
+PC converts again, from where the video is), and when its user picked subtitles by hand and asks for another quality or
+audio track. Without one the PC starts with the track its own player would: the first language of Settings › Playback
+(of the rule for the audio's language) that a track has, `off` first meaning none, else the track the file marks as
+default, else none. A track that can't be drawn in after all (it takes the PC more than 25 seconds to prepare) is
+answered as none. Older PCs send neither, and their conversions carry no subtitles.
+
+From 0.3.171 `watch` also takes the language of the tracks picked by hand for an earlier episode of the same viewing,
+as the phone sends for the next one: `"audioLanguage":"ja","audioTitle":"Original"` and `"subtitleLanguage":"en",
+"subtitleTitle":"Full"` (a two-letter code, and the track's title or none). Another file lists its tracks in its own
+order, so an index from the last one would name another track. The conversion starts with the track in that language,
+the one with that title first, ahead of Settings › Playback, even where it says otherwise; with none in that language,
+Settings › Playback decides. Subtitles turned off by hand come as `"subtitle":-1`, which means the same in every file.
+An `audio` or `subtitle` index wins over these. Older PCs ignore them, and the phone then switches to the track once the
+conversion has started.
+
 Both also carry, for an episode, the episodes the PC's own Previous and Next would play and the show's first episode,
 which Loop all starts again from after the last one, each as `{"id":"…","title":"…","detail":"Season 2 · Episode 4"}`
 or null (`previous`, `next`, `first`; `first` only when there is no `next`), and the PC's track preferences from
@@ -324,7 +356,8 @@ reason was a file already as small as the conversion would be: the same `watch` 
 it anyway, which saves no data but gives a phone that can't play the file itself the PC's H.264 (from 0.3.167; older
 PCs leave both out). The phone asks first, when its user picked that quality. The PC keeps one stream per phone; a
 new `watch` replaces it and `{"type":"stream-stop"}` ends it. A failure is an `error` with the `request` and the code
-`gone` (not in the library, or its drive is disconnected).
+`gone` (not in the library, or its drive is disconnected), or from 0.3.169 `replaced`: the phone sent another `watch`
+before this one was ready, which the PC answers instead.
 
 Phone → PC while watching, every 10 seconds, on pause, and when it stops:
 `{"type":"progress","id":"…","positionMs":1180000,"durationMs":2830000,"ended":false,"final":false}`. The PC saves it
@@ -393,7 +426,8 @@ know it closes it. The phone asks with text messages:
 `{"type":"cancel","id":<u32>}` for a read it no longer needs.
 
 Resources: `file/<id>` (the video of the phone's current `file` stream), `stream/<stream id>/<piece>` (a piece of
-its current conversion) and `art/<token>/<width>` (an entry's picture as JPEG, at most `width` pixels wide, 64 to
+its current conversion), `subtitle/<stream id>/<index>` (a subtitle track of its current conversion, sent as a file)
+and `art/<token>/<width>` (an entry's picture as JPEG, at most `width` pixels wide, 64 to
 1280, never enlarged). A token names the same picture in every BlackPearl process on the PC: after 0.3.144, one handed
 out by the phone host still works once the app has taken over, and the other way round. The phone asks again for a
 picture that didn't come, a few times, further apart each time.
@@ -582,4 +616,4 @@ session and a phone by the first 8 characters of their random ids, and never hol
 | `remote-session-refused` | `protocol` (with the phone's protocol), `pairing-expired`, `already-paired` |
 | `remote-session-closed` | Once per session, with the first reason (`failed`, `disconnected`, `closed`, `channel-closed`, `replaced`, `removed`, `protocol`, `unreadable-offer`, `stopped`), its age, its path, and `via` |
 | `remote-lan` | The home-network listener: `started` (its port, whether it moved from the one it tried first, `any` or `loopback`, how many addresses it gives phones), `waiting` (for the other BlackPearl process to let go of the port), `busy` (every port taken), `stopped`; `opened` and `closed` for each connection (a short random id, the reason, whether it proved itself); `refused`, once per reason a minute (`too-many-connections`, `too-many-from-address`, `bad-request`, `wrong-pc`, `protocol`, `too-large`, `rate`, `unproven`), with `evicted` and `superseded` among the reasons connections close; `port-not-saved` when the port couldn't be remembered; and `firewall` when what Windows Firewall decided changes (`allowed`, `off`, `blocked`, `undecided`, `unknown`, the network's category, and other firewalls Windows lists). No addresses. |
-| `phone-read-failed`, `phone-resource-missing` | A read on `media-v1` failed, with the kind of resource; and why the PC had nothing for it (`no-video`, `other-video`, `not-converted`, `other-stream`, `no-such-piece`, `no-such-sound-piece`, `unknown-picture`, `missing-file`, `unreadable:<error>`, `malformed`) |
+| `phone-read-failed`, `phone-resource-missing` | A read on `media-v1` failed, with the kind of resource; and why the PC had nothing for it (`no-video`, `other-video`, `not-converted`, `other-stream`, `no-such-piece`, `no-such-sound-piece`, `no-such-subtitle`, `unreadable-subtitle`, `no-converter`, `unknown-picture`, `missing-file`, `unreadable:<error>`, `malformed`) |

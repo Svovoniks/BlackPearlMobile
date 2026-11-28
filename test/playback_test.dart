@@ -310,6 +310,55 @@ void main() {
       playback.dispose();
     });
 
+    test("subtitles carry on to the next episode's conversion: the PC hears their language, and an older PC's are switched", () async {
+      Map<String, dynamic> subtitled(String id, int? subtitle) => {
+        ...converted(id, 0),
+        'subtitleTracks': [
+          {'index': 0, 'language': 'eng', 'title': 'Full', 'codec': 'subrip', 'default': true, 'forced': false, 'burn': false},
+          {'index': 1, 'language': 'rus', 'title': null, 'codec': 'subrip', 'default': false, 'forced': false, 'burn': false},
+        ],
+        'subtitleTrack': subtitle,
+      };
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player, loadSubtitle: (player, resource, source) async => 'x${source.index}');
+      pc.answer = (type, fields) async => subtitled(fields['id'] as String, 0);
+      await playback.watch('e1', quality: '480p');
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await playback.chooseSubtitle(playback.subtitleTracks[1]);
+      expect(pc.asked, hasLength(1), reason: 'a file is shown without converting again');
+
+      // A PC that hears the language starts the next episode with them: nothing more is asked.
+      pc.answer = (type, fields) async => subtitled('e2', fields['subtitleLanguage'] == 'ru' ? 1 : 0);
+      await playback.playEpisode(const EpisodeStep(id: 'e2', title: 'Episode 2'));
+      expect(pc.asked.last.$2, containsPair('subtitleLanguage', 'ru'));
+      expect(pc.asked.last.$2.containsKey('subtitle'), isFalse, reason: "another file's tracks have places of their own");
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await pumpEventQueue();
+      expect(pc.asked, hasLength(2));
+      expect((await playback.selectedTracks()).subtitle, '2');
+
+      // An older PC starts it with its preferred ones; the phone shows the ones picked instead.
+      pc.answer = (type, fields) async => subtitled('e3', 0);
+      await playback.playEpisode(const EpisodeStep(id: 'e3', title: 'Episode 3'));
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await pumpEventQueue();
+      expect(pc.asked, hasLength(3));
+      expect((await playback.selectedTracks()).subtitle, '2');
+
+      // Turned off, the next episode asks for none.
+      await playback.chooseSubtitle(null);
+      pc.answer = (type, fields) async => subtitled('e4', fields['subtitle'] == -1 ? null : 0);
+      await playback.playEpisode(const EpisodeStep(id: 'e4', title: 'Episode 4'));
+      expect(pc.asked.last.$2, containsPair('subtitle', -1));
+      expect(pc.asked.last.$2.containsKey('subtitleLanguage'), isFalse);
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await pumpEventQueue();
+      expect(pc.asked, hasLength(4));
+      expect((await playback.selectedTracks()).subtitle, isNull);
+      playback.dispose();
+    });
+
     test('a video converted anyway has its next episode converted anyway too', () async {
       final pc = link();
       final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
@@ -326,6 +375,190 @@ void main() {
       await playback.playEpisode(const EpisodeStep(id: 'e3', title: 'Episode 3'));
       expect(pc.asked.last.$2, containsPair('quality', 'original'));
       expect(pc.asked.last.$2.containsKey('convertAnyway'), isFalse);
+      playback.dispose();
+    });
+  });
+
+  group("a conversion's subtitles", () {
+    // An SRT track and an ASS one with fonts of its own, which the PC can only draw into the picture.
+    Map<String, dynamic> converted(String quality, int? subtitle) => {
+      'type': 'stream', 'id': 'film', 'kind': 'hls', 'streamId': 'a' * 32, 'segments': 10, 'segmentMs': 4000, 'durationMs': 40000,
+      'quality': quality, 'qualities': ['original', '720p', '480p'],
+      'audioTracks': [{'index': 0, 'language': 'jpn', 'codec': 'aac', 'layout': 'stereo'}],
+      'audioTrack': 0,
+      'subtitleTracks': [
+        {'index': 0, 'language': 'eng', 'title': 'Full', 'codec': 'subrip', 'default': true, 'forced': false, 'burn': false},
+        {'index': 1, 'language': 'eng', 'title': 'Signs', 'codec': 'ass', 'default': false, 'forced': false, 'burn': true},
+        {'index': 2, 'language': 'rus', 'title': null, 'codec': 'subrip', 'default': false, 'forced': false, 'burn': false},
+      ],
+      'subtitleTrack': subtitle,
+    };
+    final piece = 'a' * 32;
+
+    // Reads subtitles as libmpv would get them: each file has libmpv's id x<index>. [read]: the resources read.
+    Future<(_FakePlayer, PhonePlayback, FakeRemoteLink, List<String>)> watching(int? subtitle, {bool fails = false}) async {
+      final pc = link();
+      final player = _FakePlayer();
+      final read = <String>[];
+      final playback = PhonePlayback(
+        link: pc,
+        createPlayer: () => player,
+        loadSubtitle: (player, resource, source) async {
+          read.add(resource);
+          return fails ? null : 'x${source.index}';
+        },
+      );
+      pc.answer = (type, fields) async => converted('480p', subtitle);
+      await playback.watch('film', quality: '480p');
+      // libmpv has the stream open.
+      await player.lists(const [AudioTrack('1', null, null)]);
+      return (player, playback, pc, read);
+    }
+
+    test("lists the file's tracks, and shows the one the PC picked from a file once the stream is open", () async {
+      final (player, playback, pc, read) = await watching(0);
+      expect(pc.asked.single.$2.containsKey('subtitle'), isFalse, reason: "the PC's preferences pick");
+      expect(playback.subtitleTracks.map((t) => (t.id, t.language, t.title)), [('1', 'eng', 'Full'), ('2', 'eng', 'Signs'), ('3', 'rus', null)]);
+      expect(read, ['subtitle/$piece/0']);
+      expect(player.subtitleSet.last, 'x0');
+      expect((await playback.selectedTracks()).subtitle, '1');
+
+      // Another file is read and shown at once, without asking the PC to convert again; one read already isn't read again.
+      await playback.chooseSubtitle(playback.subtitleTracks[2]);
+      expect(pc.asked, hasLength(1));
+      expect(read, hasLength(2));
+      expect((await playback.selectedTracks()).subtitle, '3');
+      await playback.chooseSubtitle(playback.subtitleTracks[0]);
+      expect(read, hasLength(2));
+      expect((await playback.selectedTracks()).subtitle, '1');
+      await playback.chooseSubtitle(null);
+      expect(pc.asked, hasLength(1));
+      expect((await playback.selectedTracks()).subtitle, isNull);
+      playback.dispose();
+    });
+
+    test('subtitles drawn into the picture take another conversion from where the video is, to turn on and to turn off', () async {
+      final (player, playback, pc, read) = await watching(null);
+      expect(read, isEmpty);
+      player.positionMs = 61000;
+      player.positions.add(const Duration(milliseconds: 61000));
+      await pumpEventQueue();
+      final answer = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => answer.future;
+      final switching = playback.chooseSubtitle(playback.subtitleTracks[1]);
+      await pumpEventQueue();
+      expect(pc.asked.last.$2, containsPair('subtitle', 1));
+      expect(pc.asked.last.$2, containsPair('quality', '480p'));
+      expect(pc.asked.last.$2, containsPair('audio', 0));
+      expect(playback.pending.value?.subtitle, '2', reason: 'the menus tick the subtitles on their way');
+      expect(playback.pending.value?.label, 'Switching to English subtitles…');
+      // Another quality waits for them.
+      await playback.changeQuality('720p');
+      expect(pc.asked, hasLength(2));
+      expect(playback.notice.value, 'Wait for the switch to English subtitles to finish, then pick the quality.');
+      answer.complete(converted('480p', 1));
+      await switching;
+      expect(player.opened.last.start, const Duration(milliseconds: 61000));
+      expect(playback.pending.value, isNull);
+      expect((await playback.selectedTracks()).subtitle, '2');
+      // Drawn in, they need no file.
+      await player.lists(const [AudioTrack('1', null, null)]);
+      expect(read, isEmpty);
+
+      // Another quality keeps them; a file track picked now takes them out of the picture first.
+      pc.answer = (type, fields) async => converted('720p', 1);
+      await playback.changeQuality('720p');
+      expect(pc.asked.last.$2, containsPair('subtitle', 1));
+      pc.answer = (type, fields) async => converted('720p', 2);
+      await playback.chooseSubtitle(playback.subtitleTracks[2]);
+      expect(pc.asked.last.$2, containsPair('subtitle', 2));
+      await player.lists(const [AudioTrack('1', null, null)]);
+      expect(read, ['subtitle/$piece/2']);
+      expect((await playback.selectedTracks()).subtitle, '3');
+
+      // Turned off from the picture, the PC converts without them.
+      pc.answer = (type, fields) async => converted('720p', 1);
+      await playback.chooseSubtitle(playback.subtitleTracks[1]);
+      final off = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => off.future;
+      final turningOff = playback.chooseSubtitle(null);
+      await pumpEventQueue();
+      expect(pc.asked.last.$2, containsPair('subtitle', -1));
+      expect(playback.pending.value?.label, 'Turning subtitles off…');
+      off.complete(converted('720p', null));
+      await turningOff;
+      expect((await playback.selectedTracks()).subtitle, isNull);
+      playback.dispose();
+    });
+
+    test('subtitles not picked by hand are left to the PC for another quality, and a new video', () async {
+      final (_, playback, pc, _) = await watching(0);
+      pc.answer = (type, fields) async => converted('720p', 0);
+      await playback.changeQuality('720p');
+      expect(pc.asked.last.$2.containsKey('subtitle'), isFalse);
+      await playback.chooseSubtitle(null);
+      await playback.changeQuality('480p');
+      expect(pc.asked.last.$2, containsPair('subtitle', -1), reason: 'turned off by hand, they stay off');
+      pc.answer = (type, fields) async => {...converted('480p', 0), 'id': 'next'};
+      await playback.watch('next', quality: '480p');
+      expect(pc.asked.last.$2.containsKey('subtitle'), isFalse);
+      playback.dispose();
+    });
+
+    test("a pick the player refuses, as while another quality is on its way, leaves the PC's subtitles loading", () async {
+      final pc = link();
+      final player = _FakePlayer();
+      final file = Completer<String?>();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player, loadSubtitle: (player, resource, source) => file.future);
+      pc.answer = (type, fields) async => converted('480p', 0);
+      await playback.watch('film', quality: '480p');
+      await player.lists(const [AudioTrack('1', null, null)]);
+      final quality = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => quality.future;
+      final switching = playback.changeQuality('720p');
+      await pumpEventQueue();
+      await playback.chooseSubtitle(playback.subtitleTracks[2]);
+      expect(playback.notice.value, 'Wait for the switch to 720p to finish, then pick the subtitles.');
+      file.complete('x0');
+      await pumpEventQueue();
+      expect(player.subtitleSet.last, 'x0', reason: 'the refused pick replaced nothing');
+      quality.completeError(const RemoteRequestException('busy', 'The PC is busy.'));
+      await switching;
+      expect((await playback.selectedTracks()).subtitle, '1');
+      playback.dispose();
+    });
+
+    test("subtitles the PC couldn't draw into the picture say so, and are off from then on", () async {
+      final (player, playback, pc, _) = await watching(0);
+      // A file track picked by hand first: the drawn-in pick that fails replaces it.
+      await playback.chooseSubtitle(playback.subtitleTracks[2]);
+      pc.answer = (type, fields) async => converted('480p', null);
+      await playback.chooseSubtitle(playback.subtitleTracks[1]);
+      expect(pc.asked.last.$2, containsPair('subtitle', 1));
+      expect(playback.notice.value, "The PC couldn't draw those subtitles into the picture, so they are off.");
+      await player.lists(const [AudioTrack('1', null, null)]);
+      expect((await playback.selectedTracks()).subtitle, isNull);
+      pc.answer = (type, fields) async => converted('720p', null);
+      await playback.changeQuality('720p');
+      expect(pc.asked.last.$2, containsPair('subtitle', -1), reason: 'off, as the menu shows');
+      playback.dispose();
+    });
+
+    test("subtitles that can't be read from the PC say so", () async {
+      final (player, playback, _, read) = await watching(0, fails: true);
+      expect(read, hasLength(1));
+      expect(player.subtitleSet, isEmpty);
+      expect(playback.notice.value, "The subtitles couldn't be loaded from the PC.");
+      playback.dispose();
+    });
+
+    test('from an older PC, the player lists what libmpv has', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => {...converted('480p', null)}..remove('subtitleTracks')..remove('subtitleTrack');
+      await playback.watch('film', quality: '480p');
+      expect(playback.stream?.sourceSubtitles, isNull);
+      expect(playback.subtitleTracks, isEmpty);
       playback.dispose();
     });
   });
@@ -674,6 +907,7 @@ class _FakePlayer extends Fake implements Player {
     duration: Duration(milliseconds: durationMs),
     playing: playing,
     tracks: Tracks(audio: audio),
+    track: Track(subtitle: SubtitleTrack(subtitleSet.lastOrNull ?? 'no', null, null)),
   );
 
   @override
@@ -714,9 +948,11 @@ class _FakePlayer extends Fake implements Player {
   @override
   Future<void> setAudioTrack(AudioTrack track) async => audioSet.add(track.id);
 
+  // The subtitle tracks set, by id; the last one is shown.
+  final List<String> subtitleSet = [];
+
   @override
   Future<void> setSubtitleTrack(SubtitleTrack track) async => subtitleSet.add(track.id);
-  final List<String> subtitleSet = [];
 
   @override
   Future<void> dispose() async {}

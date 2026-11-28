@@ -9,7 +9,7 @@ import nodeDataChannel from 'node-datachannel';
 import { Log } from './lib/log.js';
 import { RoomServer } from './lib/room-server.js';
 import { Store } from './lib/store.js';
-import { openVideo } from './lib/video.js';
+import { openConversion, openVideo } from './lib/video.js';
 import { Library } from './lib/library.js';
 import { StandinPc, allFeatures, defaultFeatures } from './lib/standin-pc.js';
 import { LanListener } from './lib/lan.js';
@@ -19,6 +19,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const usage = `Usage: node index.js --video <file> [options]
 
   --video <file>          the real video every playable library entry plays (read only)
+  --conversion <folder>   answer a watch that asks for a conversion with this one: stream.ts (one piece) and
+                          subtitles.json, a list of {language, title, codec, burn, file}; see README.md
   --port <n>              room server port (default 8790; 0 picks a free one)
   --bind <address>        where the room server and the home-network socket listen (default 127.0.0.1;
                           0.0.0.0 to let a real phone on the network in)
@@ -46,6 +48,7 @@ try {
   options = parseArgs({
     options: {
       video: { type: 'string' },
+      conversion: { type: 'string' },
       port: { type: 'string', default: '8790' },
       bind: { type: 'string', default: '127.0.0.1' },
       'public-url': { type: 'string' },
@@ -108,7 +111,16 @@ if (!options.connect) {
 
 const store = new Store(resolve(options.state));
 if (options.name) store.data.name = options.name;
-const library = new Library({ video, store });
+let conversion = null;
+if (options.conversion) {
+  try {
+    conversion = await openConversion(resolve(options.conversion));
+  } catch (error) {
+    console.error(`Can't open the conversion: ${error.message}`);
+    process.exit(1);
+  }
+}
+const library = new Library({ video, store, conversion });
 const pc = new StandinPc({
   store,
   library,
