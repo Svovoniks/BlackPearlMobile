@@ -197,7 +197,18 @@ function Invoke-CheckRun {
         Pid = $PID; ProcessStart = (Get-Process -Id $PID).StartTime.ToUniversalTime().Ticks
     }
     Write-CheckRecord $recordPath $record
+    $turn = $null
     try {
+        $turn = Enter-ReleaseCheckTurn "BlackPearl Mobile $($Commit.Substring(0, 8))$(if ($Branch) { " ($Branch)" })" {
+            param($holder)
+            Write-Host "Waiting for the release checks of $holder to finish: release checks on this computer take turns."
+            $record.WaitingFor = $holder
+            Write-CheckRecord $recordPath $record
+        }
+        if ($record.ContainsKey('WaitingFor')) {
+            $record.Remove('WaitingFor'); $record.TurnStarted = [datetime]::UtcNow.ToString('o')
+            Write-CheckRecord $recordPath $record
+        }
         Invoke-Native git @('-C', $Root, 'worktree', 'add', '--detach', $checkout, $Commit)
         Invoke-ReleaseChecks $checkout $FlutterPath
         $record.State = 'passed'; $record.Checked = [datetime]::UtcNow.ToString('o')
@@ -212,6 +223,7 @@ function Invoke-CheckRun {
         Write-CheckRecord $recordPath $record
         throw
     }
+    finally { Exit-ReleaseCheckTurn $turn }
 }
 # A newer push of the same branch makes checks of its older commits pointless; stop them so they do not slow the new run.
 function Stop-SupersededChecks {
@@ -499,7 +511,7 @@ try {
         $verdict = Get-ReviewVerdict (Get-PullRequestComments $pull.number)
         Write-Host "#$($pull.number) $($pull.title)"
         Write-Host "Head: $head"
-        Write-Host "Release checks: $($local.State)$(if ($local.State -eq 'running') { " since $(([datetimeoffset]$local.Started).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz'))" })"
+        Write-Host "Release checks: $(Format-CheckProgress $local)$(if ((Format-CheckProgress $local) -eq 'running') { " since $(([datetimeoffset]$local.Started).ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss zzz'))" })"
         if ($local.State -eq 'failed') {
             Write-Host "  $($local.Error)"
             Write-Host "  $(Format-CheckEvidence $local)"
@@ -559,13 +571,13 @@ try {
         $checks = $null; $localPassed = $false; $lastState = ''; $lastLocal = ''
         while ($true) {
             $local = Get-CheckState $localRecord
-            if ($local.State -ne $lastLocal) { Write-Host "Release checks: $($local.State)"; $lastLocal = $local.State }
+            if ((Format-CheckProgress $local) -ne $lastLocal) { $lastLocal = Format-CheckProgress $local; Write-Host "Release checks: $lastLocal" }
             if ($local.State -eq 'passed') { $localPassed = $true }
             elseif ($local.State -eq 'failed') { throw "Release checks failed on ${head}: $($local.Error) $(Format-CheckEvidence $local)$checkFailureAdvice" }
             elseif ($local.State -ne 'running' -and $pauseAt -ne [datetime]::MaxValue) {
                 Write-Host "Release checks on $head started in the background, log $(Start-BackgroundChecks $root $head (Resolve-Flutter $Flutter) $pull.head.ref)"
                 $local = Get-CheckState $localRecord
-                $lastLocal = $local.State
+                $lastLocal = Format-CheckProgress $local
             }
             elseif ($local.State -ne 'running') {
                 Write-Host "Running the release checks on $head here..."
@@ -584,7 +596,7 @@ try {
             }
             if ($checks -and $localPassed) { break }
             if ([datetime]::UtcNow -ge $deadline) { throw 'Timed out waiting for the pull request and release checks. Rerun -Merge.' }
-            $waiting = @(@($(if (!$localPassed) { "release checks $($local.State)" }), $(if (!$checks) { "pull request checks $lastState" })) | Where-Object { $_ }) -join ' and '
+            $waiting = @(@($(if (!$localPassed) { "release checks $(Format-CheckProgress $local)" }), $(if (!$checks) { "pull request checks $lastState" })) | Where-Object { $_ }) -join ' and '
             Suspend-ShipWhenDue $pauseAt "#$number is not merged yet, waiting for $waiting" $mergeResume
             Start-Sleep -Seconds 20
         }

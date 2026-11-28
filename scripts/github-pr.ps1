@@ -101,6 +101,58 @@ function Get-CheckState {
     }
     return $record
 }
+# Release checks on one computer take turns, BlackPearl's and BlackPearl Mobile's alike (both ship.ps1 use this file).
+# Two runs at once each take about twice as long, and the desktop app's load-sensitive startup gate
+# (desktop-main-suite.ps1) fails on all its attempts while another run builds or tests beside it. The turn is an
+# exclusive open of the lock file, which the system releases when its process ends, however it ends. The file beside it
+# names the run that holds the turn, for the runs that wait.
+function Get-ReleaseCheckLockPath {
+    $directory = if ($IsWindows -and $env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [IO.Path]::GetTempPath() }
+    return Join-Path $directory 'blackpearl-release-checks.lock'
+}
+function Get-ReleaseCheckHolder {
+    param([string]$Path = (Get-ReleaseCheckLockPath))
+    try {
+        $holder = Get-Content -LiteralPath "$Path.json" -Raw -ErrorAction Stop | ConvertFrom-Json
+        return "$($holder.Run), started $(([datetimeoffset]$holder.Since).ToLocalTime().ToString('HH:mm'))"
+    }
+    catch { return 'another run' }
+}
+# Waits until no other release checks run on this computer, and returns the turn for Exit-ReleaseCheckTurn. -OnWait
+# gets the run waited for each time that changes.
+function Enter-ReleaseCheckTurn {
+    param([string]$Run, [scriptblock]$OnWait = $null, [string]$Path = (Get-ReleaseCheckLockPath), [double]$TimeoutMinutes = 180, [int]$PollSeconds = 10)
+    $deadline = [datetime]::UtcNow.AddMinutes($TimeoutMinutes)
+    $waitingFor = $null
+    while ($true) {
+        $turn = $null
+        try { $turn = [IO.File]::Open($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.IOException] { }
+        if ($turn) {
+            @{ Run = $Run; Pid = $PID; Since = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json | Set-Content -LiteralPath "$Path.json"
+            return [pscustomobject]@{ Stream = $turn; Path = $Path }
+        }
+        $holder = Get-ReleaseCheckHolder $Path
+        if ($holder -cne $waitingFor) {
+            $waitingFor = $holder
+            if ($OnWait) { & $OnWait $holder }
+        }
+        if ([datetime]::UtcNow -ge $deadline) { throw "The release checks waited $TimeoutMinutes minutes for their turn on this computer, behind $waitingFor." }
+        Start-Sleep -Seconds $PollSeconds
+    }
+}
+function Exit-ReleaseCheckTurn {
+    param($Turn)
+    if (!$Turn) { return }
+    Remove-Item -LiteralPath "$($Turn.Path).json" -Force -ErrorAction SilentlyContinue
+    $Turn.Stream.Dispose()
+}
+# A running record's progress: queued behind another computer-wide run, or running.
+function Format-CheckProgress {
+    param($State)
+    if ($State.State -eq 'running' -and $State.PSObject.Properties['WaitingFor'] -and $State.WaitingFor) { return "queued behind $($State.WaitingFor)" }
+    return $State.State
+}
 function Format-CheckEvidence {
     param($State)
     $parts = @()

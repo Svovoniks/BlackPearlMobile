@@ -299,6 +299,39 @@ try {
         Check ($failed -and $failed -isnot [ShipPausedException]) 'a release still not public at the carried deadline fails instead of waiting again'
     }
     finally { Set-Item -Path function:Get-PublicJson -Value $originalPublicJson }
+    # Release checks on one computer take turns.
+    $lockPath = Join-Path $testRoot 'release-checks.lock'
+    $turn = Enter-ReleaseCheckTurn 'fixture run A' -Path $lockPath -TimeoutMinutes 0
+    Check ((Get-ReleaseCheckHolder $lockPath) -like 'fixture run A, started *') 'a run that takes its turn names itself for the runs that wait'
+    $waited = [Collections.Generic.List[string]]::new()
+    $queued = $null
+    try { Enter-ReleaseCheckTurn 'fixture run B' { param($holder) $waited.Add($holder) } -Path $lockPath -TimeoutMinutes 0 | Out-Null } catch { $queued = $_.Exception }
+    Check ($queued -and $queued.Message.Contains('fixture run A') -and $waited.Count -eq 1 -and $waited[0].StartsWith('fixture run A')) 'a second run waits while another holds the turn, and names the run it waits for'
+    Exit-ReleaseCheckTurn $turn
+    Check (!(Test-Path -LiteralPath "$lockPath.json")) 'a run that ends its turn no longer claims it'
+    $turn = Enter-ReleaseCheckTurn 'fixture run B' -Path $lockPath -TimeoutMinutes 0
+    Exit-ReleaseCheckTurn $turn
+    Check $true 'the next run takes the turn once the first ends it'
+    # A run killed mid-checks cannot run its cleanup; the system still releases its turn.
+    $ready = Join-Path $testRoot 'holder-ready'
+    $holderScript = Join-Path $testRoot 'holder.ps1'
+    Set-Content -LiteralPath $holderScript -Value ". '$((Join-Path $PSScriptRoot 'github-pr.ps1') -replace "'", "''")'; `$t = Enter-ReleaseCheckTurn 'fixture child' -Path '$($lockPath -replace "'", "''")' -TimeoutMinutes 0; Set-Content -LiteralPath '$($ready -replace "'", "''")' -Value held; Start-Sleep -Seconds 120"
+    $hidden = if ($IsWindows) { @{ WindowStyle = 'Hidden' } } else { @{} } # -WindowStyle exists only on Windows
+    $child = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile', '-File', "`"$holderScript`"") -PassThru @hidden
+    try {
+        $until = [datetime]::UtcNow.AddSeconds(60)
+        while (!(Test-Path -LiteralPath $ready) -and !$child.HasExited -and [datetime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 200 }
+        $queued = $null
+        try { Enter-ReleaseCheckTurn 'fixture run C' -Path $lockPath -TimeoutMinutes 0 | Out-Null } catch { $queued = $_.Exception }
+        Check ($queued -and $queued.Message.Contains('fixture child')) 'another process holding the turn makes a run wait'
+        $child.Kill($true); $child.WaitForExit()
+        $turn = Enter-ReleaseCheckTurn 'fixture run C' -Path $lockPath -TimeoutMinutes 0.5 -PollSeconds 1
+        Exit-ReleaseCheckTurn $turn
+        Check $true 'a killed run gives up its turn'
+    }
+    finally { if (!$child.HasExited) { $child.Kill($true) } }
+    Check ((Format-CheckProgress ([pscustomobject]@{ State = 'running'; WaitingFor = 'BlackPearl Mobile 1234abcd (fix), started 10:00' })) -ceq 'queued behind BlackPearl Mobile 1234abcd (fix), started 10:00') 'a run waiting for its turn shows as queued behind the run it waits for'
+    Check ((Format-CheckProgress ([pscustomobject]@{ State = 'running' })) -ceq 'running' -and (Format-CheckProgress ([pscustomobject]@{ State = 'passed'; WaitingFor = 'x' })) -ceq 'passed') 'other runs show their state'
     . (Join-Path $PSScriptRoot 'ship-sync-checks.ps1') -TestRoot $testRoot
     Write-Host "$checks shipping safety checks passed. No releases were created."
 }
