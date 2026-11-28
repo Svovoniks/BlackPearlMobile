@@ -147,6 +147,8 @@ Future<void> showQuickActions(BuildContext context, {required RemoteLink link, r
           ..showSnackBar(SnackBar(
             content: const Text('Removed from Continue watching.'),
             duration: const Duration(seconds: 5),
+            // A snack bar with an action otherwise stays until it is swiped away, and Undo with it.
+            persist: false,
             action: SnackBarAction(
               label: 'Undo',
               onPressed: () => unawaited(hide(entry, false).then((error) {

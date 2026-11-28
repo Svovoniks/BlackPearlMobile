@@ -731,6 +731,16 @@ void main() {
       await tester.pumpAndSettle();
       expect(asked.last, 'film false');
       expect(find.text('Asteroid City'), findsOneWidget, reason: 'Undo puts it back');
+      // Left alone, the confirmation and its Undo go away by themselves.
+      await tester.longPress(find.text('Asteroid City'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Remove from Continue watching'));
+      await tester.pumpAndSettle();
+      expect(find.text('Undo'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 10));
+      await tester.pumpAndSettle();
+      expect(find.text('Removed from Continue watching.'), findsNothing);
+      expect(find.text('Undo'), findsNothing);
     });
 
     testWidgets("a PC from before removing from Continue watching doesn't offer it", (tester) async {
