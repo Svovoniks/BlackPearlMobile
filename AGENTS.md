@@ -48,10 +48,15 @@ manual git, version, tag, and verification commands:
    release checks pass on it, and only if it still contains `master`. Then it tags
    the release, waits for the tag build, verifies the public release and its APKs as
    the app's updater sees them, and synchronizes the user's local `master`. Each run
-   waits at most 7 minutes (`-WaitMinutes`). If it is still waiting, it exits with
+   waits at most 6 minutes (`-WaitMinutes`). If it is still waiting, it exits with
    code 3 and prints `Not finished: ...` with the command to run next: `-Merge` again
-   before the merge, `-VerifyOnly -Version X` after it. Run that command in the
-   foreground right away, and repeat until it prints `Shipped`, or `Merged #N without a release` with `-NoRelease`.
+   before the merge, `-VerifyOnly -Version X` after it. Run that command as printed,
+   in the foreground, right away. Repeat until a run exits with code 0 and prints
+   `Shipped`, `Verified existing release` (when `-VerifyOnly` finished the ship), or
+   `Merged #N without a release`. A run that fails is a failure to report, not a
+   reason to start over. The printed command carries the first run's deadline
+   (`-Until`), so a ship stuck past `-TimeoutMinutes` (60) fails with an error
+   instead of waiting forever.
 
 Never run `-Merge` or `-VerifyOnly` in the background and end your turn on it.
 Once the pull request is merged, T3 Code can settle the thread and close its agent

@@ -124,22 +124,27 @@ branch. If `master` has no checkout, it fast-forwards the local branch without s
 any checkout.
 
 The script re-reads the verdict right before merging, so a rejection posted while CI
-runs still stops the merge.
+runs still stops the merge. If anything fails after the merge, the error names the
+merged commit and the recovery step, because rerunning `-Merge` cannot help then.
 
-**Waiting in the foreground** (`-WaitMinutes`, default 7). One run of `-Merge` or
+**Waiting in the foreground** (`-WaitMinutes`, default 6). One run of `-Merge` or
 `-VerifyOnly` waits at most this long. If the release is still on its way, it exits
 with code 3 and prints `Not finished: <what it waits for>. Run <command> ...`. That
 is not a failure. Before the merge the command is `-Merge` again, which checks every
 gate again and keeps waiting. After the merge it is `-VerifyOnly -Version X`, because
-`-Merge` refuses a merged pull request. Agents run these in the foreground with a
-10-minute command timeout and rerun the named command until it prints `Shipped`, or `Merged #N without a release` with `-NoRelease`.
+`-Merge` refuses a merged pull request. The command carries the first run's deadline
+as `-Until`, and its `-WaitMinutes`, so `-TimeoutMinutes` still ends a stuck ship
+with an error. Agents run these in the foreground with a 10-minute command timeout,
+and run the named command as printed until a run exits with code 0. Its last lines
+then start with `Shipped`, `Verified existing release` (when `-VerifyOnly` finished
+the ship), or `Merged #N without a release`.
+
 The reason is a T3 Code race (pingdotgg/t3code#26083): with auto-settle on merge,
 the thread of a merged pull request is settled, and its agent session closed, in the
 milliseconds after a background command ends, before the agent's turn to answer it
 starts. The agent never sees the result. In a foreground run the agent's turn is
 still active, so nothing settles. `-WaitMinutes 0` waits up to `-TimeoutMinutes` in
-one run, as before, for someone shipping from a terminal. If anything fails after the merge, the error names the
-merged commit and the recovery step, because rerunning `-Merge` cannot help then.
+one run, as before, for someone shipping from a terminal.
 
 **Without a release** (`-NoRelease`, only when the user asks not to release). Both
 modes keep the version from `master`. They refuse a branch that changes it, and need
@@ -177,7 +182,7 @@ can complete a previously interrupted ship.
 ./scripts/review-pr.ps1 -Pr 27 -Verdict approve -Head <sha> -BodyFile $env:TEMP/review.md
 
 # Preview the merge gates, then merge, tag, and verify the release. Exit code 3 means
-# "still waiting": run the command it names, in the foreground, until it prints Shipped (or "Merged ... without a release").
+# "still waiting": run the command it prints, in the foreground, until a run exits with 0.
 ./scripts/ship.ps1 -Merge -Plan
 ./scripts/ship.ps1 -Merge
 ./scripts/ship.ps1 -VerifyOnly -Version 0.12.2   # when -Merge said the pull request is merged and tagged
