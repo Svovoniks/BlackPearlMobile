@@ -285,6 +285,7 @@ try {
         Check ($timeout -and $timeout -isnot [ShipPausedException]) 'a tag build past the overall timeout still fails'
         $script:fixtureRun.status = 'completed'; $script:fixtureRun.conclusion = 'success'
         Check ((Wait-ReleaseBuild '0.12.12' ('f' * 40) $now.AddMinutes(60) $now.AddSeconds(-1) $resume).id -eq 7) 'a finished tag build is used even when the wait limit has passed'
+        Check ((Wait-ReleaseBuild '0.12.12' ('f' * 40) $now.AddSeconds(-1) $now.AddSeconds(-1) $resume).id -eq 7) 'a rerun that starts at its carried deadline still finds a finished tag build'
         $script:fixtureRun.conclusion = 'failure'
         $failed = $null
         try { Wait-ReleaseBuild '0.12.12' ('f' * 40) $now.AddMinutes(60) $now.AddSeconds(-1) $resume | Out-Null } catch { $failed = $_.Exception }

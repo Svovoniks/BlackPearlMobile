@@ -416,7 +416,8 @@ function Wait-ReleaseBuild {
     param([string]$ExpectedVersion, [string]$Commit, [datetime]$Deadline, [datetime]$PauseAt = [datetime]::MaxValue, [string]$Resume = '', [string]$Progress = '')
     $run = $null
     $lastStatus = ''
-    while ([datetime]::UtcNow -lt $Deadline) {
+    # The build is read at least once, so a rerun that starts at its carried deadline still sees a finished build.
+    while ($true) {
         if (!$run) {
             $runs = Get-PublicJson "$apiRoot/actions/runs?head_sha=$Commit&event=push&per_page=100"
             $run = $runs.workflow_runs | Where-Object {
@@ -430,6 +431,7 @@ function Wait-ReleaseBuild {
             if ($run.conclusion -ne 'success') { throw "Release build failed: $($run.html_url). Fix it before shipping a higher version; do not move the tag." }
             return $run
         }
+        if ([datetime]::UtcNow -ge $Deadline) { break }
         Suspend-ShipWhenDue $PauseAt "$(if ($Progress) { "$Progress, but " })the v$ExpectedVersion tag build is still running ($($status.Trim()))" $Resume
         Start-Sleep -Seconds 20
     }
@@ -550,7 +552,7 @@ try {
             Write-Host "Merge #$number ($head) as BlackPearl Mobile $Version+$($headVersion.Build), approved in $($approval.Url)"
         }
         if ($Plan) { Write-Host 'Preview complete. Nothing was merged, tagged, or released.'; return }
-        $mergeResume = Format-ShipResume "./scripts/ship.ps1 -Merge$(if ($NoRelease) { ' -NoRelease' })$(if ($Pr) { " -Pr $Pr" })$(if ($Flutter) { " -Flutter '$Flutter'" })" $deadline $WaitMinutes
+        $mergeResume = Format-ShipResume "./scripts/ship.ps1 -Merge$(if ($NoRelease) { ' -NoRelease' })$(if ($Pr) { " -Pr $Pr" })$(if ($Flutter) { " -Flutter '$($Flutter -replace "'", "''")'" })" $deadline $WaitMinutes
         # Wait for both the workflow and the local release checks on the head. Local checks that never finished, for
         # example because the computer restarted, start again here: in the background when this run has a wait limit, so
         # it can stop and be rerun while they run, otherwise in this run.
@@ -582,7 +584,7 @@ try {
             }
             if ($checks -and $localPassed) { break }
             if ([datetime]::UtcNow -ge $deadline) { throw 'Timed out waiting for the pull request and release checks. Rerun -Merge.' }
-            $waiting = @($(if (!$localPassed) { "release checks $($local.State)" }), $(if (!$checks) { "pull request checks $lastState" })) -join ', '
+            $waiting = @(@($(if (!$localPassed) { "release checks $($local.State)" }), $(if (!$checks) { "pull request checks $lastState" })) | Where-Object { $_ }) -join ' and '
             Suspend-ShipWhenDue $pauseAt "#$number is not merged yet, waiting for $waiting" $mergeResume
             Start-Sleep -Seconds 20
         }
