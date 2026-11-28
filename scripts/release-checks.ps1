@@ -27,6 +27,7 @@ function Invoke-Check {
     Write-Host ("{0} passed in {1:N0} s" -f $Name, $watch.Elapsed.TotalSeconds)
 }
 
+$turn = Enter-ManualReleaseCheckTurn "BlackPearl Mobile release-checks.ps1 -Lane $Lane in $root"
 Push-Location $root
 try {
     $flutterPath = Resolve-Flutter $Flutter
@@ -71,4 +72,7 @@ catch {
     if ($FailureFile) { "$_" | Set-Content -LiteralPath $FailureFile }
     throw
 }
-finally { Pop-Location }
+finally {
+    Pop-Location
+    Exit-ReleaseCheckTurn $turn
+}

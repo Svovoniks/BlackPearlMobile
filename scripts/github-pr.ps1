@@ -84,14 +84,35 @@ function Write-CheckRecord {
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
     $partial = "$Path.partial-$([guid]::NewGuid().ToString('N'))"
     $Record | ConvertTo-Json | Set-Content -LiteralPath $partial
-    Move-Item -LiteralPath $partial -Destination $Path -Force
+    # Replacing the record fails (sharing violation or access denied) while another process reads it, which waiting
+    # release checks and -Merge do often.
+    for ($attempt = 1; ; $attempt++) {
+        try { [IO.File]::Move($partial, $Path, $true); return }
+        catch [IO.IOException], [UnauthorizedAccessException] {
+            if ($attempt -ge 50) { Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue; throw }
+            Start-Sleep -Milliseconds 100
+        }
+    }
 }
 function Get-CheckState {
     param([string]$Path)
     # Release checks run in the background after a push. Their record says running, passed or failed. A running record
     # whose process is gone was interrupted.
-    if (!(Test-Path -LiteralPath $Path)) { return [pscustomobject]@{ State = 'missing' } }
-    $record = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    # A record being replaced can be briefly missing or locked, so a read tries a few times before it believes either.
+    # A record that stays unreadable or empty (a crash mid-write) fails after about a second.
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            if (Test-Path -LiteralPath $Path) {
+                $record = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+                # [pscustomobject] would match $null too: it is PSObject.
+                if ($null -ne $record -and $record -is [Management.Automation.PSCustomObject]) { break }
+                throw "The release check record $Path holds no record. Delete it, then rerun ship.ps1 to check the commit again."
+            }
+            if ($attempt -ge 3) { return [pscustomobject]@{ State = 'missing' } }
+        }
+        catch { if ($attempt -ge 10) { throw } }
+        Start-Sleep -Milliseconds 100
+    }
     if (!$record.PSObject.Properties['State']) { $record | Add-Member State 'passed' }
     if ($record.State -eq 'running') {
         # A process this user cannot open (a service that reused the id) has no start time, so it is not the checks.
@@ -100,6 +121,74 @@ function Get-CheckState {
         if (!$started -or $started.ToUniversalTime().Ticks -ne [long]$record.ProcessStart) { $record.State = 'interrupted' }
     }
     return $record
+}
+# Release checks on one computer take turns, BlackPearl's and BlackPearl Mobile's alike (both ship.ps1 use this file),
+# among the runs of one user, whose LOCALAPPDATA holds the lock. Waiting runs are not served in order: whichever looks
+# first after a turn ends takes the next one.
+# Two runs at once each take about twice as long, and the desktop app's load-sensitive startup gate
+# (desktop-main-suite.ps1) fails on all its attempts while another run builds or tests beside it. The turn is an
+# exclusive open of the lock file, which the system releases when its process ends, however it ends. The file beside it
+# names the run that holds the turn, for the runs that wait.
+function Get-ReleaseCheckLockPath {
+    $directory = if ($IsWindows -and $env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [IO.Path]::GetTempPath() }
+    return Join-Path $directory 'blackpearl-release-checks.lock'
+}
+function Get-ReleaseCheckHolder {
+    param([string]$Path = (Get-ReleaseCheckLockPath))
+    try {
+        # Shared every way, so reading never stops the holder writing or removing its claim.
+        $stream = [IO.File]::Open("$Path.json", [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+        try { $holder = [IO.StreamReader]::new($stream).ReadToEnd() | ConvertFrom-Json } finally { $stream.Dispose() }
+        return "$($holder.Run), started $(([datetimeoffset]$holder.Since).ToLocalTime().ToString('HH:mm'))"
+    }
+    catch { return 'another run' }
+}
+# Waits until no other release checks run on this computer, and returns the turn for Exit-ReleaseCheckTurn. -OnWait
+# gets the run waited for each time that changes. While the turn is held, BLACKPEARL_RELEASE_CHECK_TURN tells
+# release-checks.ps1 in a child process that it already has it.
+function Enter-ReleaseCheckTurn {
+    param([string]$Run, [scriptblock]$OnWait = $null, [string]$Path = (Get-ReleaseCheckLockPath), [double]$TimeoutMinutes = 180, [int]$PollSeconds = 10)
+    $deadline = [datetime]::UtcNow.AddMinutes($TimeoutMinutes)
+    $waitingFor = $null
+    while ($true) {
+        $turn = $null
+        try { $turn = [IO.File]::Open($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.IOException] { }
+        if ($turn) {
+            # Best effort: the turn is already ours, and a waiting run that cannot read the claim says "another run".
+            try { [IO.File]::WriteAllText("$Path.json", (@{ Run = $Run; Pid = $PID; Since = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json)) } catch { }
+            $held = [pscustomobject]@{ Stream = $turn; Path = $Path; Inherited = $env:BLACKPEARL_RELEASE_CHECK_TURN }
+            $env:BLACKPEARL_RELEASE_CHECK_TURN = $Path
+            return $held
+        }
+        $holder = Get-ReleaseCheckHolder $Path
+        if ($holder -cne $waitingFor) {
+            $waitingFor = $holder
+            if ($OnWait) { & $OnWait $holder }
+        }
+        if ([datetime]::UtcNow -ge $deadline) { throw "The release checks waited $TimeoutMinutes minutes for their turn on this computer, behind $waitingFor." }
+        Start-Sleep -Seconds $PollSeconds
+    }
+}
+function Exit-ReleaseCheckTurn {
+    param($Turn)
+    if (!$Turn) { return }
+    $env:BLACKPEARL_RELEASE_CHECK_TURN = $Turn.Inherited
+    Remove-Item -LiteralPath "$($Turn.Path).json" -Force -ErrorAction SilentlyContinue
+    $Turn.Stream.Dispose()
+}
+# release-checks.ps1 run by hand, such as a reviewer's, takes a turn too. Not in CI, and not inside a run that holds the
+# turn already (ship.ps1 -CheckCommit).
+function Enter-ManualReleaseCheckTurn {
+    param([string]$Run)
+    if ($env:GITHUB_ACTIONS -eq 'true' -or $env:BLACKPEARL_RELEASE_CHECK_TURN) { return $null }
+    return Enter-ReleaseCheckTurn $Run { param($holder) Write-Host "Waiting for the release checks of $holder to finish: release checks on this computer take turns." }
+}
+# A running record's progress: queued behind another computer-wide run, or running.
+function Format-CheckProgress {
+    param($State)
+    if ($State.State -eq 'running' -and $State.PSObject.Properties['WaitingFor'] -and $State.WaitingFor) { return "queued behind $($State.WaitingFor)" }
+    return $State.State
 }
 function Format-CheckEvidence {
     param($State)

@@ -91,7 +91,8 @@ them separately. They never block approval on their own.
   background while you review (analysis, tests, and both release APKs), and `-Merge`
   waits for them. If they have already failed, say so in the verdict. In the review
   worktree, run `./scripts/release-checks.ps1 -Lane ci` (it gets the packages, which on
-  Windows without Developer Mode takes two `pub get` runs, then analyzes and tests), or
+  Windows without Developer Mode takes two `pub get` runs, then analyzes and tests; it
+  first waits for any release checks running on this computer, UPDATES.md), or
   after it the tests for the area you are worried about
   (`flutter test test/<file>_test.dart`). Flutter may not be on PATH; see UPDATES.md.
 - For behavior that only the real app shows (the link, the notification, playback),

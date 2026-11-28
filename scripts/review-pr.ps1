@@ -42,7 +42,7 @@ Write-Host "Base: $base$(if ($base -cne (Invoke-Native git @('-C', $root, 'rev-p
 Write-Host "Version: master $((Get-PubspecVersion $root 'origin/master') | ForEach-Object { "$($_.Name)+$($_.Build)" }), head $((Get-PubspecVersion $root $head) | ForEach-Object { "$($_.Name)+$($_.Build)" })"
 Write-Host "CI: $($state.State) - $($state.Detail)"
 $local = Get-CheckState (Get-CheckRecordPath $root $head)
-Write-Host "Release checks on this computer: $($local.State)$(if ($local.State -eq 'failed') { " - $($local.Error) $(Format-CheckEvidence $local)" })"
+Write-Host "Release checks on this computer: $(Format-CheckProgress $local)$(if ($local.State -eq 'failed') { " - $($local.Error) $(Format-CheckEvidence $local)" })"
 Write-Host "Review worktree: $checkout"
 Write-Host "Diff: git -C '$checkout' diff $base $head"
 Write-Host ''
