@@ -51,7 +51,10 @@ The app talks to the desktop app over the protocol in [PHONE-REMOTE.md](PHONE-RE
   ends, an up-next card plays the next one after 15 seconds unless canceled. Loop cycles off, all (a show starts again
   after its last episode) and one, and is remembered. The tune button opens Audio, Subtitles and Quality: beside the
   video in landscape, a short sheet in portrait. Tracks are named by language, with what tells them apart, and start as
-  the PC's Settings › Playback languages would pick them. Another quality, a recovery or the next episode opens on the
+  the PC's Settings › Playback languages would pick them. A converted video lists the file's subtitles too (with
+  BlackPearl 0.3.169 or later): text subtitles come as a file the player draws, and turn on and off at once; picture
+  subtitles, and styled ones with fonts of their own, the PC draws into the picture, so picking them converts the video
+  again from where it is. Another quality, a recovery or the next episode opens on the
   player already on screen, which shows what it is waiting for. Each video opens in its own shape, sideways for a wide
   one and upright for a tall one (from the size its file gives, turned and stretched as the file says), and keeps it
   however the phone is held; Settings › Turn the player with the phone makes the player turn with the phone instead.

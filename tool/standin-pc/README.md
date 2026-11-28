@@ -64,6 +64,7 @@ Type on its stdin:
 | Option | Default | |
 | --- | --- | --- |
 | `--video <file>` | required | the real video every playable entry plays |
+| `--conversion <folder>` | | a watch that asks for a conversion gets this one instead of the file: `stream.ts` (the whole video as one piece, converted as BlackPearl does, with `-copyts` and `-output_ts_offset 10`) and `subtitles.json`, the file's subtitle tracks in order as `{language, title, codec, default, burn, file}`; tracks with `burn` false are read as `subtitle/<stream id>/<index>` from `file` (SubRip or ASS, timed from the start of the video). The first track is shown unless the watch asks for another (`subtitle`, `-1` for none) |
 | `--port <n>` | 8790 | room server port; 0 picks a free one |
 | `--bind <address>` | 127.0.0.1 | where the room server and home-network socket listen; `0.0.0.0` for a real phone on the network (Windows Firewall will ask) |
 | `--public-url <url>` | `http://10.0.2.2:<port>` | the room server as the phone reaches it, put in the pairing link; for a real phone, `http://<this PC's address>:<port>` |

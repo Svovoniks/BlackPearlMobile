@@ -6,7 +6,7 @@ import nodeDataChannel from 'node-datachannel';
 import WebSocket from 'ws';
 import { isLanSession, parseSignal, pcIdOf, randomHex, signedSignal, verify } from './signing.js';
 import { short } from './log.js';
-import { LibraryError } from './library.js';
+import { conversionStreamId, LibraryError } from './library.js';
 import { MediaServer, ReadError } from './media.js';
 import { makePicture } from './jpeg.js';
 
@@ -770,6 +770,17 @@ export class StandinPc {
         this.pictures.set(key, picture);
       }
       return { length: picture.length, read: async (offset, count) => picture.subarray(offset, offset + count) };
+    }
+    const conversion = this.library.conversion;
+    if (parts[0] === 'stream' && conversion && parts.length === 3) {
+      if (!session.stream) throw new ReadError('gone', 'The phone isn\'t watching anything from this PC.', 'no-video');
+      if (parts[1] !== conversionStreamId || parts[2] !== '0') throw new ReadError('gone', 'The PC has no such piece.', 'no-such-piece');
+      return { length: conversion.stream.size, read: (offset, count) => conversion.stream.read(offset, count) };
+    }
+    if (parts[0] === 'subtitle' && conversion && parts.length === 3) {
+      const track = conversion.subtitles[Number(parts[2])];
+      if (parts[1] !== conversionStreamId || !track || track.burn) throw new ReadError('gone', 'The PC has no such subtitles.', 'no-such-subtitle');
+      return { length: track.bytes.length, read: async (offset, count) => track.bytes.subarray(offset, offset + count) };
     }
     if (parts[0] === 'stream') throw new ReadError('gone', 'This stand-in PC doesn\'t convert videos.', 'not-converted');
     throw new ReadError('invalid', 'The PC doesn\'t know that resource.', 'malformed');

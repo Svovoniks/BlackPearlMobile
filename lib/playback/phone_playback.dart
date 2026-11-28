@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 
+import '../connection/media_channel.dart';
 import '../connection/remote_link.dart';
 import '../connection/transport.dart';
 import '../diagnostics/crash_reports.dart';
@@ -19,22 +21,35 @@ enum PhonePlaybackPhase { idle, opening, playing, failed }
 
 /// A change the player is waiting on the PC for: another quality of the video on screen, or another episode.
 class PendingSwitch {
-  const PendingSwitch.quality(String this.quality) : episode = null, audio = null, audioName = null;
-  const PendingSwitch.episode(EpisodeStep this.episode) : quality = null, audio = null, audioName = null;
+  const PendingSwitch.quality(String this.quality) : episode = null, audio = null, audioName = null, subtitle = null;
+  const PendingSwitch.episode(EpisodeStep this.episode) : quality = null, audio = null, audioName = null, subtitle = null;
   /// Another audio track of a conversion, which the PC converts again with: its id in [PhonePlayback.audioTracks], and
   /// what to call it.
-  const PendingSwitch.audio(String this.audio, String this.audioName) : quality = null, episode = null;
+  const PendingSwitch.audio(String this.audio, String this.audioName) : quality = null, episode = null, subtitle = null;
+  /// Other subtitles of a conversion, which the PC converts again for, as it draws the ones shown now or next into the
+  /// picture: their id in [PhonePlayback.subtitleTracks] (`no` for none), and what to call them.
+  const PendingSwitch.subtitle(String this.subtitle, String name) : quality = null, episode = null, audio = null, audioName = name;
   final String? quality;
   final EpisodeStep? episode;
   final String? audio;
   final String? audioName;
+  final String? subtitle;
+
+  /// A track switch: another audio track or other subtitles.
+  bool get track => audio != null || subtitle != null;
 
   String get label => quality != null
       ? 'Switching to ${qualityLabel(quality!)}…'
-      : audio != null
+      : subtitle == 'no'
+      ? 'Turning subtitles off…'
+      : track
       ? 'Switching to $audioName…'
       : 'Opening ${episode!.detail ?? episode!.title}…';
 }
+
+/// Adds a conversion's subtitle track sent as a file ([resource]) to [player], and gives libmpv's id for it; null when
+/// it couldn't be read or added.
+typedef SubtitleLoader = Future<String?> Function(Player player, String resource, SourceSubtitle source);
 
 /// A quality picked in the player that the PC didn't convert to, as the file is already as small as the conversion would
 /// be: the player asks whether to convert it anyway, which saves no data but gives the phone a picture it can always
@@ -56,9 +71,11 @@ class UpNextOffer {
 /// [MediaProxy] hands it to libmpv. How far the phone gets goes back to the PC as `progress`, so Continue watching
 /// and the watched marks are the same on both.
 class PhonePlayback extends ChangeNotifier {
-  /// [shuffleOrder]: for tests, an order with a seeded random.
-  PhonePlayback({required this.link, MediaProxy? proxy, Player Function()? createPlayer, this.awayQuality = 'auto', ShuffleOrder? shuffleOrder})
+  /// [shuffleOrder]: for tests, an order with a seeded random. [loadSubtitle]: for tests, in place of reading subtitles
+  /// from the PC into libmpv.
+  PhonePlayback({required this.link, MediaProxy? proxy, Player Function()? createPlayer, this.awayQuality = 'auto', ShuffleOrder? shuffleOrder, SubtitleLoader? loadSubtitle})
     : _createPlayer = createPlayer ?? _defaultPlayer,
+      _loadSubtitleWith = loadSubtitle,
       // Tests' players are no libmpv to set options on.
       _beforeOpen = createPlayer == null ? _keepHardwareCodecs : _nothingBeforeOpen,
       _shuffleOrder = shuffleOrder ?? ShuffleOrder() {
@@ -67,6 +84,7 @@ class PhonePlayback extends ChangeNotifier {
   }
 
   final RemoteLink link;
+  final SubtitleLoader? _loadSubtitleWith;
   final Future<void> Function(Player player) _beforeOpen;
   static Future<void> _nothingBeforeOpen(Player player) async {}
   late final MediaProxy proxy;
@@ -158,9 +176,13 @@ class PhonePlayback extends ChangeNotifier {
   /// [audio]: for a conversion, the file's audio track to convert with. Another stream of the video on screen keeps the
   /// track playing now unless [audio] names another; a new video starts with the one the PC's preferences pick.
   ///
+  /// [subtitle]: for a conversion, the file's subtitle track to show (-1: none), which the PC draws into the picture when
+  /// it has to. Another stream of the video on screen keeps the subtitles picked by hand; otherwise the PC's
+  /// preferences pick them.
+  ///
   /// [convertAnyway]: convert even a file already as small as the conversion would be. [offerConversion]: the quality
   /// was picked here, so a conversion the PC declines for that reason is offered in [convertOffer].
-  Future<bool> watch(String id, {bool takeOver = false, String? quality, int? startAt, EpisodeStep? step, QueueRef? queue, int? audio, bool convertAnyway = false, bool offerConversion = false}) async {
+  Future<bool> watch(String id, {bool takeOver = false, String? quality, int? startAt, EpisodeStep? step, QueueRef? queue, int? audio, int? subtitle, bool convertAnyway = false, bool offerConversion = false}) async {
     final attempt = ++_opening;
     final hadPlayer = _player != null;
     // Another stream of the video on screen (a quality change, a recovery): the old one plays on until the new one is
@@ -178,7 +200,11 @@ class PhonePlayback extends ChangeNotifier {
           : 'video',
       network: _network,
     );
-    if (replacing) audio ??= await _playingAudioIndex();
+    if (replacing) {
+      audio ??= await _playingAudioIndex();
+      final chosen = _chosenSubtitle;
+      subtitle ??= chosen == null ? null : (chosen.off ? -1 : chosen.index);
+    }
     _handedOver = false;
     _switching = true;
     if (!replacing) {
@@ -193,7 +219,7 @@ class PhonePlayback extends ChangeNotifier {
         _error = null;
         notifyListeners();
       }
-    } else if (quality != null && !_recovering && pending.value?.audio == null) {
+    } else if (quality != null && !_recovering && pending.value?.track != true) {
       _setPending(PendingSwitch.quality(quality));
     }
     final StreamInfo? info;
@@ -210,6 +236,7 @@ class PhonePlayback extends ChangeNotifier {
         // A video played as part of a queue: the PC's Previous, Next and Loop all follow the queue.
         if ((queue ?? (replacing ? _followed : null)) case final inQueue?) ...{'queue': inQueue.id, 'queueIndex': ?inQueue.index},
         'audio': ?audio,
+        'subtitle': ?subtitle,
         if (_convertAnyway == id) 'convertAnyway': true,
       }, timeout: const Duration(seconds: 45));
       info = StreamInfo.fromJson(reply);
@@ -280,6 +307,9 @@ class PhonePlayback extends ChangeNotifier {
     final player = _player ??= _newPlayer();
     final address = _address = await proxy.open(info);
     _tracks = const Tracks();
+    // libmpv drops the subtitle files added to the stream it opened before.
+    _subtitleFiles.clear();
+    _addedSubtitles.clear();
     // Another stream of the video on screen plays on only if it was playing: a video paused by hand stays paused through
     // a quality change or a recovery. (A stalled one was playing until its data ran out, unless it was paused before.)
     final play = !replacing || (stalledAt != null ? playedBeforeStall : player.state.playing);
@@ -360,9 +390,9 @@ class PhonePlayback extends ChangeNotifier {
   Future<void> changeQuality(String quality) async {
     final current = _stream;
     if (current == null || pending.value?.quality == quality || pending.value?.episode != null) return;
-    // Another audio track on its way finishes first: it is converted at the quality playing now.
-    if (pending.value?.audio != null) {
-      if (quality != current.quality) _say('Wait for the switch to ${pending.value!.audioName} to finish, then pick the quality.');
+    // Another audio track or subtitles on their way finish first: they are converted at the quality playing now.
+    if (pending.value case final track? when track.track) {
+      if (quality != current.quality) _say('${_waitFor(track)}, then pick the quality.');
       return;
     }
     if (pending.value == null && quality == current.quality) return;
@@ -867,9 +897,10 @@ class PhonePlayback extends ChangeNotifier {
 
   // What the user chose for this video, kept across another quality or a recovery of it: a language and title for
   // audio, and for subtitles also "off".
-  // [index]: the track's place among the file's audio tracks, from 0, as the PC and libmpv both order them.
+  // [index]: the track's place among the file's audio (or subtitle) tracks, from 0, as the PC and libmpv both order
+  // them.
   ({String? language, String? title, int? index})? _chosenAudio;
-  ({bool off, String? language, String? title})? _chosenSubtitle;
+  ({bool off, String? language, String? title, int? index})? _chosenSubtitle;
   bool _tracksApplied = false;
   String? _defaultSubtitle;
 
@@ -892,6 +923,98 @@ class PhonePlayback extends ChangeNotifier {
     return [for (final a in source) AudioTrack('${a.index + 1}', a.title, a.language, codec: a.codec, channels: a.layout)];
   }
 
+  /// The subtitles to offer: the file's, as the player lists them, or for a conversion, the file's as the PC lists
+  /// them, each sent as a file or drawn into the picture. Ids of a conversion's tracks count from 1, as libmpv's do.
+  List<SubtitleTrack> get subtitleTracks => _convertedSubtitles ?? subtitleChoices(_tracks);
+
+  // A conversion's subtitles as the PC lists them; null for the file itself and from PCs that don't list them.
+  List<SubtitleTrack>? get _convertedSubtitles {
+    final stream = _stream;
+    final source = stream?.sourceSubtitles;
+    if (stream == null || !stream.hls || source == null) return null;
+    return [for (final s in source) SubtitleTrack('${s.index + 1}', s.title, s.language, codec: s.codec, image: s.burn && _imageCodecs.contains(s.codec))];
+  }
+
+  static const _imageCodecs = {'hdmv_pgs_subtitle', 'dvd_subtitle', 'dvb_subtitle', 'xsub'};
+
+  // A conversion's subtitle tracks sent as files and added to the stream open now: the file's index → libmpv's id for
+  // it, once added (null: it couldn't be). Added the first time they are shown.
+  final Map<int, Future<String?>> _subtitleFiles = {};
+  final Map<int, String> _addedSubtitles = {};
+  // Counts subtitle picks: a file that arrives after another pick isn't shown over it.
+  int _subtitlePick = 0;
+
+  // The id in [subtitleTracks] of a conversion's subtitles shown now: drawn into the picture, or the file libmpv shows
+  // ([sid]).
+  String? _shownConvertedSubtitle(StreamInfo stream, String? sid) {
+    final burned = stream.burnedSubtitle;
+    if (burned != null) return '${burned + 1}';
+    if (sid == null) return null;
+    final index = _addedSubtitles.entries.where((e) => e.value == sid).firstOrNull?.key;
+    return index == null ? null : '${index + 1}';
+  }
+
+  /// Reads a conversion's subtitle track from the PC into libmpv, as a file beside the stream. libmpv takes a file's
+  /// times as they are, from 0:00 at the start of the video, as the PC writes them (PHONE-REMOTE.md).
+  Future<String?> _loadSubtitle(Player player, String resource, SourceSubtitle source) async {
+    final custom = _loadSubtitleWith;
+    if (custom != null) return custom(player, resource, source);
+    final native = player.platform;
+    if (native is! NativePlayer) return null;
+    final File file;
+    try {
+      final bytes = await proxy.fetch(resource);
+      if (bytes.isEmpty) return null;
+      final styled = source.codec == 'ass' || source.codec == 'ssa';
+      final folder = await Directory('${Directory.systemTemp.path}/subtitles').create(recursive: true);
+      file = File('${folder.path}/${DateTime.now().microsecondsSinceEpoch}-${source.index}.${styled ? 'ass' : 'srt'}');
+      await file.writeAsBytes(bytes, flush: true);
+    } on MediaReadException {
+      return null;
+    } on FileSystemException {
+      return null;
+    }
+    // libmpv names the track as told: a name of its own finds it in the list media_kit keeps of libmpv's tracks. (The
+    // menus name a conversion's tracks from the PC's list.)
+    final name = 'blackpearl-${file.uri.pathSegments.last}';
+    String? added(Tracks tracks) => tracks.subtitle.where((t) => t.title == name).firstOrNull?.id;
+    final listed = player.stream.tracks.map(added).firstWhere((id) => id != null).timeout(const Duration(seconds: 10), onTimeout: () => null).catchError((Object _) => null);
+    await native.command(['sub-add', file.path, 'auto', name, source.language ?? '']);
+    return added(player.state.tracks) ?? await listed;
+  }
+
+  // Shows a conversion's subtitle track sent as a file, read from the PC the first time; true once shown. [pick]: the
+  // pick it answers, which a later one overrides.
+  Future<bool> _showSubtitleFile(Player player, StreamInfo stream, SourceSubtitle source, int pick) async {
+    final address = _address;
+    final adding = _subtitleFiles[source.index] ??= _loadSubtitle(player, stream.subtitleResource(source.index), source).then((id) {
+      if (id != null && identical(address, _address)) _addedSubtitles[source.index] = id;
+      return id;
+    }, onError: (Object _) => null);
+    // Read out of the whole video on the PC the first time, which takes a while.
+    final slow = Timer(const Duration(milliseconds: 1500), () {
+      if (pick == _subtitlePick) _say('Loading the subtitles from the PC…');
+    });
+    final String? id;
+    try {
+      id = await adding;
+    } finally {
+      slow.cancel();
+    }
+    // Another stream opened meanwhile, which shows its own; or another pick came after this one.
+    if (!identical(address, _address) || !identical(player, _player) || pick != _subtitlePick) return false;
+    if (id == null) {
+      _subtitleFiles.remove(source.index);
+      _say("The subtitles couldn't be loaded from the PC.");
+      return false;
+    }
+    await player.setSubtitleTrack(SubtitleTrack(id, source.title, source.language));
+    notifyListeners();
+    return true;
+  }
+
+  String _waitFor(PendingSwitch track) => track.subtitle == 'no' ? 'Wait for the subtitles to turn off' : 'Wait for the switch to ${track.audioName} to finish';
+
   /// The audio and subtitle tracks playing now, by id; a null subtitle is none. media_kit reports `auto` until a track
   /// is chosen, so libmpv itself is asked, away from the screen's thread: a busy libmpv answers late.
   Future<({String? audio, String? subtitle})> selectedTracks() async {
@@ -904,10 +1027,12 @@ class PhonePlayback extends ChangeNotifier {
     ).wait;
     final audio = aid ?? player.state.track.audio.id, subtitle = sid ?? player.state.track.subtitle.id;
     String? id(String? value) => value == null || value == 'no' || value == 'auto' || value.isEmpty ? null : value;
-    // A conversion carries one of the file's tracks: the one the PC converted with.
     final stream = _stream;
-    if (_convertedAudio != null) return (audio: stream!.audioTrack == null ? null : '${stream.audioTrack! + 1}', subtitle: id(subtitle));
-    return (audio: id(audio), subtitle: id(subtitle));
+    // A conversion's subtitles: drawn into the picture, or a file libmpv shows.
+    final shown = stream != null && _convertedSubtitles != null ? _shownConvertedSubtitle(stream, id(subtitle)) : id(subtitle);
+    // A conversion carries one of the file's tracks: the one the PC converted with.
+    if (_convertedAudio != null) return (audio: stream!.audioTrack == null ? null : '${stream.audioTrack! + 1}', subtitle: shown);
+    return (audio: id(audio), subtitle: shown);
   }
 
   // Which of the file's audio tracks plays now, counted from 0 as the PC counts them: the one a conversion carries, or
@@ -937,6 +1062,7 @@ class PhonePlayback extends ChangeNotifier {
       if (index == null) return;
       if (pendingAudio == track.id || pendingAudio == null && index - 1 == stream.audioTrack) return;
       if (pending.value?.quality case final quality?) return waitForQuality(quality);
+      if (pending.value case final other? when other.subtitle != null) return _say('${_waitFor(other)}, then pick the audio.');
       final labels = audioLabels(audioTracks);
       final at = audioTracks.indexWhere((t) => t.id == track.id);
       _setPending(PendingSwitch.audio(track.id, at < 0 ? 'another audio track' : '${labels[at].name} audio'));
@@ -964,11 +1090,56 @@ class PhonePlayback extends ChangeNotifier {
   Future<void> chooseSubtitle(SubtitleTrack? track) async {
     final player = _player;
     if (player == null) return;
+    final stream = _stream;
+    _subtitlePick++;
+    if (stream != null && _convertedSubtitles != null) return _chooseConvertedSubtitle(player, stream, track);
+    final at = track == null ? -1 : subtitleChoices(_tracks).indexWhere((t) => t.id == track.id);
     _chosenSubtitle = track == null
-        ? (off: true, language: null, title: null)
-        : (off: false, language: TrackLanguages.languageOf(track.language, track.title), title: track.title);
+        ? (off: true, language: null, title: null, index: null)
+        : (off: false, language: TrackLanguages.languageOf(track.language, track.title), title: track.title, index: at < 0 ? null : at);
     await player.setSubtitleTrack(track ?? SubtitleTrack.no());
     notifyListeners();
+  }
+
+  // A conversion's subtitles: a file is shown at once (read from the PC the first time). Subtitles drawn into the
+  // picture, shown now or picked, take another conversion from where the video is, as another audio track does.
+  Future<void> _chooseConvertedSubtitle(Player player, StreamInfo stream, SubtitleTrack? track) async {
+    if (pending.value?.episode != null) return;
+    final index = track == null ? null : int.tryParse(track.id);
+    final source = stream.sourceSubtitle(index == null ? null : index - 1);
+    if (track != null && source == null) return;
+    final id = track?.id ?? 'no';
+    final burned = stream.burnedSubtitle;
+    final waiting = pending.value;
+    if (waiting?.subtitle == id) return;
+    if (waiting != null) {
+      // Another quality or track on its way is converted with the subtitles shown when it was asked for.
+      if (waiting.quality case final quality?) return _say('Wait for the switch to ${qualityLabel(quality)} to finish, then pick the subtitles.');
+      return _say('${_waitFor(waiting)}, then pick the subtitles.');
+    }
+    final chosen = source == null
+        ? (off: true, language: null, title: null, index: null)
+        : (off: false, language: TrackLanguages.languageOf(source.language, source.title), title: source.title, index: source.index);
+    if (source?.burn == true || burned != null) {
+      if (source?.index == burned) return;
+      final labels = subtitleLabels(subtitleTracks);
+      final at = subtitleTracks.indexWhere((t) => t.id == id);
+      _setPending(PendingSwitch.subtitle(id, at < 0 ? 'other subtitles' : '${labels[at].name} subtitles'));
+      final position = _stalledAt ?? _positionOf(player);
+      if (await watch(stream.id, quality: stream.quality, startAt: position, subtitle: source?.index ?? -1)) {
+        _chosenSubtitle = chosen;
+      } else if (pending.value?.subtitle == id) {
+        _setPending(null);
+      }
+      return;
+    }
+    _chosenSubtitle = chosen;
+    if (source == null) {
+      await player.setSubtitleTrack(SubtitleTrack.no());
+      notifyListeners();
+      return;
+    }
+    await _showSubtitleFile(player, stream, source, _subtitlePick);
   }
 
   // Once a video's tracks are known: the user's choices for it, or else the PC's preferences.
@@ -977,10 +1148,17 @@ class PhonePlayback extends ChangeNotifier {
     final stream = _stream;
     if (player == null || stream == null || _tracksApplied || _switching) return;
     final audio = audioChoices(_tracks);
+    if (stream.hls && (_convertedAudio != null || _convertedSubtitles != null)) {
+      // A conversion carries the one audio track the PC converted with, and the subtitles to show: the PC drew them
+      // into the picture, or the player shows them from a file, once libmpv has the stream open.
+      if (audio.isEmpty && _tracks.video.every((t) => t.id == 'auto' || t.id == 'no')) return;
+      _tracksApplied = true;
+      final shown = stream.sourceSubtitle(stream.subtitleTrack);
+      if (shown != null && !shown.burn) await _showSubtitleFile(player, stream, shown, _subtitlePick);
+      return;
+    }
     if (audio.isEmpty) return;
     _tracksApplied = true;
-    // A conversion carries the one track the PC converted with, and no subtitles: there is nothing to pick here.
-    if (_convertedAudio != null) return;
     final selected = await selectedTracks();
     _defaultSubtitle = selected.subtitle;
     String? language(AudioTrack t) => TrackLanguages.languageOf(t.language, t.title);
@@ -1002,9 +1180,12 @@ class PhonePlayback extends ChangeNotifier {
     if (subtitle != null) {
       final tracks = subtitleChoices(_tracks);
       String? subtitleLanguage(SubtitleTrack t) => TrackLanguages.languageOf(t.language, t.title);
+      // As for audio, the place picked is the track; the file lists them in the same order every time.
+      final place = subtitle.index;
       final match = subtitle.off
           ? SubtitleTrack.no()
-          : tracks.where((t) => subtitleLanguage(t) == subtitle.language && t.title == subtitle.title).firstOrNull ??
+          : (place != null && place < tracks.length ? tracks[place] : null) ??
+              tracks.where((t) => subtitleLanguage(t) == subtitle.language && t.title == subtitle.title).firstOrNull ??
               tracks.where((t) => subtitleLanguage(t) == subtitle.language).firstOrNull;
       if (match != null) await player.setSubtitleTrack(match);
     } else {

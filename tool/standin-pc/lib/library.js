@@ -81,14 +81,19 @@ function shuffled(list, seed) {
   return copy;
 }
 
+/** The stream id of the `--conversion`. */
+export const conversionStreamId = 'c0'.repeat(16);
+
 export class Library {
   /**
    * @param {object} options
    * @param {{size:number, extension:string, durationMs:number|null}} options.video
    * @param {import('./store.js').Store} options.store
+   * @param {{stream: {size:number}, subtitles: object[]}|null} [options.conversion] what a watch asking for a conversion gets
    */
-  constructor({ video, store }) {
+  constructor({ video, store, conversion = null }) {
     this.video = video;
+    this.conversion = conversion;
     this.store = store;
     this.durationMs = video.durationMs && video.durationMs > 0 ? video.durationMs : 24 * 60 * 1000;
     this.runtimeMinutes = Math.max(1, Math.round(this.durationMs / 60000));
@@ -370,7 +375,10 @@ export class Library {
     return { queue: null, previous: null, next: null, first: null };
   }
 
-  /** Answers a `watch` with a `stream` for the file itself, or throws a LibraryError with code `gone`. */
+  /**
+   * Answers a `watch` with a `stream` for the file itself, or with the `--conversion` when it asks for one; throws a
+   * LibraryError with code `gone`.
+   */
   watch(request) {
     const item = this.playable(request.id);
     if (!item) throw new LibraryError('gone', 'That video isn\'t in the library any more.');
@@ -392,7 +400,7 @@ export class Library {
       length: this.video.size,
       extension: this.video.extension,
       quality: 'original',
-      qualities: ['original'],
+      qualities: this.conversion ? ['original', '480p'] : ['original'],
       note: wantedConversion ? 'This stand-in PC has no converter, so it sent the file itself.' : null,
       previous: context.previous ? this.step(...context.previous) : null,
       next: context.next ? this.step(...context.next) : null,
@@ -400,7 +408,26 @@ export class Library {
       tracks: { audio: ['ja', 'en'], subtitles: ['en'], rules: [{ audio: 'en', languages: ['off'] }] },
     };
     if (context.queue) stream.queue = context.queue;
+    if (wantedConversion && this.conversion) return this.converted(stream, request);
     return stream;
+  }
+
+  /** The `--conversion` as a one-piece conversion, with its subtitles: the one asked for (-1: none), else the first. */
+  converted(stream, request) {
+    const subtitles = this.conversion.subtitles;
+    const asked = Number.isInteger(request.subtitle) ? request.subtitle : null;
+    const shown = asked === null ? (subtitles.length > 0 ? 0 : null) : asked >= 0 && asked < subtitles.length ? asked : null;
+    const converted = { ...stream, kind: 'hls', streamId: conversionStreamId, segments: 1, segmentMs: this.durationMs, quality: '480p', qualities: ['original', '480p'], note: null };
+    delete converted.resource;
+    delete converted.length;
+    delete converted.extension;
+    return {
+      ...converted,
+      audioTracks: [{ index: 0, language: 'jpn', title: null, codec: 'aac', layout: 'stereo' }],
+      audioTrack: 0,
+      subtitleTracks: subtitles.map(({ bytes, ...track }) => track),
+      subtitleTrack: shown,
+    };
   }
 
   /**
