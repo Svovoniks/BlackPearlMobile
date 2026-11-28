@@ -27,8 +27,10 @@ user explicitly asks.
    `./scripts/ship.ps1` (no arguments are needed to update the same PR), and ask for
    a re-review of the new head with the earlier findings and your replies. If the
    same point is disputed twice, or after five rounds without approval, ask the user.
-4. **Merge and release.** Run `./scripts/ship.ps1 -Merge`. Report the PR, version,
-   release URL, Actions result, local sync result, and any validation limitations.
+4. **Merge and release.** Run `./scripts/ship.ps1 -Merge` in the foreground, and
+   rerun the command it names until it ships (see "Waiting in the foreground" below).
+   Report the PR, version, release URL, Actions result, local sync result, and any
+   validation limitations.
 
 Use the scripted flow by default. The goal is to let the automation do the bulk
 of the work while agents stay focused on the change, the review, failure triage,
@@ -108,7 +110,8 @@ hold:
 
 It waits for the `build` workflow runs and the release checks on the head to succeed.
 Release checks that were interrupted, for example by a restart, or never started on this
-computer run in the foreground first. It then squash-merges with GitHub's head-SHA guard,
+computer start again in the background. With `-WaitMinutes 0` they run in the foreground
+instead. It then squash-merges with GitHub's head-SHA guard,
 confirms the merged tree is exactly the reviewed tree, then tags and pushes `vX`. It
 deletes the merged branch, waits for the tag's workflow run, and verifies without
 authentication that `/releases/latest` is `vX`, not a draft or prerelease, with
@@ -123,6 +126,25 @@ any checkout.
 The script re-reads the verdict right before merging, so a rejection posted while CI
 runs still stops the merge. If anything fails after the merge, the error names the
 merged commit and the recovery step, because rerunning `-Merge` cannot help then.
+
+**Waiting in the foreground** (`-WaitMinutes`, default 6). One run of `-Merge` or
+`-VerifyOnly` waits at most this long. If the release is still on its way, it exits
+with code 3 and prints `Not finished: <what it waits for>. Run <command> ...`. That
+is not a failure. Before the merge the command is `-Merge` again, which checks every
+gate again and keeps waiting. After the merge it is `-VerifyOnly -Version X`, because
+`-Merge` refuses a merged pull request. The command carries the first run's deadline
+as `-Until`, and its `-WaitMinutes`, so `-TimeoutMinutes` still ends a stuck ship
+with an error. Agents run these in the foreground with a 10-minute command timeout,
+and run the named command as printed until a run exits with code 0. Its last lines
+then start with `Shipped`, `Verified existing release` (when `-VerifyOnly` finished
+the ship), or `Merged #N without a release`.
+
+The reason is a T3 Code race (pingdotgg/t3code#26083): with auto-settle on merge,
+the thread of a merged pull request is settled, and its agent session closed, in the
+milliseconds after a background command ends, before the agent's turn to answer it
+starts. The agent never sees the result. In a foreground run the agent's turn is
+still active, so nothing settles. `-WaitMinutes 0` waits up to `-TimeoutMinutes` in
+one run, as before, for someone shipping from a terminal.
 
 **Without a release** (`-NoRelease`, only when the user asks not to release). Both
 modes keep the version from `master`. They refuse a branch that changes it, and need
@@ -159,9 +181,11 @@ can complete a previously interrupted ship.
 ./scripts/review-pr.ps1 -Pr 27
 ./scripts/review-pr.ps1 -Pr 27 -Verdict approve -Head <sha> -BodyFile $env:TEMP/review.md
 
-# Preview the merge gates, then merge, tag, and verify the release.
+# Preview the merge gates, then merge, tag, and verify the release. Exit code 3 means
+# "still waiting": run the command it prints, in the foreground, until a run exits with 0.
 ./scripts/ship.ps1 -Merge -Plan
 ./scripts/ship.ps1 -Merge
+./scripts/ship.ps1 -VerifyOnly -Version 0.12.2   # when -Merge said the pull request is merged and tagged
 
 # A change the user does not want released: same flow, no version bump, tag, or release.
 ./scripts/ship.ps1 -NoRelease -Title 'Tidy the shipping docs' -BodyFile $env:TEMP/pr-body.md
