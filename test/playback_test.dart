@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:blackpearl_mobile/connection/remote_link.dart';
 import 'package:blackpearl_mobile/debug/preview.dart';
 import 'package:blackpearl_mobile/playback/phone_playback.dart';
+import 'package:blackpearl_mobile/protocol/library.dart';
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
@@ -220,6 +221,111 @@ void main() {
       await playback.watch('film', quality: '480p');
       expect(playback.stream?.sourceAudio, isNull);
       expect(playback.audioTracks, isEmpty);
+      playback.dispose();
+    });
+  });
+
+  group('tracks picked by hand', () {
+    Map<String, dynamic> converted(String id, int audio) => {
+      'type': 'stream', 'id': id, 'kind': 'hls', 'streamId': 'a' * 32, 'segments': 10, 'segmentMs': 4000, 'durationMs': 40000,
+      'quality': '480p', 'qualities': ['original', '480p'],
+      'audioTracks': [
+        {'index': 0, 'language': 'eng', 'title': null},
+        {'index': 1, 'language': 'jpn', 'title': 'Original'},
+      ],
+      'audioTrack': audio,
+    };
+    Map<String, dynamic> file(String id) => {'type': 'stream', 'id': id, 'kind': 'file', 'resource': 'file/$id', 'length': 10, 'qualities': ['original', '480p'],
+      'tracks': {'audio': ['en'], 'subtitles': ['en'], 'rules': []}};
+
+    test("carry on to the next episode's conversion: the PC hears the language, and an older PC's conversion is switched to it", () async {
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => converted(fields['id'] as String, fields['audio'] as int? ?? 0);
+      await playback.watch('e1', quality: '480p');
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(pc.asked.last.$2, containsPair('audio', 1));
+
+      // A PC that hears the language starts the next episode on that track: nothing more is asked.
+      pc.answer = (type, fields) async => converted('e2', fields['audioLanguage'] == 'ja' ? 1 : 0);
+      await playback.playEpisode(const EpisodeStep(id: 'e2', title: 'Episode 2'));
+      expect(pc.asked.last.$2, allOf(containsPair('audioLanguage', 'ja'), containsPair('audioTitle', 'Original')));
+      expect(pc.asked.last.$2.containsKey('audio'), isFalse, reason: "another file's tracks have places of their own");
+      await player.lists(const [AudioTrack('1', null, null)]);
+      expect(pc.asked, hasLength(3));
+
+      // An older PC starts it on its preferred track; the phone then asks for the one picked, once.
+      pc.answer = (type, fields) async => converted('e3', fields['audio'] as int? ?? 0);
+      await playback.playEpisode(const EpisodeStep(id: 'e3', title: 'Episode 3'));
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await pumpEventQueue();
+      expect(pc.asked, hasLength(5));
+      expect(pc.asked.last.$2, allOf(containsPair('id', 'e3'), containsPair('audio', 1)));
+      await player.lists(const [AudioTrack('1', null, null)]);
+      expect(pc.asked, hasLength(5));
+      expect((await playback.selectedTracks()).audio, '2');
+      playback.dispose();
+    });
+
+    test("carry on to the next episode's file ahead of the PC's preferences, and a new viewing starts from them again", () async {
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      const english = AudioTrack('1', null, 'eng'), japanese = AudioTrack('2', null, 'jpn');
+      const englishSubtitles = SubtitleTrack('3', null, 'eng');
+      pc.answer = (type, fields) async => file(fields['id'] as String);
+      final viewing = playback.startViewing();
+      await playback.watch('e1');
+      await player.lists(const [english, japanese], subtitles: const [englishSubtitles]);
+      expect(player.audioSet.last, '1', reason: "the PC's preferences pick English");
+      expect(player.subtitleSet.last, '3');
+      await playback.chooseAudio(japanese);
+      await playback.chooseSubtitle(null);
+
+      // Another file lists the same languages in another order.
+      player.audioSet.clear();
+      player.subtitleSet.clear();
+      await playback.playEpisode(const EpisodeStep(id: 'e2', title: 'Episode 2'));
+      await player.lists(const [AudioTrack('1', null, 'jpn'), AudioTrack('2', null, 'eng')], subtitles: const [englishSubtitles]);
+      expect(player.audioSet, ['1'], reason: 'Japanese, as picked, though the PC prefers English');
+      expect(player.subtitleSet, ['no'], reason: 'subtitles stay off, as picked');
+
+      // An episode without the language picked starts with the PC's preferences.
+      player.audioSet.clear();
+      player.subtitleSet.clear();
+      await playback.playEpisode(const EpisodeStep(id: 'e3', title: 'Episode 3'));
+      await player.lists(const [AudioTrack('1', null, 'rus'), AudioTrack('2', null, 'eng')], subtitles: const [englishSubtitles]);
+      expect(player.audioSet, ['2']);
+
+      await playback.stop(viewing: viewing);
+      player.audioSet.clear();
+      player.subtitleSet.clear();
+      playback.startViewing();
+      await playback.watch('e4');
+      await player.lists(const [english, japanese], subtitles: const [englishSubtitles]);
+      expect(player.audioSet, ['1']);
+      expect(player.subtitleSet, ['3']);
+      playback.dispose();
+    });
+
+    test('a video converted anyway has its next episode converted anyway too', () async {
+      final pc = link();
+      final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());
+      pc.answer = (type, fields) async => {...file(fields['id'] as String), 'convertible': true};
+      await playback.watch('e1');
+      await playback.changeQuality('480p');
+      pc.answer = (type, fields) async => converted(fields['id'] as String, 0);
+      await playback.convertAnyway('480p');
+      await playback.playEpisode(const EpisodeStep(id: 'e2', title: 'Episode 2'));
+      expect(pc.asked.last.$2, allOf(containsPair('id', 'e2'), containsPair('quality', '480p'), containsPair('convertAnyway', true)));
+      // Another quality picked by hand is that quality only.
+      pc.answer = (type, fields) async => file(fields['id'] as String);
+      await playback.changeQuality('original');
+      await playback.playEpisode(const EpisodeStep(id: 'e3', title: 'Episode 3'));
+      expect(pc.asked.last.$2, containsPair('quality', 'original'));
+      expect(pc.asked.last.$2.containsKey('convertAnyway'), isFalse);
       playback.dispose();
     });
   });
@@ -579,10 +685,10 @@ class _FakePlayer extends Fake implements Player {
     const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(), const Stream.empty(),
   );
 
-  /// libmpv lists [tracks] for what it opened.
-  Future<void> lists(List<AudioTrack> tracks) async {
+  /// libmpv lists [tracks] (and [subtitles]) for what it opened.
+  Future<void> lists(List<AudioTrack> tracks, {List<SubtitleTrack> subtitles = const []}) async {
     audio = tracks;
-    listed.add(Tracks(audio: tracks));
+    listed.add(Tracks(audio: tracks, subtitle: subtitles));
     await pumpEventQueue();
   }
 
@@ -609,7 +715,8 @@ class _FakePlayer extends Fake implements Player {
   Future<void> setAudioTrack(AudioTrack track) async => audioSet.add(track.id);
 
   @override
-  Future<void> setSubtitleTrack(SubtitleTrack track) async {}
+  Future<void> setSubtitleTrack(SubtitleTrack track) async => subtitleSet.add(track.id);
+  final List<String> subtitleSet = [];
 
   @override
   Future<void> dispose() async {}
