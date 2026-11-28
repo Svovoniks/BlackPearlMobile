@@ -686,6 +686,61 @@ void main() {
       expect(marks.last, 'ep1 series false');
     });
 
+    testWidgets('a long press in Continue watching removes the title from the row, and Undo puts it back', (tester) async {
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 2.75;
+      addTearDown(tester.view.reset);
+      final link = FakeRemoteLink(pcName: 'Study', status: const LinkStatus(LinkPhase.connected))..offered = const {'library', 'watch', 'mark-watched', 'hide-continue'};
+      var hidden = false;
+      link.answer = (type, fields) async {
+        final home = homePage();
+        if (!hidden) return home;
+        final entries = (home['entries'] as List).where((e) => (e as Map)['id'] != 'film').toList();
+        return {...home, 'total': entries.length, 'entries': entries};
+      };
+      final changed = ValueNotifier(0);
+      addTearDown(changed.dispose);
+      final asked = <String>[];
+      await tester.pumpWidget(MaterialApp(
+        theme: buildTheme(),
+        home: LibraryScreen(
+          link: link,
+          changed: changed,
+          actions: LibraryActions(
+            watchHere: (entry, {bool fromStart = false, QueueRef? queue}) async {},
+            playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) async => null,
+            hideContinue: (entry, hide) async {
+              asked.add('${entry.id} $hide');
+              hidden = hide;
+              changed.value++;
+              return null;
+            },
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Asteroid City'), findsOneWidget);
+      await tester.longPress(find.text('Asteroid City'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Remove from Continue watching'));
+      await tester.pumpAndSettle();
+      expect(asked, ['film true']);
+      expect(find.text('Removed from Continue watching.'), findsOneWidget);
+      expect(find.text('Asteroid City'), findsNothing, reason: 'Home loads again without it');
+      await tester.tap(find.text('Undo'));
+      await tester.pumpAndSettle();
+      expect(asked.last, 'film false');
+      expect(find.text('Asteroid City'), findsOneWidget, reason: 'Undo puts it back');
+    });
+
+    testWidgets("a PC from before removing from Continue watching doesn't offer it", (tester) async {
+      await pump(tester);
+      await tester.longPress(find.text('Asteroid City'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Resume on phone'), findsOneWidget, reason: 'the sheet opened');
+      expect(find.text('Remove from Continue watching'), findsNothing);
+    });
+
     testWidgets("an episode's row plays it with one tap, where a video was last started", (tester) async {
       tester.view.physicalSize = const Size(1080, 2340);
       tester.view.devicePixelRatio = 2.75;
