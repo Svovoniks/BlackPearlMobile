@@ -226,22 +226,29 @@ class _PlayerOptionsPanelState extends State<PlayerOptionsPanel> {
   }
 
   Widget _subtitlePage(Tracks tracks, StreamInfo? stream) {
-    final subtitles = PhonePlayback.subtitleChoices(tracks);
+    final subtitles = playback.subtitleTracks;
     final labels = subtitleLabels(subtitles);
+    // Subtitles a conversion switches to show as picked while the PC converts for them.
+    final ticked = switch (playback.pending.value?.subtitle) {
+      null => _subtitle,
+      'no' => null,
+      final switching => switching,
+    };
     return _list([
       OptionRow(
         label: const TrackLabel('Off', null),
-        selected: _subtitle == null,
+        selected: ticked == null,
         onTap: () => unawaited(playback.chooseSubtitle(null)),
       ),
       for (var i = 0; i < subtitles.length; i++)
         OptionRow(
           label: labels[i],
-          selected: subtitles[i].id == _subtitle,
+          selected: subtitles[i].id == ticked,
           onTap: () => unawaited(playback.chooseSubtitle(subtitles[i])),
         ),
+      // A PC that lists a conversion's subtitles says when the file has none.
       if (subtitles.isEmpty && stream != null)
-        stream.hls
+        stream.hls && stream.sourceSubtitles == null
             ? OptionNote(
                 'A converted stream carries no subtitles. The original file has them.',
                 action: stream.qualities.contains('original') ? 'Play the original file' : null,

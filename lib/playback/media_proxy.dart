@@ -111,6 +111,22 @@ class MediaProxy {
     }
   }
 
+  /// A whole small resource, such as a conversion's subtitles, read as the player's reads are: waiting out a PC still
+  /// preparing it ("busy") and a link that drops for a while. At most [limit] bytes.
+  Future<Uint8List> fetch(String resource, {int limit = 16 << 20}) async {
+    final live = <MediaRead>{};
+    final out = BytesBuilder(copy: false);
+    var length = -1;
+    while (length < 0 || out.length < length) {
+      final reply = await _read(resource, out.length, chunk, () => true, live, () {});
+      length = reply.resourceLength;
+      if (length > limit) throw const MediaReadException('too-large', 'The file is too large.');
+      if (reply.bytes.isEmpty) break;
+      out.add(reply.bytes);
+    }
+    return out.takeBytes();
+  }
+
   /// One read, waiting out a piece still converting and a link that drops.
   Future<MediaReply> _read(String resource, int offset, int count, bool Function() wanted, Set<MediaRead> live, void Function() lost) async {
     final deadline = DateTime.now().add(reconnectWait);

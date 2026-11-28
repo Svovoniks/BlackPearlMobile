@@ -493,9 +493,16 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
   String? get _tickedAudio => playback.pending.value?.audio ?? _audioId;
 
   ({List<SubtitleTrack> tracks, List<TrackLabel> labels}) get _subtitles {
-    final tracks = PhonePlayback.subtitleChoices(playback.tracks);
+    final tracks = playback.subtitleTracks;
     return (tracks: tracks, labels: subtitleLabels(tracks));
   }
+
+  // The subtitles to tick: ones a conversion is switching to (`no`: none), or the ones shown.
+  String? get _tickedSubtitle => switch (playback.pending.value?.subtitle) {
+    null => _subtitleId,
+    'no' => null,
+    final switching => switching,
+  };
 
   // A chip names the track; two of the same name add what tells them apart, such as SDH, or their number.
   static String _chipName(TrackLabel label, List<TrackLabel> all) {
@@ -523,8 +530,9 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
 
   DockChipValue get _subtitleChip {
     final subtitles = _subtitles;
-    final at = subtitles.tracks.indexWhere((t) => t.id == _subtitleId);
-    return at < 0 ? const DockChipValue('Off', off: true) : DockChipValue(_chipName(subtitles.labels[at], subtitles.labels));
+    final at = subtitles.tracks.indexWhere((t) => t.id == _tickedSubtitle);
+    final busy = playback.pending.value?.subtitle != null;
+    return at < 0 ? DockChipValue('Off', off: true, busy: busy) : DockChipValue(_chipName(subtitles.labels[at], subtitles.labels), busy: busy);
   }
 
   DockChipValue? get _qualityChip {
@@ -568,12 +576,12 @@ class _PlayerScreenState extends State<PlayerScreen> with WidgetsBindingObserver
           title: 'Subtitles',
           maxHeight: maxHeight,
           options: [
-            ChipMenuOption(name: 'Off', selected: _subtitleId == null, onTap: () => pick(() => playback.chooseSubtitle(null))),
+            ChipMenuOption(name: 'Off', selected: _tickedSubtitle == null, onTap: () => pick(() => playback.chooseSubtitle(null))),
             for (var i = 0; i < subtitles.tracks.length; i++)
               ChipMenuOption(
                 name: subtitles.labels[i].name,
                 detail: subtitles.labels[i].detail,
-                selected: subtitles.tracks[i].id == _subtitleId,
+                selected: subtitles.tracks[i].id == _tickedSubtitle,
                 onTap: () => pick(() => playback.chooseSubtitle(subtitles.tracks[i])),
               ),
           ],

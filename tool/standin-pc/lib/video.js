@@ -1,7 +1,7 @@
 // The one real video every playable library entry maps to: its size, extension and (for Matroska and MP4) duration,
 // read without any media tool. Read only, never written.
-import { open, stat } from 'node:fs/promises';
-import { extname } from 'node:path';
+import { open, readFile, stat } from 'node:fs/promises';
+import { extname, join } from 'node:path';
 
 export async function openVideo(path) {
   const info = await stat(path);
@@ -26,6 +26,30 @@ export async function openVideo(path) {
     },
     close: () => handle.close(),
   };
+}
+
+/**
+ * A conversion the stand-in answers with, made beforehand (README.md): `stream.ts`, the whole video as one piece, and
+ * `subtitles.json`, the file's subtitle tracks in order, each `{language, title, codec, burn, file}`; a track with
+ * `burn` false is sent from `file`.
+ */
+export async function openConversion(folder) {
+  const stream = await openVideo(join(folder, 'stream.ts'));
+  const listed = JSON.parse(await readFile(join(folder, 'subtitles.json'), 'utf8'));
+  const subtitles = [];
+  for (const [index, track] of listed.entries()) {
+    subtitles.push({
+      index,
+      language: track.language ?? null,
+      title: track.title ?? null,
+      codec: track.codec ?? 'subrip',
+      default: track.default === true,
+      forced: track.forced === true,
+      burn: track.burn === true,
+      bytes: track.burn === true ? null : await readFile(join(folder, track.file)),
+    });
+  }
+  return { stream, subtitles };
 }
 
 async function readAt(handle, offset, count) {

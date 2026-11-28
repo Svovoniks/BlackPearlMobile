@@ -252,6 +252,8 @@ class StreamInfo {
     this.queue,
     this.sourceAudio,
     this.audioTrack,
+    this.sourceSubtitles,
+    this.subtitleTrack,
   });
 
   final String id;
@@ -263,6 +265,12 @@ class StreamInfo {
   /// lists.
   final List<SourceAudio>? sourceAudio;
   final int? audioTrack;
+
+  /// A conversion's subtitles: the file's subtitle tracks, each sent as a file the player draws or drawn into the
+  /// picture by the PC ([SourceSubtitle.burn]), and the one to show at [subtitleTrack] (null: none). Null from PCs
+  /// before 0.3.169, whose conversions had no subtitles, and for the file itself, whose tracks the player lists.
+  final List<SourceSubtitle>? sourceSubtitles;
+  final int? subtitleTrack;
 
   /// Where to start.
   final int positionMs;
@@ -326,8 +334,19 @@ class StreamInfo {
       queue: QueueRef.fromJson(json['queue']),
       sourceAudio: hls ? SourceAudio.listFromJson(json['audioTracks']) : null,
       audioTrack: hls && json['audioTrack'] is int ? json['audioTrack'] as int : null,
+      sourceSubtitles: hls ? SourceSubtitle.listFromJson(json['subtitleTracks']) : null,
+      subtitleTrack: hls && json['subtitleTrack'] is int && (json['subtitleTrack'] as int) >= 0 ? json['subtitleTrack'] as int : null,
     );
   }
+
+  /// A conversion's subtitle track at [index] of the file, as the PC lists it.
+  SourceSubtitle? sourceSubtitle(int? index) => index == null ? null : sourceSubtitles?.where((s) => s.index == index).firstOrNull;
+
+  /// The subtitle track the PC drew into this conversion's picture, or null.
+  int? get burnedSubtitle => sourceSubtitle(subtitleTrack)?.burn == true ? subtitleTrack : null;
+
+  /// Where the phone reads a conversion's subtitle track sent as a file.
+  String subtitleResource(int index) => 'subtitle/$streamId/$index';
 
   /// The pieces as an HLS playlist, as the desktop app's viewers play a room's conversion. [piece] gives each
   /// piece's address.
@@ -361,6 +380,35 @@ class SourceAudio {
       for (final each in json)
         if (each is Map<String, dynamic> && each['index'] is int && (each['index'] as int) >= 0)
           SourceAudio(index: each['index'] as int, language: text(each, 'language'), title: text(each, 'title'), codec: text(each, 'codec'), layout: text(each, 'layout')),
+    ];
+  }
+}
+
+/// One of a file's subtitle tracks, as the PC lists them for a conversion: its place among the file's subtitle tracks,
+/// the language tag, title and codec the file gives it, whether the file marks it as default or forced, and whether the
+/// PC draws it into the picture ([burn]: pictures, and styled subtitles with fonts of their own) rather than sending it
+/// as a file the player draws.
+class SourceSubtitle {
+  const SourceSubtitle({required this.index, this.language, this.title, this.codec, this.isDefault = false, this.forced = false, this.burn = false});
+  final int index;
+  final String? language, title, codec;
+  final bool isDefault, forced, burn;
+
+  static List<SourceSubtitle>? listFromJson(Object? json) {
+    if (json is! List) return null;
+    String? text(Map<String, dynamic> map, String name) => map[name] is String && (map[name] as String).isNotEmpty ? map[name] as String : null;
+    return [
+      for (final each in json)
+        if (each is Map<String, dynamic> && each['index'] is int && (each['index'] as int) >= 0)
+          SourceSubtitle(
+            index: each['index'] as int,
+            language: text(each, 'language'),
+            title: text(each, 'title'),
+            codec: text(each, 'codec'),
+            isDefault: each['default'] == true,
+            forced: each['forced'] == true,
+            burn: each['burn'] == true,
+          ),
     ];
   }
 }
