@@ -359,6 +359,86 @@ void main() {
       playback.dispose();
     });
 
+    test('the phone finds the carried track as the PC does, so a PC that heard it is not asked again', () async {
+      expect(PhonePlayback.trackTitle('Full - [English]'), 'Full');
+      expect(PhonePlayback.trackTitle('Track 3'), isNull);
+      expect(PhonePlayback.trackTitle('  '), isNull);
+      Map<String, dynamic> two(String id, List<Map<String, dynamic>> audio, int track) =>
+          {...converted(id, track), 'audioTracks': audio};
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player);
+      pc.answer = (type, fields) async => two('e1', [
+        {'index': 0, 'language': 'jpn', 'title': null},
+        {'index': 1, 'language': 'eng', 'title': null},
+      ], fields['audio'] as int? ?? 0);
+      await playback.watch('e1', quality: '480p');
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await playback.chooseAudio(playback.audioTracks[1]);
+      expect(pc.asked, hasLength(2));
+
+      // An untitled English track picked: the PC takes the first English one, here a titled one, and that is the one.
+      pc.answer = (type, fields) async => two('e2', [
+        {'index': 0, 'language': 'eng', 'title': 'Commentary'},
+        {'index': 1, 'language': 'eng', 'title': null},
+      ], 0);
+      await playback.playEpisode(const EpisodeStep(id: 'e2', title: 'Episode 2'));
+      expect(pc.asked.last.$2.containsKey('audioTitle'), isFalse);
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await pumpEventQueue();
+      expect(pc.asked, hasLength(3));
+      playback.dispose();
+    });
+
+    test('from an older PC, carried audio and subtitles are both asked for, the subtitles once the new audio plays', () async {
+      Map<String, dynamic> both(String id, int audio, int? subtitle) => {
+        ...converted(id, audio),
+        'subtitleTracks': [
+          {'index': 0, 'language': 'eng', 'title': 'Full', 'codec': 'subrip', 'default': true, 'forced': false, 'burn': false},
+          {'index': 1, 'language': 'rus', 'title': null, 'codec': 'subrip', 'default': false, 'forced': false, 'burn': false},
+          {'index': 2, 'language': 'jpn', 'title': 'Signs', 'codec': 'ass', 'default': false, 'forced': false, 'burn': true},
+        ],
+        'subtitleTrack': subtitle,
+      };
+      final pc = link();
+      final player = _FakePlayer();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player, loadSubtitle: (player, resource, source) async => 'x${source.index}');
+      pc.answer = (type, fields) async => both(fields['id'] as String, fields['audio'] as int? ?? 0, 0);
+      await playback.watch('e1', quality: '480p');
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await playback.chooseAudio(playback.audioTracks[1]);
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await playback.chooseSubtitle(playback.subtitleTracks[1]);
+      expect(pc.asked, hasLength(2));
+
+      // An older PC answers with its own preferences, whatever the phone names, and keeps an audio track asked for.
+      pc.answer = (type, fields) async => both('e2', fields['audio'] as int? ?? 0, 0);
+      await playback.playEpisode(const EpisodeStep(id: 'e2', title: 'Episode 2'));
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await pumpEventQueue();
+      expect(pc.asked, hasLength(4));
+      expect(pc.asked.last.$2, containsPair('audio', 1));
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await pumpEventQueue();
+      expect(pc.asked, hasLength(4), reason: 'subtitles sent as a file are shown without converting again');
+      final selected = await playback.selectedTracks();
+      expect((selected.audio, selected.subtitle), ('2', '2'));
+
+      // Subtitles the PC would have to draw in are left as it started, rather than converted again.
+      pc.answer = (type, fields) async => both('e2', fields['audio'] as int? ?? 0, fields['subtitle'] as int? ?? 0);
+      await playback.chooseSubtitle(playback.subtitleTracks[2]);
+      expect(pc.asked.last.$2, containsPair('subtitle', 2));
+      final asked = pc.asked.length;
+      pc.answer = (type, fields) async => both('e3', fields['audio'] as int? ?? 0, 0);
+      await playback.playEpisode(const EpisodeStep(id: 'e3', title: 'Episode 3'));
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await pumpEventQueue();
+      await player.lists(const [AudioTrack('1', null, null)]);
+      await pumpEventQueue();
+      expect(pc.asked.skip(asked + 1).map((a) => a.$2['subtitle']), everyElement(isNull));
+      playback.dispose();
+    });
+
     test('a video converted anyway has its next episode converted anyway too', () async {
       final pc = link();
       final playback = PhonePlayback(link: pc, createPlayer: () => _FakePlayer());

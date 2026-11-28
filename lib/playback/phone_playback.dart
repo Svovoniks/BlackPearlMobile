@@ -929,40 +929,61 @@ class PhonePlayback extends ChangeNotifier {
   // The audio of such an episode was switched to the one picked; its subtitles follow once the new conversion is open.
   bool _subtitlesToFollow = false;
 
-  // The track of [tracks] that is [chosen]: the same language and title, or else the first in that language.
-  static AudioTrack? _matchChosen(List<AudioTrack> tracks, ({String? language, String? title, int? index}) chosen) {
-    String? language(AudioTrack t) => TrackLanguages.languageOf(t.language, t.title);
-    return tracks.where((t) => language(t) == chosen.language && t.title == chosen.title).firstOrNull ??
-        tracks.where((t) => language(t) == chosen.language).firstOrNull;
+  // The track of another file that is the one picked, as the PC finds it from the language and title the phone sends
+  // (SessionTracks.Match): one in the same language, the same title first, else the first in it. Titles compare without
+  // case and without what isn't the track's own ([trackTitle]). With no language known, the same title only.
+  static T? _matchPicked<T>(List<T> tracks, String? language, String? title, String? Function(T) languageOf, String? Function(T) titleOf) {
+    final name = trackTitle(title)?.toLowerCase();
+    bool sameName(T t) => name != null && trackTitle(titleOf(t))?.toLowerCase() == name;
+    if (language == null) return tracks.where(sameName).firstOrNull;
+    final inLanguage = tracks.where((t) => languageOf(t) == language).toList();
+    return inLanguage.where(sameName).firstOrNull ?? inLanguage.firstOrNull;
   }
 
-  static SubtitleTrack? _matchChosenSubtitle(List<SubtitleTrack> tracks, ({bool off, String? language, String? title, int? index}) chosen) {
-    String? language(SubtitleTrack t) => TrackLanguages.languageOf(t.language, t.title);
-    return tracks.where((t) => language(t) == chosen.language && t.title == chosen.title).firstOrNull ??
-        tracks.where((t) => language(t) == chosen.language).firstOrNull;
+  /// A track's own title, as the PC reads it (ChosenTrack.Title): without the language a player appends
+  /// ("Full - [English]") and never its number ("Track 3"), which another file gives to another track. Null for none.
+  @visibleForTesting
+  static String? trackTitle(String? name) {
+    var title = (name ?? '').replaceFirst(RegExp(r'\s*-\s*\[[^\]]+\]$'), '').trim();
+    title = title.replaceFirst(RegExp(r'\s*·\s*(detected|identifying language)$', caseSensitive: false), '').trim();
+    return title.isEmpty || RegExp(r'^(Track\s*\d+|Track|Detected)$', caseSensitive: false).hasMatch(title) ? null : title;
   }
+
+  static AudioTrack? _matchChosen(List<AudioTrack> tracks, ({String? language, String? title, int? index}) chosen) =>
+      _matchPicked(tracks, chosen.language, chosen.title, (t) => TrackLanguages.languageOf(t.language, t.title), (t) => t.title);
+
+  static SubtitleTrack? _matchChosenSubtitle(List<SubtitleTrack> tracks, ({bool off, String? language, String? title, int? index}) chosen) =>
+      _matchPicked(tracks, chosen.language, chosen.title, (t) => TrackLanguages.languageOf(t.language, t.title), (t) => t.title);
 
   // A conversion of another episode that a PC before 0.3.171 started on its own preferences, as it didn't hear which
   // tracks were picked for the last one: the phone asks for them, audio first, as each takes the PC a moment.
   // Another audio track is another conversion, which brings the subtitles' turn with it ([_subtitlesToFollow]).
+  // Subtitles the PC would have to draw into the picture are left as the PC started: drawing them in again can take it
+  // long enough that it answers with none, which would turn the pick off for the episodes after.
   Future<void> _followCarried(({String? language, String? title, int? index})? audio, ({bool off, String? language, String? title, int? index})? subtitle) async {
+    // Something the user asked for is on its way: it decides, and nothing is said about a pick they didn't make here.
+    if (pending.value != null) return;
     final converted = _convertedAudio, stream = _stream;
     if (audio?.language != null && converted != null && stream?.audioTrack != null) {
       final want = _matchChosen(converted, audio!);
       if (want != null && want.id != '${stream!.audioTrack! + 1}') {
         _subtitlesToFollow = subtitle != null;
         await chooseAudio(want);
-        return;
+        // Refused, or not asked for after all: the subtitles follow on the conversion playing now, not on a later one.
+        if (!identical(_stream, stream)) return;
+        _subtitlesToFollow = false;
       }
     }
     final now = _stream, listed = _convertedSubtitles;
     if (subtitle == null || now == null || listed == null || pending.value != null) return;
     final shown = now.subtitleTrack == null ? null : '${now.subtitleTrack! + 1}';
+    final burned = now.burnedSubtitle != null;
     if (subtitle.off) {
-      if (shown != null) await chooseSubtitle(null);
+      if (shown != null && !burned) await chooseSubtitle(null);
     } else if (subtitle.language != null) {
       final want = _matchChosenSubtitle(listed, subtitle);
-      if (want != null && want.id != shown) await chooseSubtitle(want);
+      final index = want == null ? null : int.tryParse(want.id);
+      if (want != null && want.id != shown && !burned && index != null && now.sourceSubtitle(index - 1)?.burn == false) await chooseSubtitle(want);
     }
   }
 
@@ -1283,14 +1304,11 @@ class PhonePlayback extends ChangeNotifier {
     final subtitle = _chosenSubtitle;
     if (subtitle != null) {
       final tracks = subtitleChoices(_tracks);
-      String? subtitleLanguage(SubtitleTrack t) => TrackLanguages.languageOf(t.language, t.title);
       // As for audio, the place picked is the track; the file lists them in the same order every time.
       final place = subtitle.index;
       final match = subtitle.off
           ? SubtitleTrack.no()
-          : (place != null && place < tracks.length ? tracks[place] : null) ??
-              tracks.where((t) => subtitleLanguage(t) == subtitle.language && t.title == subtitle.title).firstOrNull ??
-              tracks.where((t) => subtitleLanguage(t) == subtitle.language).firstOrNull;
+          : (place != null && place < tracks.length ? tracks[place] : null) ?? _matchChosenSubtitle(tracks, subtitle);
       if (match != null) {
         await player.setSubtitleTrack(match);
       } else {
