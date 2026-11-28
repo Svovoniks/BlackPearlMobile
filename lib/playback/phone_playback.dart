@@ -989,19 +989,17 @@ class PhonePlayback extends ChangeNotifier {
   // files with it, and has read them by then), and when playback ends. Files a run that ended without that left behind
   // go the first time this run writes one.
   final List<File> _writtenSubtitles = [];
-  static bool _subtitlesSwept = false;
-  static Future<Directory> _subtitleFolder() async {
-    final folder = Directory('${Directory.systemTemp.path}/subtitles');
-    if (!_subtitlesSwept) {
-      _subtitlesSwept = true;
-      try {
-        if (await folder.exists()) await folder.delete(recursive: true);
-      } on FileSystemException {
-        // Left for the next run.
-      }
+  // Named for this app: on Windows the temporary folder is shared with other programs.
+  static Future<Directory>? _subtitleFolderReady;
+  static Future<Directory> _subtitleFolder() => _subtitleFolderReady ??= () async {
+    final folder = Directory('${Directory.systemTemp.path}/blackpearl-subtitles');
+    try {
+      if (await folder.exists()) await folder.delete(recursive: true);
+    } on FileSystemException {
+      // Left for the next run.
     }
     return folder.create(recursive: true);
-  }
+  }();
 
   void _deleteSubtitleFiles() {
     for (final file in _writtenSubtitles) {
@@ -1156,9 +1154,11 @@ class PhonePlayback extends ChangeNotifier {
       final position = _stalledAt ?? _positionOf(player);
       if (await watch(stream.id, quality: stream.quality, startAt: position, subtitle: source?.index ?? -1)) {
         final now = _stream;
-        // The PC answers none when it couldn't draw them in (they took it too long to prepare).
+        // The PC answers none when it couldn't draw them in (they took it too long to prepare): none is what plays, and
+        // what another stream of this video keeps.
         if (source != null && now != null && now.hls && now.subtitleTrack != source.index) {
-          _say("The PC couldn't draw those subtitles into the picture.");
+          _say("The PC couldn't draw those subtitles into the picture, so they are off.");
+          _chosenSubtitle = (off: true, language: null, title: null, index: null);
         } else {
           _chosenSubtitle = chosen;
         }
@@ -1319,11 +1319,11 @@ class PhonePlayback extends ChangeNotifier {
     _stream = null;
     _phase = PhonePlaybackPhase.idle;
     _error = null;
-    notifyListeners();
-    if (previous != null) await _release(previous);
     _subtitleFiles.clear();
     _addedSubtitles.clear();
     _deleteSubtitleFiles();
+    notifyListeners();
+    if (previous != null) await _release(previous);
   }
 
   // Whether the video was playing when the app went to the background, to carry on when it comes back.

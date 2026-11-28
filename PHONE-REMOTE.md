@@ -347,7 +347,8 @@ reason was a file already as small as the conversion would be: the same `watch` 
 it anyway, which saves no data but gives a phone that can't play the file itself the PC's H.264 (from 0.3.167; older
 PCs leave both out). The phone asks first, when its user picked that quality. The PC keeps one stream per phone; a
 new `watch` replaces it and `{"type":"stream-stop"}` ends it. A failure is an `error` with the `request` and the code
-`gone` (not in the library, or its drive is disconnected).
+`gone` (not in the library, or its drive is disconnected), or from 0.3.169 `replaced`: the phone sent another `watch`
+before this one was ready, which the PC answers instead.
 
 Phone → PC while watching, every 10 seconds, on pause, and when it stops:
 `{"type":"progress","id":"…","positionMs":1180000,"durationMs":2830000,"ended":false,"final":false}`. The PC saves it

@@ -373,16 +373,19 @@ void main() {
       playback.dispose();
     });
 
-    test("subtitles the PC couldn't draw into the picture say so, and stay as they were", () async {
-      final (_, playback, pc, _) = await watching(null);
+    test("subtitles the PC couldn't draw into the picture say so, and are off from then on", () async {
+      final (player, playback, pc, _) = await watching(0);
+      // A file track picked by hand first: the drawn-in pick that fails replaces it.
+      await playback.chooseSubtitle(playback.subtitleTracks[2]);
       pc.answer = (type, fields) async => converted('480p', null);
       await playback.chooseSubtitle(playback.subtitleTracks[1]);
       expect(pc.asked.last.$2, containsPair('subtitle', 1));
-      expect(playback.notice.value, "The PC couldn't draw those subtitles into the picture.");
+      expect(playback.notice.value, "The PC couldn't draw those subtitles into the picture, so they are off.");
+      await player.lists(const [AudioTrack('1', null, null)]);
       expect((await playback.selectedTracks()).subtitle, isNull);
       pc.answer = (type, fields) async => converted('720p', null);
       await playback.changeQuality('720p');
-      expect(pc.asked.last.$2.containsKey('subtitle'), isFalse, reason: 'not kept as picked');
+      expect(pc.asked.last.$2, containsPair('subtitle', -1), reason: 'off, as the menu shows');
       playback.dispose();
     });
 
