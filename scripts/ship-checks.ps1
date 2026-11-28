@@ -301,54 +301,71 @@ try {
     finally { Set-Item -Path function:Get-PublicJson -Value $originalPublicJson }
     # Release checks on one computer take turns.
     $lockPath = Join-Path $testRoot 'release-checks.lock'
-    $turn = Enter-ReleaseCheckTurn 'fixture run A' -Path $lockPath -TimeoutMinutes 0
-    Check ((Get-ReleaseCheckHolder $lockPath) -like 'fixture run A, started *') 'a run that takes its turn names itself for the runs that wait'
-    $waited = [Collections.Generic.List[string]]::new()
-    $queued = $null
-    try { Enter-ReleaseCheckTurn 'fixture run B' { param($holder) $waited.Add($holder) } -Path $lockPath -TimeoutMinutes 0 | Out-Null } catch { $queued = $_.Exception }
-    Check ($queued -and $queued.Message.Contains('fixture run A') -and $waited.Count -eq 1 -and $waited[0].StartsWith('fixture run A')) 'a second run waits while another holds the turn, and names the run it waits for'
-    Exit-ReleaseCheckTurn $turn
-    Check (!(Test-Path -LiteralPath "$lockPath.json")) 'a run that ends its turn no longer claims it'
-    $turn = Enter-ReleaseCheckTurn 'fixture run B' -Path $lockPath -TimeoutMinutes 0
-    Exit-ReleaseCheckTurn $turn
-    Check $true 'the next run takes the turn once the first ends it'
-    # A run killed mid-checks cannot run its cleanup; the system still releases its turn.
-    $ready = Join-Path $testRoot 'holder-ready'
-    $holderScript = Join-Path $testRoot 'holder.ps1'
-    Set-Content -LiteralPath $holderScript -Value ". '$((Join-Path $PSScriptRoot 'github-pr.ps1') -replace "'", "''")'; `$t = Enter-ReleaseCheckTurn 'fixture child' -Path '$($lockPath -replace "'", "''")' -TimeoutMinutes 0; Set-Content -LiteralPath '$($ready -replace "'", "''")' -Value held; Start-Sleep -Seconds 120"
-    $hidden = if ($IsWindows) { @{ WindowStyle = 'Hidden' } } else { @{} } # -WindowStyle exists only on Windows
-    $child = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile', '-File', "`"$holderScript`"") -PassThru @hidden
+    $savedTurn = $env:BLACKPEARL_RELEASE_CHECK_TURN
+    $turn = $null
     try {
-        $until = [datetime]::UtcNow.AddSeconds(60)
-        while (!(Test-Path -LiteralPath $ready) -and !$child.HasExited -and [datetime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 200 }
+        $turn = Enter-ReleaseCheckTurn 'fixture run A' -Path $lockPath -TimeoutMinutes 0
+        Check ((Get-ReleaseCheckHolder $lockPath) -like 'fixture run A, started *') 'a run that takes its turn names itself for the runs that wait'
+        $waited = [Collections.Generic.List[string]]::new()
         $queued = $null
-        try { Enter-ReleaseCheckTurn 'fixture run C' -Path $lockPath -TimeoutMinutes 0 | Out-Null } catch { $queued = $_.Exception }
-        Check ($queued -and $queued.Message.Contains('fixture child')) 'another process holding the turn makes a run wait'
-        $child.Kill($true); $child.WaitForExit()
-        $turn = Enter-ReleaseCheckTurn 'fixture run C' -Path $lockPath -TimeoutMinutes 0.5 -PollSeconds 1
+        try { Enter-ReleaseCheckTurn 'fixture run B' { param($holder) $waited.Add($holder) } -Path $lockPath -TimeoutMinutes 0 | Out-Null } catch { $queued = $_.Exception }
+        Check ($queued -and $queued.Message.Contains('fixture run A') -and $waited.Count -eq 1 -and $waited[0].StartsWith('fixture run A')) 'a second run waits while another holds the turn, and names the run it waits for'
         Exit-ReleaseCheckTurn $turn
-        Check $true 'a killed run gives up its turn'
+        Check (!(Test-Path -LiteralPath "$lockPath.json")) 'a run that ends its turn no longer claims it'
+        $turn = Enter-ReleaseCheckTurn 'fixture run B' -Path $lockPath -TimeoutMinutes 0
+        Exit-ReleaseCheckTurn $turn
+        Check $true 'the next run takes the turn once the first ends it'
+        # A run killed mid-checks cannot run its cleanup; the system still releases its turn.
+        $ready = Join-Path $testRoot 'holder-ready'
+        $holderScript = Join-Path $testRoot 'holder.ps1'
+        Set-Content -LiteralPath $holderScript -Value ". '$((Join-Path $PSScriptRoot 'github-pr.ps1') -replace "'", "''")'; `$t = Enter-ReleaseCheckTurn 'fixture child' -Path '$($lockPath -replace "'", "''")' -TimeoutMinutes 0; Set-Content -LiteralPath '$($ready -replace "'", "''")' -Value held; Start-Sleep -Seconds 120"
+        $hidden = if ($IsWindows) { @{ WindowStyle = 'Hidden' } } else { @{} } # -WindowStyle exists only on Windows
+        $child = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile', '-File', "`"$holderScript`"") -PassThru @hidden
+        try {
+            $until = [datetime]::UtcNow.AddSeconds(60)
+            while (!(Test-Path -LiteralPath $ready) -and !$child.HasExited -and [datetime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 200 }
+            $queued = $null
+            try { Enter-ReleaseCheckTurn 'fixture run C' -Path $lockPath -TimeoutMinutes 0 | Out-Null } catch { $queued = $_.Exception }
+            Check ($queued -and $queued.Message.Contains('fixture child')) 'another process holding the turn makes a run wait'
+            $child.Kill($true); $child.WaitForExit()
+            $turn = Enter-ReleaseCheckTurn 'fixture run C' -Path $lockPath -TimeoutMinutes 0.5 -PollSeconds 1
+            Exit-ReleaseCheckTurn $turn
+            Check $true 'a killed run gives up its turn'
+        }
+        finally { if (!$child.HasExited) { $child.Kill($true) } }
+        $turn = Enter-ReleaseCheckTurn 'fixture run D' -Path $lockPath -TimeoutMinutes 0
+        $savedGitHub = $env:GITHUB_ACTIONS; $env:GITHUB_ACTIONS = $null
+        try { Check ($env:BLACKPEARL_RELEASE_CHECK_TURN -ceq $lockPath -and $null -eq (Enter-ManualReleaseCheckTurn 'fixture by hand')) 'release checks started inside a turn do not wait for another' }
+        finally { $env:GITHUB_ACTIONS = $savedGitHub; Exit-ReleaseCheckTurn $turn }
+        Check (!$env:BLACKPEARL_RELEASE_CHECK_TURN -or $env:BLACKPEARL_RELEASE_CHECK_TURN -cne $lockPath) 'ending a turn stops telling child processes they have it'
+        # A waiting run that reads the claim while the next holder writes it must not make that holder fail.
+        Set-Content -LiteralPath "$lockPath.json" -Value '{"Run":"fixture","Since":"2026-01-01T00:00:00Z"}'
+        $reader = [IO.File]::Open("$lockPath.json", [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try { $turn = Enter-ReleaseCheckTurn 'fixture run E' -Path $lockPath -TimeoutMinutes 0 }
+        finally { $reader.Dispose() }
+        Exit-ReleaseCheckTurn $turn
+        Check ($turn -and $turn.Stream) 'a run takes its turn even when its claim cannot be written'
+        $recordFile = Join-Path $testRoot 'record-race.json'
+        Write-CheckRecord $recordFile @{ State = 'passed' }
+        $reader = [IO.File]::Open($recordFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $writer = Start-ThreadJob { param($f, $r) . $f; Write-CheckRecord $r @{ State = 'failed' } } -ArgumentList (Join-Path $PSScriptRoot 'github-pr.ps1'), $recordFile
+        Start-Sleep -Milliseconds 500; $reader.Dispose()
+        $null = $writer | Wait-Job -Timeout 30 | Receive-Job; $writer | Remove-Job -Force
+        Check ((Get-CheckState $recordFile).State -eq 'failed') 'a record is replaced once a reader lets go of it'
+        foreach ($content in @('', ' ', 'null', '[]')) {
+            $broken = Join-Path $testRoot 'record-broken.json'
+            [IO.File]::WriteAllText($broken, $content)
+            $reader = Start-ThreadJob { param($f, $r) . $f; try { Get-CheckState $r | Out-Null; 'returned' } catch { 'failed' } } -ArgumentList (Join-Path $PSScriptRoot 'github-pr.ps1'), $broken
+            $result = $reader | Wait-Job -Timeout 20 | Receive-Job
+            $reader | Remove-Job -Force
+            Check ($result -eq 'failed') "a record holding '$content' fails to read instead of waiting forever"
+        }
     }
-    finally { if (!$child.HasExited) { $child.Kill($true) } }
-    $turn = Enter-ReleaseCheckTurn 'fixture run D' -Path $lockPath -TimeoutMinutes 0
-    $savedGitHub = $env:GITHUB_ACTIONS; $env:GITHUB_ACTIONS = $null
-    try { Check ($env:BLACKPEARL_RELEASE_CHECK_TURN -ceq $lockPath -and $null -eq (Enter-ManualReleaseCheckTurn 'fixture by hand')) 'release checks started inside a turn do not wait for another' }
-    finally { $env:GITHUB_ACTIONS = $savedGitHub; Exit-ReleaseCheckTurn $turn }
-    Check (!$env:BLACKPEARL_RELEASE_CHECK_TURN -or $env:BLACKPEARL_RELEASE_CHECK_TURN -cne $lockPath) 'ending a turn stops telling child processes they have it'
-    # A waiting run that reads the claim while the next holder writes it must not make that holder fail.
-    Set-Content -LiteralPath "$lockPath.json" -Value '{"Run":"fixture","Since":"2026-01-01T00:00:00Z"}'
-    $reader = [IO.File]::Open("$lockPath.json", [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-    try { $turn = Enter-ReleaseCheckTurn 'fixture run E' -Path $lockPath -TimeoutMinutes 0 }
-    finally { $reader.Dispose() }
-    Exit-ReleaseCheckTurn $turn
-    Check ($turn -and $turn.Stream) 'a run takes its turn even when its claim cannot be written'
-    $recordFile = Join-Path $testRoot 'record-race.json'
-    Write-CheckRecord $recordFile @{ State = 'passed' }
-    $reader = [IO.File]::Open($recordFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-    $writer = Start-ThreadJob { param($f, $r) . $f; Write-CheckRecord $r @{ State = 'failed' } } -ArgumentList (Join-Path $PSScriptRoot 'github-pr.ps1'), $recordFile
-    Start-Sleep -Milliseconds 500; $reader.Dispose()
-    $null = $writer | Wait-Job -Timeout 30 | Receive-Job; $writer | Remove-Job -Force
-    Check ((Get-CheckState $recordFile).State -eq 'failed') 'a record is replaced once a reader lets go of it'
+    finally {
+        # A failing check above must not leave a test turn held, or tell later runs in this shell that they have one.
+        if ($turn) { $turn.Stream.Dispose() }
+        $env:BLACKPEARL_RELEASE_CHECK_TURN = $savedTurn
+    }
     Check ((Format-CheckProgress ([pscustomobject]@{ State = 'running'; WaitingFor = 'BlackPearl Mobile 1234abcd (fix), started 10:00' })) -ceq 'queued behind BlackPearl Mobile 1234abcd (fix), started 10:00') 'a run waiting for its turn shows as queued behind the run it waits for'
     Check ((Format-CheckProgress ([pscustomobject]@{ State = 'running' })) -ceq 'running' -and (Format-CheckProgress ([pscustomobject]@{ State = 'passed'; WaitingFor = 'x' })) -ceq 'passed') 'other runs show their state'
     . (Join-Path $PSScriptRoot 'ship-sync-checks.ps1') -TestRoot $testRoot

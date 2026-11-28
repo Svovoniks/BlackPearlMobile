@@ -99,14 +99,19 @@ function Get-CheckState {
     # Release checks run in the background after a push. Their record says running, passed or failed. A running record
     # whose process is gone was interrupted.
     # A record being replaced can be briefly missing or locked, so a read tries a few times before it believes either.
-    $record = $null
-    for ($attempt = 1; !$record; $attempt++) {
+    # A record that stays unreadable or empty (a crash mid-write) fails after about a second.
+    for ($attempt = 1; ; $attempt++) {
         try {
-            if (Test-Path -LiteralPath $Path) { $record = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json }
-            elseif ($attempt -ge 3) { return [pscustomobject]@{ State = 'missing' } }
+            if (Test-Path -LiteralPath $Path) {
+                $record = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+                # [pscustomobject] would match $null too: it is PSObject.
+                if ($null -ne $record -and $record -is [Management.Automation.PSCustomObject]) { break }
+                throw "The release check record $Path holds no record. Delete it, then rerun ship.ps1 to check the commit again."
+            }
+            if ($attempt -ge 3) { return [pscustomobject]@{ State = 'missing' } }
         }
         catch { if ($attempt -ge 10) { throw } }
-        if (!$record) { Start-Sleep -Milliseconds 100 }
+        Start-Sleep -Milliseconds 100
     }
     if (!$record.PSObject.Properties['State']) { $record | Add-Member State 'passed' }
     if ($record.State -eq 'running') {
