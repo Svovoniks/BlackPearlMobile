@@ -86,9 +86,14 @@ at once each take about twice as long, and the desktop app's startup gate
 (BlackPearl's `scripts/desktop-main-suite.ps1`) fails on every attempt while another run builds
 or tests beside it. The turn is an exclusive open of `blackpearl-release-checks.lock`
 (in `%LOCALAPPDATA%`, elsewhere the temp folder), so the system gives it up when its
-run ends, however it ends. A run that waits 3 hours for its turn fails, naming the run
-that holds it. Only runs of a `ship.ps1` that has this queue take turns: a branch from
-before it runs its checks at once, until it merges `master`.
+run ends, however it ends. The lock is per user, so runs under another Windows account
+do not wait for it. Waiting runs are not served in order: whichever looks first after a
+turn ends takes the next one, so with several runs waiting one can be overtaken, and
+`-Merge` may time out on it. A run that waits 3 hours for its turn fails, naming the run
+that holds it; `-Merge -WaitMinutes 0`, which runs the checks in the foreground, can wait
+that long too. `scripts/release-checks.ps1` run by hand, as a reviewer does, takes a
+turn the same way (not in CI). Only runs of scripts that have this queue take turns: a
+branch from before it runs its checks at once, until it merges `master`.
 
 On Windows, a `flutter pub get` in a fresh copy links the Windows plugins, which needs
 permission to create symbolic links (Developer Mode, or an administrator). Without it Flutter

@@ -539,7 +539,7 @@ try {
         $checkFailureAdvice = 'Fix the failure, rerun ship.ps1, and request a re-review. If it is unrelated to this change, rerun ship.ps1 on the same head instead; the approval still covers it.'
         $local = Get-CheckState $localRecord
         if ($local.State -eq 'failed') { throw "Release checks failed on ${head}: $($local.Error) $(Format-CheckEvidence $local)$checkFailureAdvice" }
-        Write-Host "Release checks on ${head}: $($local.State)"
+        Write-Host "Release checks on ${head}: $(Format-CheckProgress $local)"
         & git merge-base --is-ancestor origin/master $head
         if ($LASTEXITCODE -ne 0) { throw 'master advanced since this pull request was checked. Merge origin/master into the branch, rerun ship.ps1, and request a re-review.' }
         $approval = Assert-ReviewApproval (Get-PullRequestComments $number) $head

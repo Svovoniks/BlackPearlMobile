@@ -330,6 +330,25 @@ try {
         Check $true 'a killed run gives up its turn'
     }
     finally { if (!$child.HasExited) { $child.Kill($true) } }
+    $turn = Enter-ReleaseCheckTurn 'fixture run D' -Path $lockPath -TimeoutMinutes 0
+    $savedGitHub = $env:GITHUB_ACTIONS; $env:GITHUB_ACTIONS = $null
+    try { Check ($env:BLACKPEARL_RELEASE_CHECK_TURN -ceq $lockPath -and $null -eq (Enter-ManualReleaseCheckTurn 'fixture by hand')) 'release checks started inside a turn do not wait for another' }
+    finally { $env:GITHUB_ACTIONS = $savedGitHub; Exit-ReleaseCheckTurn $turn }
+    Check (!$env:BLACKPEARL_RELEASE_CHECK_TURN -or $env:BLACKPEARL_RELEASE_CHECK_TURN -cne $lockPath) 'ending a turn stops telling child processes they have it'
+    # A waiting run that reads the claim while the next holder writes it must not make that holder fail.
+    Set-Content -LiteralPath "$lockPath.json" -Value '{"Run":"fixture","Since":"2026-01-01T00:00:00Z"}'
+    $reader = [IO.File]::Open("$lockPath.json", [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { $turn = Enter-ReleaseCheckTurn 'fixture run E' -Path $lockPath -TimeoutMinutes 0 }
+    finally { $reader.Dispose() }
+    Exit-ReleaseCheckTurn $turn
+    Check ($turn -and $turn.Stream) 'a run takes its turn even when its claim cannot be written'
+    $recordFile = Join-Path $testRoot 'record-race.json'
+    Write-CheckRecord $recordFile @{ State = 'passed' }
+    $reader = [IO.File]::Open($recordFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $writer = Start-ThreadJob { param($f, $r) . $f; Write-CheckRecord $r @{ State = 'failed' } } -ArgumentList (Join-Path $PSScriptRoot 'github-pr.ps1'), $recordFile
+    Start-Sleep -Milliseconds 500; $reader.Dispose()
+    $null = $writer | Wait-Job -Timeout 30 | Receive-Job; $writer | Remove-Job -Force
+    Check ((Get-CheckState $recordFile).State -eq 'failed') 'a record is replaced once a reader lets go of it'
     Check ((Format-CheckProgress ([pscustomobject]@{ State = 'running'; WaitingFor = 'BlackPearl Mobile 1234abcd (fix), started 10:00' })) -ceq 'queued behind BlackPearl Mobile 1234abcd (fix), started 10:00') 'a run waiting for its turn shows as queued behind the run it waits for'
     Check ((Format-CheckProgress ([pscustomobject]@{ State = 'running' })) -ceq 'running' -and (Format-CheckProgress ([pscustomobject]@{ State = 'passed'; WaitingFor = 'x' })) -ceq 'passed') 'other runs show their state'
     . (Join-Path $PSScriptRoot 'ship-sync-checks.ps1') -TestRoot $testRoot
