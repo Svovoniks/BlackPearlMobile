@@ -350,6 +350,42 @@ void main() {
       playback.dispose();
     });
 
+    test("a pick the player refuses, as while another quality is on its way, leaves the PC's subtitles loading", () async {
+      final pc = link();
+      final player = _FakePlayer();
+      final file = Completer<String?>();
+      final playback = PhonePlayback(link: pc, createPlayer: () => player, loadSubtitle: (player, resource, source) => file.future);
+      pc.answer = (type, fields) async => converted('480p', 0);
+      await playback.watch('film', quality: '480p');
+      await player.lists(const [AudioTrack('1', null, null)]);
+      final quality = Completer<Map<String, dynamic>>();
+      pc.answer = (type, fields) => quality.future;
+      final switching = playback.changeQuality('720p');
+      await pumpEventQueue();
+      await playback.chooseSubtitle(playback.subtitleTracks[2]);
+      expect(playback.notice.value, 'Wait for the switch to 720p to finish, then pick the subtitles.');
+      file.complete('x0');
+      await pumpEventQueue();
+      expect(player.subtitleSet.last, 'x0', reason: 'the refused pick replaced nothing');
+      quality.completeError(const RemoteRequestException('busy', 'The PC is busy.'));
+      await switching;
+      expect((await playback.selectedTracks()).subtitle, '1');
+      playback.dispose();
+    });
+
+    test("subtitles the PC couldn't draw into the picture say so, and stay as they were", () async {
+      final (_, playback, pc, _) = await watching(null);
+      pc.answer = (type, fields) async => converted('480p', null);
+      await playback.chooseSubtitle(playback.subtitleTracks[1]);
+      expect(pc.asked.last.$2, containsPair('subtitle', 1));
+      expect(playback.notice.value, "The PC couldn't draw those subtitles into the picture.");
+      expect((await playback.selectedTracks()).subtitle, isNull);
+      pc.answer = (type, fields) async => converted('720p', null);
+      await playback.changeQuality('720p');
+      expect(pc.asked.last.$2.containsKey('subtitle'), isFalse, reason: 'not kept as picked');
+      playback.dispose();
+    });
+
     test("subtitles that can't be read from the PC say so", () async {
       final (player, playback, _, read) = await watching(0, fails: true);
       expect(read, hasLength(1));

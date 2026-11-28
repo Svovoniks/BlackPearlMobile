@@ -310,6 +310,7 @@ class PhonePlayback extends ChangeNotifier {
     // libmpv drops the subtitle files added to the stream it opened before.
     _subtitleFiles.clear();
     _addedSubtitles.clear();
+    _deleteSubtitleFiles();
     // Another stream of the video on screen plays on only if it was playing: a video paused by hand stays paused through
     // a quality change or a recovery. (A stalled one was playing until its data ran out, unless it was paused before.)
     final play = !replacing || (stalledAt != null ? playedBeforeStall : player.state.playing);
@@ -966,8 +967,9 @@ class PhonePlayback extends ChangeNotifier {
       final bytes = await proxy.fetch(resource);
       if (bytes.isEmpty) return null;
       final styled = source.codec == 'ass' || source.codec == 'ssa';
-      final folder = await Directory('${Directory.systemTemp.path}/subtitles').create(recursive: true);
+      final folder = await _subtitleFolder();
       file = File('${folder.path}/${DateTime.now().microsecondsSinceEpoch}-${source.index}.${styled ? 'ass' : 'srt'}');
+      _writtenSubtitles.add(file);
       await file.writeAsBytes(bytes, flush: true);
     } on MediaReadException {
       return null;
@@ -981,6 +983,31 @@ class PhonePlayback extends ChangeNotifier {
     final listed = player.stream.tracks.map(added).firstWhere((id) => id != null).timeout(const Duration(seconds: 10), onTimeout: () => null).catchError((Object _) => null);
     await native.command(['sub-add', file.path, 'auto', name, source.language ?? '']);
     return added(player.state.tracks) ?? await listed;
+  }
+
+  // Subtitle files written for the streams opened so far: each goes once another stream opens (libmpv drops a stream's
+  // files with it, and has read them by then), and when playback ends. Files a run that ended without that left behind
+  // go the first time this run writes one.
+  final List<File> _writtenSubtitles = [];
+  static bool _subtitlesSwept = false;
+  static Future<Directory> _subtitleFolder() async {
+    final folder = Directory('${Directory.systemTemp.path}/subtitles');
+    if (!_subtitlesSwept) {
+      _subtitlesSwept = true;
+      try {
+        if (await folder.exists()) await folder.delete(recursive: true);
+      } on FileSystemException {
+        // Left for the next run.
+      }
+    }
+    return folder.create(recursive: true);
+  }
+
+  void _deleteSubtitleFiles() {
+    for (final file in _writtenSubtitles) {
+      unawaited(file.delete().then((_) {}, onError: (Object _) {}));
+    }
+    _writtenSubtitles.clear();
   }
 
   // Shows a conversion's subtitle track sent as a file, read from the PC the first time; true once shown. [pick]: the
@@ -1091,8 +1118,8 @@ class PhonePlayback extends ChangeNotifier {
     final player = _player;
     if (player == null) return;
     final stream = _stream;
-    _subtitlePick++;
     if (stream != null && _convertedSubtitles != null) return _chooseConvertedSubtitle(player, stream, track);
+    _subtitlePick++;
     final at = track == null ? -1 : subtitleChoices(_tracks).indexWhere((t) => t.id == track.id);
     _chosenSubtitle = track == null
         ? (off: true, language: null, title: null, index: null)
@@ -1122,17 +1149,25 @@ class PhonePlayback extends ChangeNotifier {
         : (off: false, language: TrackLanguages.languageOf(source.language, source.title), title: source.title, index: source.index);
     if (source?.burn == true || burned != null) {
       if (source?.index == burned) return;
+      _subtitlePick++;
       final labels = subtitleLabels(subtitleTracks);
       final at = subtitleTracks.indexWhere((t) => t.id == id);
       _setPending(PendingSwitch.subtitle(id, at < 0 ? 'other subtitles' : '${labels[at].name} subtitles'));
       final position = _stalledAt ?? _positionOf(player);
       if (await watch(stream.id, quality: stream.quality, startAt: position, subtitle: source?.index ?? -1)) {
-        _chosenSubtitle = chosen;
+        final now = _stream;
+        // The PC answers none when it couldn't draw them in (they took it too long to prepare).
+        if (source != null && now != null && now.hls && now.subtitleTrack != source.index) {
+          _say("The PC couldn't draw those subtitles into the picture.");
+        } else {
+          _chosenSubtitle = chosen;
+        }
       } else if (pending.value?.subtitle == id) {
         _setPending(null);
       }
       return;
     }
+    _subtitlePick++;
     _chosenSubtitle = chosen;
     if (source == null) {
       await player.setSubtitleTrack(SubtitleTrack.no());
@@ -1286,6 +1321,9 @@ class PhonePlayback extends ChangeNotifier {
     _error = null;
     notifyListeners();
     if (previous != null) await _release(previous);
+    _subtitleFiles.clear();
+    _addedSubtitles.clear();
+    _deleteSubtitleFiles();
   }
 
   // Whether the video was playing when the app went to the background, to carry on when it comes back.
@@ -1411,6 +1449,7 @@ class PhonePlayback extends ChangeNotifier {
     _stream = null;
     if (previous != null) unawaited(_release(previous));
     unawaited(proxy.dispose());
+    _deleteSubtitleFiles();
     _upNextTimer?.cancel();
     notice.dispose();
     convertOffer.dispose();

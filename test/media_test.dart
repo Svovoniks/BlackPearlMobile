@@ -23,12 +23,13 @@ Uint8List frame(int id, int offset, int total, int resourceLength, List<int> dat
 
 /// A PC that answers reads from in-memory resources, in frames of [frameBytes], as the desktop app does.
 class FakePc {
-  FakePc(this.resources, {this.frameBytes = 16384, this.busyFirst = 0});
+  FakePc(this.resources, {this.frameBytes = 16384, this.busyFirst = 0, this.busyPrefix = 'stream/'});
   final Map<String, Uint8List> resources;
   final int frameBytes;
 
-  /// How many reads of a `stream/` resource are answered `busy` before the piece is ready.
+  /// How many reads of a resource starting with [busyPrefix] are answered `busy` before it is ready.
   int busyFirst;
+  final String busyPrefix;
   final List<Map<String, dynamic>> sent = [];
   late final MediaReader reader = MediaReader(send: _receive, window: 4);
 
@@ -45,7 +46,7 @@ class FakePc {
         reader.onText(jsonEncode({'type': 'read-error', 'id': id, 'code': 'gone', 'message': 'Not here'}));
         return;
       }
-      if (resource.startsWith('stream/') && busyFirst > 0) {
+      if (resource.startsWith(busyPrefix) && busyFirst > 0) {
         busyFirst--;
         reader.onText(jsonEncode({'type': 'read-error', 'id': id, 'code': 'busy', 'message': 'Converting'}));
         return;
@@ -168,6 +169,17 @@ void main() {
       expect(beyond, 416);
       final (reversed, _, _) = await get(uri, range: 'bytes=500-100');
       expect(reversed, 416);
+    });
+
+    test("a conversion's subtitles are read whole, past a PC still preparing them; a missing one fails", () async {
+      final subtitles = pattern(250000);
+      final pc = FakePc({'subtitle/s1/0': subtitles}, busyFirst: 2, busyPrefix: 'subtitle/');
+      final proxy = MediaProxy(reader: () => pc.reader, chunk: 100000);
+      addTearDown(proxy.dispose);
+      expect(await proxy.fetch('subtitle/s1/0'), subtitles);
+      expect(pc.busyFirst, 0, reason: 'busy answers were waited out');
+      await expectLater(proxy.fetch('subtitle/s1/1'), throwsA(isA<MediaReadException>().having((e) => e.code, 'code', 'gone')));
+      await expectLater(proxy.fetch('subtitle/s1/0', limit: 1000), throwsA(isA<MediaReadException>().having((e) => e.code, 'code', 'too-large')));
     });
 
     test('a conversion is a playlist of its pieces, and a piece still converting is waited for', () async {
