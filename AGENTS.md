@@ -43,14 +43,27 @@ manual git, version, tag, and verification commands:
    that reply rather than ignoring it. Repeat until the reviewer approves. If you
    and the reviewer disagree on the same point twice, or there is no approval after
    five rounds, stop and ask the user.
-4. After approval, run `./scripts/ship.ps1 -Merge`. It merges only the approved
-   head, after CI and the release checks pass on it, and only if it still contains
-   `master`. Then it tags the release, waits for the tag build, verifies the public
-   release and its APKs as the app's updater sees them, and synchronizes the user's local `master`.
+4. After approval, run `./scripts/ship.ps1 -Merge` **in the foreground**, with a
+   10-minute command timeout. It merges only the approved head, after CI and the
+   release checks pass on it, and only if it still contains `master`. Then it tags
+   the release, waits for the tag build, verifies the public release and its APKs as
+   the app's updater sees them, and synchronizes the user's local `master`. Each run
+   waits at most 7 minutes (`-WaitMinutes`). If it is still waiting, it exits with
+   code 3 and prints `Not finished: ...` with the command to run next: `-Merge` again
+   before the merge, `-VerifyOnly -Version X` after it. Run that command in the
+   foreground right away, and repeat until it prints `Shipped`, or `Merged #N without a release` with `-NoRelease`.
+
+Never run `-Merge` or `-VerifyOnly` in the background and end your turn on it.
+Once the pull request is merged, T3 Code can settle the thread and close its agent
+session in the milliseconds after a background command ends, before the agent's
+turn to answer the completion notice starts. The agent then never learns the
+result (pingdotgg/t3code#26083). This left releases unreported, and the 0.12.10
+verification, which failed on a GitHub rate limit, unnoticed.
 
 Stay with a ship until it finishes. Do not end your turn while `ship.ps1`, its
-release checks, CI, or `-Merge` are still running. Wait on them, and answer every
-completion notice by reading the end of that output. A notice is never "no response
+release checks, CI, or `-Merge` are still running. Release checks and CI may run in
+the background before the merge, and `-Merge` waits on them. Answer every completion
+notice by reading the end of that output. A notice is never "no response
 requested". Report once, after the release is verified and local `master` is
 synchronized, or say exactly which step failed.
 

@@ -3,6 +3,7 @@
 #   ship.ps1 -Message ... -BodyFile ...   push the branch, open or update its pull request, and start the release checks
 #   ship.ps1 -Status                      show the pull request's release checks, CI and review verdict
 #   ship.ps1 -Merge                       merge the approved, checked pull request, tag it, and verify the release
+#                                         (waits at most -WaitMinutes per run, then exits 3 and names the command to run next)
 #   ship.ps1 -NoRelease [-Merge]          the same for a change the user does not want released: no version bump, tag, or release
 #   ship.ps1 -VerifyOnly -Version x.y.z   finish verifying an already pushed tag
 #   ship.ps1 -CheckCommit <sha>           run the release checks on a commit and record the result (started by ship.ps1)
@@ -22,11 +23,29 @@ param(
     [string]$CheckCommit = '',
     [string]$Branch = '',
     [string]$CheckLog = '',
-    [ValidateRange(1, 120)][int]$TimeoutMinutes = 60
+    [ValidateRange(1, 120)][int]$TimeoutMinutes = 60,
+    # How long -Merge and -VerifyOnly wait in one run before they stop and name the command that continues; 0 waits up
+    # to -TimeoutMinutes. Agents run these in the foreground for this reason; see "Waiting in the foreground" in UPDATES.md.
+    [ValidateRange(0, 120)][int]$WaitMinutes = 7
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'github-pr.ps1')
 
+# Raised when -WaitMinutes runs out while the release is still on its way. It is not a failure: the message names the
+# command that carries on, and the script exits with code 3.
+class ShipPausedException : System.Exception {
+    ShipPausedException([string]$Message) : base($Message) {}
+}
+function Get-ShipPauseAt {
+    param([int]$Minutes, [datetime]$Now = [datetime]::UtcNow)
+    if ($Minutes -le 0) { return [datetime]::MaxValue }
+    return $Now.AddMinutes($Minutes)
+}
+function Suspend-ShipWhenDue {
+    param([datetime]$PauseAt, [string]$Waiting, [string]$Resume)
+    if ([datetime]::UtcNow -lt $PauseAt) { return }
+    throw [ShipPausedException]::new("Not finished: $Waiting. Run $Resume in the foreground now to keep waiting. Do not end your turn or report the ship as done until it prints its final result.")
+}
 function Get-ShipVersion {
     param([string]$Requested, [string]$Latest, [string]$Source)
     foreach ($value in @($Latest, $Source)) {
@@ -378,7 +397,7 @@ function Assert-ApkBytes {
     return $hash
 }
 function Wait-ReleaseBuild {
-    param([string]$ExpectedVersion, [string]$Commit, [datetime]$Deadline)
+    param([string]$ExpectedVersion, [string]$Commit, [datetime]$Deadline, [datetime]$PauseAt = [datetime]::MaxValue, [string]$Resume = '')
     $run = $null
     $lastStatus = ''
     while ([datetime]::UtcNow -lt $Deadline) {
@@ -395,17 +414,19 @@ function Wait-ReleaseBuild {
             if ($run.conclusion -ne 'success') { throw "Release build failed: $($run.html_url). Fix it before shipping a higher version; do not move the tag." }
             return $run
         }
+        Suspend-ShipWhenDue $PauseAt "the v$ExpectedVersion tag build is still running ($status)" $Resume
         Start-Sleep -Seconds 20
     }
     throw "Timed out waiting for the tag build. Recheck with -VerifyOnly -Version $ExpectedVersion."
 }
 function Test-PublishedRelease {
-    param([string]$ExpectedVersion, [string]$Destination, [datetime]$Deadline)
+    param([string]$ExpectedVersion, [string]$Destination, [datetime]$Deadline, [datetime]$PauseAt = [datetime]::MaxValue, [string]$Resume = '')
     $release = $null
     do {
         $release = Get-PublicJson "$apiRoot/releases/latest"
         if ($release.tag_name -ceq "v$ExpectedVersion") { break }
         if ([datetime]::UtcNow -ge $Deadline) { throw "Public latest release is $($release.tag_name), expected v$ExpectedVersion." }
+        Suspend-ShipWhenDue $PauseAt "the public latest release is still $($release.tag_name), not v$ExpectedVersion" $Resume
         Start-Sleep -Seconds 15
     } while ($true)
     $apks = Assert-ReleaseMetadata $release $ExpectedVersion
@@ -430,6 +451,7 @@ function Test-PublishedRelease {
 # Dot-sourcing exposes helpers for offline safety checks without starting a release.
 if ($MyInvocation.InvocationName -eq '.') { return }
 $root = Split-Path -Parent $PSScriptRoot
+$paused = $null
 Push-Location $root
 try {
     if ($CheckCommit) {
@@ -441,6 +463,7 @@ try {
     if ($remote.Trim() -notmatch '^(https://github\.com/|git@github\.com:)Svovoniks/BlackPearlMobile(?:\.git)?$') { throw "origin must be the public $repository repository." }
     Invoke-Native git @('fetch', '--no-recurse-submodules', 'origin', '--tags')
     $deadline = [datetime]::UtcNow.AddMinutes($TimeoutMinutes)
+    $pauseAt = Get-ShipPauseAt $WaitMinutes
     if ($VerifyOnly) {
         if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw '-VerifyOnly requires -Version major.minor.patch.' }
         $commit = (Invoke-Native git @('rev-parse', "v$Version^{commit}")).Trim()
@@ -464,7 +487,7 @@ try {
             Write-Host "  $(Format-CheckEvidence $local)"
             if ($local.Log -and (Test-Path -LiteralPath $local.Log)) { Get-Content -LiteralPath $local.Log -Tail 30 | ForEach-Object { Write-Host "  $_" } }
         }
-        elseif ($local.State -in 'missing', 'interrupted', 'superseded') { Write-Host '  -Merge runs them itself, or rerun ship.ps1 to start them in the background.' }
+        elseif ($local.State -in 'missing', 'interrupted', 'superseded') { Write-Host '  -Merge starts them in the background, or rerun ship.ps1 to start them.' }
         Write-Host "Workflow: $($ci.State) - $($ci.Detail)"
         Write-Host "Review: $(if (!$verdict) { 'none yet' } elseif ($verdict.Head -cne $head) { "covers an older head $($verdict.Head)" } else { "$($verdict.Verdict) ($($verdict.Url))" })"
         return
@@ -511,14 +534,21 @@ try {
             Write-Host "Merge #$number ($head) as BlackPearl Mobile $Version+$($headVersion.Build), approved in $($approval.Url)"
         }
         if ($Plan) { Write-Host 'Preview complete. Nothing was merged, tagged, or released.'; return }
+        $mergeResume = "./scripts/ship.ps1 -Merge$(if ($NoRelease) { ' -NoRelease' })$(if ($Pr) { " -Pr $Pr" })$(if ($Flutter) { " -Flutter '$Flutter'" })"
         # Wait for both the workflow and the local release checks on the head. Local checks that never finished, for
-        # example because the computer restarted, run here.
+        # example because the computer restarted, start again here: in the background when this run has a wait limit, so
+        # it can stop and be rerun while they run, otherwise in this run.
         $checks = $null; $localPassed = $false; $lastState = ''; $lastLocal = ''
         while ($true) {
             $local = Get-CheckState $localRecord
             if ($local.State -ne $lastLocal) { Write-Host "Release checks: $($local.State)"; $lastLocal = $local.State }
             if ($local.State -eq 'passed') { $localPassed = $true }
             elseif ($local.State -eq 'failed') { throw "Release checks failed on ${head}: $($local.Error) $(Format-CheckEvidence $local)$checkFailureAdvice" }
+            elseif ($local.State -ne 'running' -and $pauseAt -ne [datetime]::MaxValue) {
+                Write-Host "Release checks on $head started in the background, log $(Start-BackgroundChecks $root $head (Resolve-Flutter $Flutter) $pull.head.ref)"
+                $lastLocal = ''
+                continue
+            }
             elseif ($local.State -ne 'running') {
                 Write-Host "Running the release checks on $head here..."
                 # In a process of its own, so stopping it or a newer push of the branch cannot leave the record running.
@@ -536,6 +566,8 @@ try {
             }
             if ($checks -and $localPassed) { break }
             if ([datetime]::UtcNow -ge $deadline) { throw 'Timed out waiting for the pull request and release checks. Rerun -Merge.' }
+            $waiting = @($(if (!$localPassed) { "release checks $($local.State)" }), $(if (!$checks) { "pull request checks $lastState" })) -join ', '
+            Suspend-ShipWhenDue $pauseAt "#$number is not merged yet, waiting for $waiting" $mergeResume
             Start-Sleep -Seconds 20
         }
         # Merge only the exact reviewed head, and only while it still contains master.
@@ -647,8 +679,10 @@ try {
     }
     $record = Join-Path (Get-ShipRecordRoot $root) ('ship-' + $Version + '-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $record -Force | Out-Null
-    $run = Wait-ReleaseBuild $Version $commit $deadline
-    $result = Test-PublishedRelease $Version $record $deadline
+    # After a merge only -VerifyOnly can carry on; -Merge refuses the merged pull request.
+    $verifyResume = "./scripts/ship.ps1 -VerifyOnly -Version $Version$(if ($Merge) { " (#$number is already merged as $commit and tagged v$Version)" })"
+    $run = Wait-ReleaseBuild $Version $commit $deadline $pauseAt $verifyResume
+    $result = Test-PublishedRelease $Version $record $deadline $pauseAt $verifyResume
     $result.Actions = $run.html_url
     $result.Commit = $commit
     $result | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $record 'verified.json')
@@ -663,7 +697,12 @@ try {
     Write-Host "Local master synchronized: $($result.LocalMaster.Commit)"
 }
 catch {
-    if ($Merge -and $Version) { Write-Warning "If v$Version was pushed, recheck with -VerifyOnly -Version $Version. Never move a published tag." }
-    throw
+    if ($_.Exception -is [ShipPausedException]) { $paused = $_.Exception.Message }
+    else {
+        if ($Merge -and $Version) { Write-Warning "If v$Version was pushed, recheck with -VerifyOnly -Version $Version. Never move a published tag." }
+        throw
+    }
 }
 finally { Pop-Location }
+# Exit code 3: still waiting, not failed. The message names the command that continues.
+if ($paused) { Write-Host $paused; exit 3 }
