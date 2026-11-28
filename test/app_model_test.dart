@@ -9,6 +9,7 @@ import 'package:blackpearl_mobile/storage/paired_pcs.dart';
 import 'package:blackpearl_mobile/ui/home_shell.dart';
 import 'package:blackpearl_mobile/ui/theme.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -308,6 +309,59 @@ void main() {
       expect(await back(tester), isTrue);
       expect(shownTab(tester), HomeShell.remoteTab);
       expect(await back(tester), isFalse);
+      app.model.dispose();
+    });
+
+    // What the app tells Android about the system's Back as it shows again, which is all a new activity on the same
+    // engine hears: true when the app takes Back, false when Back may close the app, null when it says nothing.
+    Future<bool?> toldOnShow(WidgetTester tester) async {
+      bool? told;
+      final messenger = tester.binding.defaultBinaryMessenger;
+      messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'SystemNavigator.setFrameworkHandlesBack') told = call.arguments as bool;
+        return null;
+      });
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      try {
+        for (final state in [
+          AppLifecycleState.inactive,
+          AppLifecycleState.hidden,
+          AppLifecycleState.paused,
+          AppLifecycleState.hidden,
+          AppLifecycleState.inactive,
+          AppLifecycleState.resumed,
+        ]) {
+          tester.binding.handleAppLifecycleStateChanged(state);
+        }
+        await tester.pump();
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+        messenger.setMockMethodCallHandler(SystemChannels.platform, null);
+      }
+      return told;
+    }
+
+    testWidgets('is claimed again each time the app shows, for the page and tab open then', (tester) async {
+      final app = await openApp(tester);
+      expect(await toldOnShow(tester), isFalse, reason: "the Remote's Back closes the app");
+
+      await tester.tap(tab('Library'));
+      await tester.pump();
+      expect(await toldOnShow(tester), isTrue, reason: "the Library's Back goes to the Remote");
+
+      await tester.tap(tab('Remote'));
+      await tester.pump();
+      final navigator = Navigator.of(tester.element(find.byType(HomeShell)));
+      unawaited(navigator.push(MaterialPageRoute<void>(builder: (_) => const Scaffold(body: Text('A season')))));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.text('A season'), findsOneWidget);
+      expect(await toldOnShow(tester), isTrue, reason: "a page's Back closes the page");
+
+      expect(await back(tester), isTrue);
+      await tester.pump(const Duration(seconds: 1));
+      expect(find.text('A season'), findsNothing);
+      expect(await toldOnShow(tester), isFalse);
       app.model.dispose();
     });
 
