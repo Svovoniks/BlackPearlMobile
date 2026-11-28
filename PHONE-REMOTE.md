@@ -123,7 +123,7 @@ UTF-8 JSON text messages, at most 64 KiB, each with a `type`.
 1. Phone → PC: `{"type":"hello","protocol":1,"app":"<app version>","device":"<phone model or name>","features":["ping"]}`.
    `features` lists what the phone does beyond the remote: `ping` when it answers the PC's pings (see "Measuring the
    link"). Phones before it send none.
-2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","unwatched","mark-watched","shuffle","tracks","sound","ping"]}`.
+2. PC → phone: `{"type":"welcome","protocol":1,"app":"<desktop version>","pc":"<PC name>","pcId":"<PC id>","canStart":true,"features":["library","watch","queues","unwatched","mark-watched","hide-continue","shuffle","tracks","sound","ping"]}`.
    `features` lists what the PC offers beyond the remote (see "The library and watching on the phone"), and `ping`
    when it answers pings (see "Checking the link"); a PC from before them sends none. A PC that listens for phones on the home network adds where:
    `"lan":{"port":47830,"addresses":["192.168.1.20"]}` (see "On the home network").
@@ -272,7 +272,7 @@ PC → phone:
 resume point and watched mark. A failure is an `error` with code `browse` and the `request`.
 
 BlackPearl's window starts the phone remote before it has read its library. After 0.3.144 a library request (`browse`,
-`queues`, `watch`, `play`, `progress`, `mark-watched`) that arrives meanwhile waits for it, up to 15 seconds, and past that is an
+`queues`, `watch`, `play`, `progress`, `mark-watched`, `hide-continue`) that arrives meanwhile waits for it, up to 15 seconds, and past that is an
 `error` with code `loading` and the `request` (a `progress` is dropped). Earlier PCs answered from an empty library,
 so a phone that connected that early got an empty Home; the phone loads an empty list again whenever the link comes
 back.
@@ -348,6 +348,16 @@ does: a film or an episode marks its file (clearing it also clears the other cop
 or a season marks all its episodes. It answers `{"type":"done","request":<n>}` once saved, or an `error` with code
 `invalid` (an unknown level, or no `watched`) or `gone` (the title left the library), and the `request`. It needs no
 `canStart`: the phone changes the library's marks, not what plays.
+
+### Removing from Continue watching
+
+A PC whose welcome lists `hide-continue` (from 0.3.168) lets the phone take a title out of Continue watching. Phone → PC:
+`{"type":"hide-continue","request":<n>,"id":"…","hidden":true}`, with the `id` of a Continue watching entry (the video it
+names). The title leaves the row, on the PC's Home as on the phone's, until any of its videos is played again after that,
+on the PC or on a phone; its resume points and watched marks stay as they were. `"hidden":false` puts it back (an Undo);
+without `hidden` it is taken out. The PC answers `{"type":"done","request":<n>}` once saved, or an `error` with code
+`invalid` (`hidden` isn't true or false) or `gone` (the video left the library), and the `request`. It needs no
+`canStart`.
 
 ### Queues
 
@@ -440,8 +450,8 @@ again. A phone that comes back asks with `listen` again. Joining or hosting a ro
 With **Phones can browse and watch while BlackPearl is closed** on (Settings › Profile › Phone remote, on by default),
 BlackPearl starts a small process of itself with no window, `BlackPearl.exe --phone-host`, once it has closed, and
 optionally at Windows sign-in (`--phone-host --signed-in`, from a `Run` entry named `BlackPearl phone access`). It
-connects for phones with the same key, so to a phone it is the same PC: its `welcome` offers `library`, `watch`, `queues`, `unwatched` and `mark-watched`,
-its state says nothing is playing, and the remote's commands get `error` `nothing-playing`. Browsing, watching, watched marks and
+connects for phones with the same key, so to a phone it is the same PC: its `welcome` offers `library`, `watch`, `queues`, `unwatched`, `mark-watched` and `hide-continue`,
+its state says nothing is playing, and the remote's commands get `error` `nothing-playing`. Browsing, watching, watched marks, removing from Continue watching and
 progress work as with the app. Continuing on the PC opens BlackPearl with the video (`--play-id <id>`), which plays it
 from the position the host saved once its library has loaded.
 

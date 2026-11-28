@@ -17,7 +17,7 @@ import 'theme.dart';
 
 /// What the library screens do with a title: play it here, or start it on the PC.
 class LibraryActions {
-  const LibraryActions({required this.watchHere, required this.playOnPc, this.markWatched, this.openRemote, this.prefersPc});
+  const LibraryActions({required this.watchHere, required this.playOnPc, this.markWatched, this.hideContinue, this.openRemote, this.prefersPc});
 
   /// Shows the Remote tab, from a page above the tabs; null where there is none to show.
   final VoidCallback? openRemote;
@@ -36,11 +36,16 @@ class LibraryActions {
   /// show the change.
   final Future<String?> Function(LibraryEntry entry, bool watched, {String? level, int? season})? markWatched;
 
+  /// Takes a Continue watching [entry] out of the row on the PC until it is played again, or with [hidden] false puts
+  /// it back. Returns why it couldn't, or null. Null where the lists can't show the change.
+  final Future<String?> Function(LibraryEntry entry, bool hidden)? hideContinue;
+
   /// The same actions, playing each listed video as part of [list] at the video's place.
   LibraryActions inQueue(QueueRef list) => LibraryActions(
     watchHere: (entry, {bool fromStart = false, QueueRef? queue}) => watchHere(entry, fromStart: fromStart, queue: queue ?? list.at(entry.index)),
     playOnPc: (entry, {bool fromStart = false, QueueRef? queue}) => playOnPc(entry, fromStart: fromStart, queue: queue ?? list.at(entry.index)),
     markWatched: markWatched,
+    hideContinue: hideContinue,
     openRemote: openRemote,
     prefersPc: prefersPc,
   );
@@ -84,12 +89,15 @@ bool canMarkWatched(RemoteLink link, LibraryEntry entry, LibraryActions actions)
     entry.kind != 'Music' &&
     (entry.level == 'movie' || entry.level == 'episode' || entry.playable || entry.opensList);
 
-/// What a long press on a title offers, without opening it: where to play it, and its watched mark.
+/// What a long press on a title offers, without opening it: where to play it, its watched mark, and in Continue
+/// watching, taking it out of the row.
 Future<void> showQuickActions(BuildContext context, {required RemoteLink link, required LibraryEntry entry, required LibraryActions actions}) {
   final canWatch = entry.playable && link.features.contains('watch');
   final canStart = entry.playable && link.status.isConnected && link.canStart;
   final canMark = canMarkWatched(link, entry, actions) && link.status.isConnected;
-  if (!canWatch && !canStart && !canMark) return Future.value();
+  final hide = actions.hideContinue;
+  final canHide = hide != null && entry.homeSection == 'continue' && link.features.contains('hide-continue') && link.status.isConnected;
+  if (!canWatch && !canStart && !canMark && !canHide) return Future.value();
   unawaited(HapticFeedback.mediumImpact());
   final messenger = ScaffoldMessenger.maybeOf(context);
   void say(String text) => messenger
@@ -127,6 +135,29 @@ Future<void> showQuickActions(BuildContext context, {required RemoteLink link, r
         say(error ?? (whole ? 'Every episode is marked ${watched ? 'watched' : 'unwatched'}.' : 'Marked ${watched ? 'watched' : 'unwatched'}.'));
       }
 
+      // Its places and marks stay on the PC, and playing it again brings it back; Undo brings it back now.
+      Future<void> remove() async {
+        final error = await hide!(entry, true);
+        if (error != null) {
+          say(error);
+          return;
+        }
+        messenger
+          ?..hideCurrentSnackBar()
+          ..showSnackBar(SnackBar(
+            content: const Text('Removed from Continue watching.'),
+            duration: const Duration(seconds: 5),
+            // A snack bar with an action otherwise stays until it is swiped away, and Undo with it.
+            persist: false,
+            action: SnackBarAction(
+              label: 'Undo',
+              onPressed: () => unawaited(hide(entry, false).then((error) {
+                if (error != null) say(error);
+              })),
+            ),
+          ));
+      }
+
       return SafeArea(
         top: false,
         child: SingleChildScrollView(
@@ -149,6 +180,7 @@ Future<void> showQuickActions(BuildContext context, {required RemoteLink link, r
               if (canMark && (whole || !entry.watched)) row(Icons.check_rounded, whole ? 'Mark every episode as watched' : 'Mark as watched', () => mark(true)),
               if (canMark && (whole || entry.watched))
                 row(Icons.remove_done_rounded, whole ? 'Mark every episode as unwatched' : 'Mark as unwatched', () => mark(false)),
+              if (canHide) row(Icons.visibility_off_outlined, 'Remove from Continue watching', remove),
             ],
           ),
         ),

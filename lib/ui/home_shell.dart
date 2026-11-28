@@ -173,6 +173,16 @@ class _HomeShellState extends State<HomeShell> {
       _playbackChanged.value++;
       return null;
     },
+    hideContinue: (entry, hidden) async {
+      try {
+        await link.ask('hide-continue', {'id': entry.id, 'hidden': hidden});
+      } on RemoteRequestException catch (e) {
+        return e.message;
+      }
+      // Home, and the Remote's row of titles to continue on the PC, load again without it (or with it, after Undo).
+      _playbackChanged.value++;
+      return null;
+    },
   );
 
   @override
