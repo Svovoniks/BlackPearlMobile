@@ -244,6 +244,60 @@ try {
     }
     finally { if (!$running.HasExited) { $running.Kill($true) }; $null = Remove-CheckCopy $copyRepo $killedCopy }
     Check (!(Test-ScratchFolder (Join-Path $testRoot 'bpm-dc-0123456789ab') 'bpm-dc') -and !(Test-ScratchFolder (Join-Path (Get-ScratchRoot) 'bpm-dc-other') 'bpm-dc')) 'only folders this script makes are removed'
+    # A run with a wait limit stops with a named next command instead of waiting past it, so an agent can wait in the
+    # foreground: a thread whose pull request merged can be settled, and its agent stopped, between turns.
+    $now = [datetime]::UtcNow
+    Check ((Get-ShipPauseAt 0) -eq [datetime]::MaxValue) 'a wait limit of 0 never stops a run early'
+    Check ((Get-ShipPauseAt 7 $now) -eq $now.AddMinutes(7)) 'a wait limit stops a run after that many minutes'
+    Suspend-ShipWhenDue $now.AddMinutes(5) 'fixture' './scripts/ship.ps1 -Merge'
+    Check $true 'a run within its wait limit keeps waiting'
+    $pause = $null
+    try { Suspend-ShipWhenDue $now.AddSeconds(-1) 'the fixture is still running' './scripts/ship.ps1 -Merge' } catch { $pause = $_.Exception }
+    Check ($pause -is [ShipPausedException] -and $pause.Message.Contains('./scripts/ship.ps1 -Merge') -and $pause.Message.Contains('the fixture is still running')) 'a run past its wait limit stops and names what it waits for and the command that continues'
+    # One deadline for a whole ship: each stopped run hands it to the next, so -TimeoutMinutes still ends a stuck ship.
+    Check ((Get-ShipDeadline '' 60 $now) -eq $now.AddMinutes(60)) 'a first run gets the deadline -TimeoutMinutes sets'
+    $carried = Format-ShipResume './scripts/ship.ps1 -Merge' $now.AddMinutes(53) 6
+    $until = [regex]::Match($carried, "-Until '([^']+)'").Groups[1].Value
+    Check ((Get-ShipDeadline $until 60 $now.AddMinutes(30)) -eq $now.AddMinutes(53) -and $carried.Contains('-WaitMinutes 6')) 'a rerun keeps the deadline and wait limit of the run that stopped'
+    Check ($null -ne [System.Management.Automation.Language.Parser]::ParseInput($carried, [ref]$null, [ref]$null) -and $carried.StartsWith('./scripts/ship.ps1 -Merge ')) 'the command a stopped run names can be run as printed'
+    foreach ($bad in @('tomorrow', '2026-01-01T00:00:00', '2026-01-01T04:00:00+04:00')) {
+        Expect-Rejected { Get-ShipDeadline $bad 60 $now } "-Until $bad is rejected"
+    }
+    $originalPublicJson = ${function:Get-PublicJson}
+    try {
+        $script:fixtureRun = [pscustomobject]@{ id = 7; status = 'in_progress'; conclusion = $null; head_branch = 'v0.12.12'; head_sha = 'f' * 40; name = 'build'; run_attempt = 1; html_url = 'https://github.com/fixture/run' }
+        $script:fixtureLatest = 'v0.12.11'
+        function Get-PublicJson {
+            param([string]$Uri)
+            if ($Uri -match '/releases/latest$') { return [pscustomobject]@{ tag_name = $script:fixtureLatest } }
+            if ($Uri -match '/actions/runs[?]') { return [pscustomobject]@{ workflow_runs = @($script:fixtureRun) } }
+            return $script:fixtureRun
+        }
+        $resume = './scripts/ship.ps1 -VerifyOnly -Version 0.12.12'
+        $pause = $null
+        try { Wait-ReleaseBuild '0.12.12' ('f' * 40) $now.AddMinutes(60) $now.AddSeconds(-1) $resume | Out-Null } catch { $pause = $_.Exception }
+        Check ($pause -is [ShipPausedException] -and $pause.Message.Contains($resume)) 'a tag build still running past the wait limit stops the run and names -VerifyOnly'
+        $pause = $null
+        try { Wait-ReleaseBuild '0.12.12' $script:fixtureRun.head_sha $now.AddMinutes(60) $now.AddSeconds(-1) $resume '#7 is merged as abc and tagged v0.12.12' | Out-Null } catch { $pause = $_.Exception }
+        Check ($pause -is [ShipPausedException] -and $pause.Message.Contains('#7 is merged as abc and tagged v0.12.12, but the v0.12.12 tag build') -and $pause.Message.Contains("Run $resume in the foreground")) 'a stop after the merge says the pull request is merged, outside the command to run'
+        $timeout = $null
+        try { Wait-ReleaseBuild '0.12.12' ('f' * 40) $now.AddSeconds(-1) $now.AddSeconds(-1) $resume | Out-Null } catch { $timeout = $_.Exception }
+        Check ($timeout -and $timeout -isnot [ShipPausedException]) 'a tag build past the overall timeout still fails'
+        $script:fixtureRun.status = 'completed'; $script:fixtureRun.conclusion = 'success'
+        Check ((Wait-ReleaseBuild '0.12.12' ('f' * 40) $now.AddMinutes(60) $now.AddSeconds(-1) $resume).id -eq 7) 'a finished tag build is used even when the wait limit has passed'
+        $script:fixtureRun.conclusion = 'failure'
+        $failed = $null
+        try { Wait-ReleaseBuild '0.12.12' ('f' * 40) $now.AddMinutes(60) $now.AddSeconds(-1) $resume | Out-Null } catch { $failed = $_.Exception }
+        Check ($failed -and $failed -isnot [ShipPausedException] -and $failed.Message -match 'Release build failed') 'a failed tag build fails rather than stopping to wait'
+        $pause = $null
+        try { Test-PublishedRelease '0.12.12' $testRoot $now.AddMinutes(60) $now.AddSeconds(-1) $resume | Out-Null } catch { $pause = $_.Exception }
+        Check ($pause -is [ShipPausedException] -and $pause.Message.Contains('v0.12.11')) 'a release not yet public past the wait limit stops the run'
+        $script:fixtureLatest = 'v0.0.1'
+        $failed = $null
+        try { Test-PublishedRelease '0.12.12' $testRoot $now.AddSeconds(-1) $now.AddSeconds(-1) $resume | Out-Null } catch { $failed = $_.Exception }
+        Check ($failed -and $failed -isnot [ShipPausedException]) 'a release still not public at the carried deadline fails instead of waiting again'
+    }
+    finally { Set-Item -Path function:Get-PublicJson -Value $originalPublicJson }
     . (Join-Path $PSScriptRoot 'ship-sync-checks.ps1') -TestRoot $testRoot
     Write-Host "$checks shipping safety checks passed. No releases were created."
 }
