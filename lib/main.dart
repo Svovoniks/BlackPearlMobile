@@ -273,11 +273,22 @@ class _RootState extends State<Root> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _claimBack();
       model.resumed();
       unawaited(widget.updater?.resumed());
     } else if (state == AppLifecycleState.paused) {
       model.paused();
     }
+  }
+
+  // Android gives the system's Back to the app only while the app has said it wants it, and Flutter says so only when
+  // its pages change. The engine outlives the activity (LinkEngine), and a new activity starts out letting Back close
+  // the app: opened again on a show's page or the Library, the first Back closed it while the back arrow worked. So
+  // each time the app shows, it says again what it wants: the Navigator turns this into "yes" while a page is open
+  // above the tabs, and the tabs' own PopScope says it for a tab other than the Remote.
+  void _claimBack() {
+    if (!mounted) return;
+    NavigationNotification(canHandlePop: ModalRoute.popDispositionOf(context) == RoutePopDisposition.doNotPop).dispatch(context);
   }
 
   /// A link from outside the app: another app or a web page can send one too, so ask before it replaces the current PC.
